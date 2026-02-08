@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.readtheroom.app",
+      "sha256_cert_fingerprints": [
+        "6E:33:F4:FF:B6:39:B1:B7:0C:AD:18:7E:F4:77:60:ED:B7:9C:E0:D3:92:85:62:2F:F8:8D:E5:C8:A3:88:1E:0F"
+      ]
+    }
+  }
+] 

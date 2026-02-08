@@ -1,0 +1,73 @@
+# NOTICE
+
+Read the Room
+Copyright 2025 Soud Al Kharusi
+
+This product is licensed under the GNU Affero General Public License v3.0.
+See the LICENSE file for the full license text.
+
+## Trademark Notice
+
+The Read the Room name, RTR logo, and Curio mascot are trademarks of
+Soud Al Kharusi and are NOT covered by the AGPLv3 license. See TRADEMARK.md
+for details.
+
+## Third-Party Data
+
+### GeoNames
+The file `readtheroom/assets/sites/geonames-all-cities-with-a-population-1000.csv`
+contains data from GeoNames (https://www.geonames.org/).
+
+  Licensed under the Creative Commons Attribution 4.0 International License
+  (CC BY 4.0). https://creativecommons.org/licenses/by/4.0/
+
+  GeoNames is a project of Unxos GmbH, Switzerland.
+
+### SimpleMaps World Cities
+The Supabase cities table was originally seeded from SimpleMaps World Cities
+data (https://simplemaps.com/data/world-cities). The seed CSV is no longer
+shipped in the repository.
+
+  Licensed under the Creative Commons Attribution 4.0 International License
+  (CC BY 4.0). https://creativecommons.org/licenses/by/4.0/
+
+### Natural Earth
+The file `readtheroom/assets/ne_50m_admin_0_countries.json` contains data from
+Natural Earth (https://www.naturalearthdata.com/).
+
+  Natural Earth data is in the public domain. No restrictions on use.
+
+## Third-Party Software
+
+This application uses the following open-source libraries and resources.
+Flutter's built-in LicensePage displays the full license texts at runtime.
+
+### Font Awesome Free
+  Copyright (c) Fonticons, Inc.
+  Icons: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+  Fonts: SIL OFL 1.1 (https://scripts.sil.org/OFL)
+  Code: MIT License
+
+### LDNOOBW (profanity word list)
+  Used via the profanity_filter package.
+  Licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+  https://github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words
+
+### Firebase / Google Services
+  Copyright Google LLC
+  Licensed under the Apache License, Version 2.0
+
+### Supabase
+  Copyright Supabase Inc.
+  Licensed under the MIT License
+
+### PostHog
+  Copyright PostHog Inc.
+  Licensed under the MIT License
+
+### Flutter and Dart SDK
+  Copyright Google LLC
+  Licensed under the BSD 3-Clause License
+
+For a complete list of dependencies and their licenses, see the pubspec.yaml
+file and run `flutter pub deps` in the readtheroom/ directory.

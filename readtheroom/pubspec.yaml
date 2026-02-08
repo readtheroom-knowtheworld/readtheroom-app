@@ -1,0 +1,71 @@
+name: read_the_room
+description: "A human bioindicator."
+publish_to: 'none'
+
+#Update version code and version name in build.gradle.kts, +1 for each build. Latest version is 0.8.3+14 (new auth flow)
+version: 1.1.3+76
+
+environment:
+  sdk: ^3.7.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  provider: ^6.1.2
+  http: ^1.1.0
+  shared_preferences: ^2.2.3
+  csv: ^5.1.1
+  cupertino_icons: ^1.0.2
+  url_launcher: ^6.1.14
+  fl_chart: ^0.65.0
+  flutter_map: ^6.1.0
+  latlong2: ^0.9.0
+  share_plus: ^11.0.0
+  font_awesome_flutter: ^10.7.0
+  timezone: ^0.10.1
+  flutter_timezone: ^3.0.1
+  supabase_flutter: ^2.5.6
+  word_cloud: ^1.0.3
+  profanity_filter: ^2.0.0
+  postgres_utils: ^1.0.0
+  uuid: ^4.4.0
+  crypto: ^3.0.3
+  device_info_plus: ^11.4.0
+  webauthn: ^0.2.5
+  firebase_core: ^3.14.0
+  firebase_messaging: ^15.2.7
+  flutter_local_notifications: ^19.2.1
+  app_links: ^6.3.2
+  qr_flutter: ^4.1.0
+  posthog_flutter: ^5.0.0  # Analytics tracking
+  package_info_plus: ^8.0.2
+  home_widget: ^0.7.0  # Home screen widget support
+  workmanager: ^0.9.0  # Background tasks for widget refresh
+  vibration: ^2.0.0  # Reliable haptic feedback on Android
+  # app_set_id: ^1.3.0  # TODO: Re-add once API usage is figured out
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_launcher_icons: ^0.14.3
+  flutter_lints: ^2.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/RTR-logo_Aug2025.png
+    - assets/images/rtr-logo-trans.png
+    - assets/images/Curio.png
+    - assets/images/Curio-trans.png
+    - assets/images/Curio_smiling_trans.png
+    - assets/ne_50m_admin_0_countries.json
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  remove_alpha_ios: true
+  background_color_ios: "#FFFFFF"  # White background color
+  image_path: "assets/images/RTR-logo_Aug2025.png"
+  # Android adaptive icon configuration
+  adaptive_icon_background: "#ffffff"  # Light mode background
+  adaptive_icon_foreground: "assets/images/RTR-logo_Aug2025.png"

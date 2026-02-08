@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/qotd_widget_container"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:background="@drawable/widget_background_teal">
+
+    <!-- Curio on the left -->
+    <ImageView
+        android:id="@+id/qotd_curio_image"
+        android:layout_width="120dp"
+        android:layout_height="120dp"
+        android:layout_marginEnd="8dp"
+        android:src="@drawable/curio_questioning"
+        android:scaleType="fitCenter"
+        android:contentDescription="Curio mascot"/>
+
+    <!-- Question text and stats on the right -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/qotd_question_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="What's on your mind?"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:maxLines="3"
+            android:ellipsize="end"
+            android:lineSpacingMultiplier="1.1"/>
+
+        <TextView
+            android:id="@+id/qotd_stats"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="0 votes"
+            android:textSize="13sp"
+            android:textColor="#CCFFFFFF"
+            android:maxLines="1"/>
+
+    </LinearLayout>
+
+</LinearLayout>

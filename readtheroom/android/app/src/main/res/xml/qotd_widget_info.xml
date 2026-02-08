@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="250dp"
+    android:minHeight="110dp"
+    android:targetCellWidth="4"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="1800000"
+    android:initialLayout="@layout/qotd_widget_layout"
+    android:resizeMode="none"
+    android:widgetCategory="home_screen"
+    android:previewImage="@drawable/curio_questioning"
+    android:description="@string/qotd_widget_description"/>

@@ -1,0 +1,91 @@
+# Gradle files
+.gradle/
+build/
+
+# Local configuration file (sdk path, etc)
+local.properties
+
+# Log/OS Files
+*.log
+
+# Android Studio generated files and folders
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+output.json
+
+# IntelliJ
+*.iml
+.idea/
+misc.xml
+deploymentTargetDropDown.xml
+render.experimental.xml
+
+# Keystore files
+*.jks
+*.keystore
+
+# Android Profiling
+*.hprof
+
+# Android release keystore
+readtheroom/android/app/upload-keystore.jks
+
+# Android signing configuration
+readtheroom/android/key.properties
+
+.DS_Store
+
+# Supabase
+supabase/
+
+# Supabase Migrations
+supabase/migrations/
+sql/
+
+# Supabase Schema
+supabase/schema.sql
+
+
+.env
+
+.vscode/*
+
+archived_sql_files/
+
+temp.md
+
+# Claude Code
+.claude/
+
+# Editor swap/backup files
+*.swp
+*.swo
+*.bak
+*.bak2
+
+# CLAUDE.local.md (machine-specific dev preferences)
+CLAUDE.local.md
+
+# ── Public repo: sensitive files ──────────────────────────────
+
+# iOS Xcode secrets (Supabase, PostHog keys)
+readtheroom/ios/Flutter/Secrets.xcconfig
+
+# Firebase configuration (regenerate per-dev via FlutterFire CLI)
+**/firebase_options.dart
+
+# Firebase platform configs (contains API keys, project IDs)
+**/google-services.json
+**/GoogleService-Info.plist
+
+# CI/CD pipeline config
+codemagic.yaml
+
+# Internal documentation
+CLAUDE.md
+DBarchitecture.md
+README_CI_CD.md
+README_RELEASE.md
+feature-documentation/

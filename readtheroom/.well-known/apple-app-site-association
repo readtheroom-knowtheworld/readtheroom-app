@@ -1,0 +1,17 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "9XMVV7C4S9.com.readtheroom.app",
+        "paths": [
+          "/question/*",
+          "/q/*",
+          "/suggestion/*",
+          "/s/*",
+          "/room/*"
+        ]
+      }
+    ]
+  }
+} 

@@ -1,0 +1,12 @@
+{
+  "images" : [
+    {
+      "filename" : "curio_angry.png",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}
