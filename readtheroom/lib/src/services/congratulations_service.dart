@@ -10,6 +10,7 @@ import '../screens/congratulations_curio_screen.dart';
 
 enum AchievementType {
   firstQuestion,
+  firstComment,
   answered20Questions,
   qotdBadge,
   camoTop20
@@ -18,7 +19,7 @@ enum AchievementType {
 class CongratulationsService {
   static const String _lastPromptPrefix = 'congratulations_last_prompt_';
   static const String _appStoreReviewClickedKey = 'app_store_review_clicked';
-  static const Duration _cooldownPeriod = Duration(days: 30);
+  static const Duration _cooldownPeriod = Duration(days: 7);
   
   // Testing flag - set to true to bypass cooldown and achievement checks
   static const bool _testingMode = false;
@@ -40,6 +41,8 @@ class CongratulationsService {
     switch (type) {
       case AchievementType.firstQuestion:
         return '${_lastPromptPrefix}first_question';
+      case AchievementType.firstComment:
+        return '${_lastPromptPrefix}first_comment';
       case AchievementType.answered20Questions:
         return '${_lastPromptPrefix}answered_10';
       case AchievementType.qotdBadge:
@@ -83,8 +86,14 @@ class CongratulationsService {
     // Check if achievement has been reached
     switch (type) {
       case AchievementType.firstQuestion:
-        return achievementService.hasFirstQuestion();
-      
+        // Trigger on every 2nd question (2nd, 4th, 6th, ...)
+        final questionCount = userService.postedQuestions.length;
+        return questionCount >= 2 && questionCount % 2 == 0;
+
+      case AchievementType.firstComment:
+        // Always eligible — called from comment submission flow, cooldown handles frequency
+        return true;
+
       case AchievementType.answered20Questions:
         return achievementService.getAnsweredQuestionsCount() >= 10;
       
@@ -111,7 +120,9 @@ class CongratulationsService {
   String getAchievementTitle(AchievementType type) {
     switch (type) {
       case AchievementType.firstQuestion:
-        return 'Congratulations!';
+        return 'Nice work!';
+      case AchievementType.firstComment:
+        return 'First Comment!';
       case AchievementType.answered20Questions:
         return 'Amazing Progress!';
       case AchievementType.qotdBadge:
@@ -124,7 +135,9 @@ class CongratulationsService {
   String getAchievementMessage(AchievementType type) {
     switch (type) {
       case AchievementType.firstQuestion:
-        return 'You\'ve posted your first question!\n\nWelcome to the community of curious minds exploring the world together.';
+        return 'You\'ve posted your second question!\n\nYou\'re becoming a regular — your curiosity is helping shape conversations worldwide.';
+      case AchievementType.firstComment:
+        return 'You\'ve posted your first comment!\n\nYour voice is adding depth to the conversation.';
       case AchievementType.answered20Questions:
         return 'You\'ve answered 10 questions!\n\nYour voice is helping shape our understanding of the world\'s perspectives.';
       case AchievementType.qotdBadge:
@@ -137,7 +150,9 @@ class CongratulationsService {
   String getShareMessage(AchievementType type) {
     switch (type) {
       case AchievementType.firstQuestion:
-        return 'I just posted my first question on Read the Room! Join me in exploring what the world really thinks. 🦎';
+        return 'I\'m on a roll posting questions on Read the Room! Join me in exploring what the world really thinks. 🦎';
+      case AchievementType.firstComment:
+        return 'I just posted my first comment on Read the Room! Join the conversation and see what the world thinks. 🦎';
       case AchievementType.answered20Questions:
         return 'I\'ve answered 10 questions on Read the Room! My voice is part of a global conversation. 🦎';
       case AchievementType.qotdBadge:

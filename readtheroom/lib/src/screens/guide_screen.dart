@@ -11,7 +11,6 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/analytics_service.dart';
-import '../services/user_service.dart';
 import '../services/location_service.dart';
 
 class GuideScreen extends StatefulWidget {
@@ -133,8 +132,8 @@ class _GuideScreenState extends State<GuideScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer2<UserService, LocationService>(
-      builder: (context, userService, locationService, child) {
+    return Consumer<LocationService>(
+      builder: (context, locationService, child) {
         final isAuthenticated = Supabase.instance.client.auth.currentUser != null;
         final hasLocation = locationService.hasLocation;
         final canSkip = isAuthenticated && hasLocation;
@@ -243,7 +242,7 @@ class _GuideScreenState extends State<GuideScreen> {
                 title: 'Context and Rules',
                 children: [
                   Text(
-                    'We are a privacy-first and community-driven social app.',
+                    'We are an open source privacy-first and community-driven social app.',
                     style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                       fontWeight: FontWeight.w500,
                     ),
@@ -257,7 +256,7 @@ class _GuideScreenState extends State<GuideScreen> {
                   ),
                   SizedBox(height: 12),
                     Text(
-                      'We create real-time maps of how people feel across cities, countries, and the whole world.',
+                      'We create real-time maps of how people feel across countries and generations worldwide.',
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         height: 1.4,
                       ),
@@ -392,33 +391,48 @@ class _GuideScreenState extends State<GuideScreen> {
                     iconColor: Colors.grey,
                   ),
                   
-                  SizedBox(height: 24),
-                  
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.quiz,
-                        size: 20,
-                        color: Theme.of(context).primaryColor,
-                      ),
-                      SizedBox(width: 8),
-                      Text(
-                        'Question Types',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                          color: Theme.of(context).primaryColor,
-                        ),
-                      ),
-                    ],
-                  ),
-                  SizedBox(height: 8),
+                ],
+              ),
+
+
+              SizedBox(height: 24),
+
+              // Widgets Section
+              _buildSection(
+                context,
+                icon: Icons.widgets_outlined,
+                title: 'Home Screen Widgets',
+                children: [
                   Text(
-                    'Not a fan of effort and nuance in text-response questions? No worries, just filter them out!', 
+                    'Widgets provide a quiet way to check the Question of the Day whenever the mood strikes, right from your home screen or lock screen.',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       height: 1.4,
                     ),
                   ),
-                  
+                  SizedBox(height: 12),
+                  Text(
+                    'Setting up a widget is the best way for you to support the nonprofit platform, after leaving a nice app store review!',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      height: 1.4,
+                    ),
+                  ),
+                  SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: ElevatedButton.icon(
+                      onPressed: () => _launchURL('https://readtheroom.site/widgets/', linkName: 'widgets_guide'),
+                      icon: Icon(Icons.open_in_new, size: 18),
+                      label: Text('Learn how to set up widgets'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Theme.of(context).primaryColor,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                    ),
+                  ),
                 ],
               ),
 
@@ -457,47 +471,6 @@ class _GuideScreenState extends State<GuideScreen> {
                     'Help us shape the future of Read the Room.',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
-              ),
-
-              SizedBox(height: 24),
-
-              // Widgets Section
-              _buildSection(
-                context,
-                icon: Icons.widgets_outlined,
-                title: 'Home Screen Widgets',
-                children: [
-                  Text(
-                    'Widgets let you engage with Read the Room passively, right from your home screen or lock screen — no notifications needed. They provide a simple way to check in whenever the mood strikes.',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      height: 1.4,
-                    ),
-                  ),
-                  SizedBox(height: 12),
-                  Text(
-                    'Setting up a widget is the best way for you to support the nonprofit platform, after leaving a nice app store review!',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      height: 1.4,
-                    ),
-                  ),
-                  SizedBox(height: 16),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 48,
-                    child: OutlinedButton.icon(
-                      onPressed: () => _launchURL('https://readtheroom.site/widgets/', linkName: 'widgets_guide'),
-                      icon: Icon(Icons.open_in_new, size: 18),
-                      label: Text('Learn how to set up widgets'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Theme.of(context).primaryColor,
-                        side: BorderSide(color: Theme.of(context).primaryColor),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
                     ),
                   ),
                 ],
@@ -551,7 +524,7 @@ class _GuideScreenState extends State<GuideScreen> {
                     child: ElevatedButton.icon(
                       onPressed: () => _launchAppStore(),
                       icon: Icon(Icons.star_rate),
-                      label: Text('Leave a review?'),
+                      label: Text('Please rate us on the app store <3'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Theme.of(context).primaryColor,
                         foregroundColor: Colors.white,
@@ -595,22 +568,26 @@ class _GuideScreenState extends State<GuideScreen> {
               Center(
                 child: Column(
                   children: [
-                    Image.asset(
-                      'assets/images/Curio_smiling_trans.png',
-                      width: 100,
-                      height: 100,
-                    ),
-                    SizedBox(height: 8),
                     GestureDetector(
                       onTap: () {
                         Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
                       },
-                      child: Text(
-                        'Ask away!',
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: Theme.of(context).primaryColor,
-                          fontWeight: FontWeight.w600,
-                        ),
+                      child: Column(
+                        children: [
+                          Image.asset(
+                            'assets/images/Curio_smiling_trans.png',
+                            width: 100,
+                            height: 100,
+                          ),
+                          SizedBox(height: 8),
+                          Text(
+                            'Ask away!',
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: Theme.of(context).primaryColor,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],

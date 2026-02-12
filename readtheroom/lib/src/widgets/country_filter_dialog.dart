@@ -3,6 +3,7 @@
 
 import 'package:flutter/material.dart';
 import '../services/room_service.dart';
+import '../utils/generation_utils.dart';
 
 class CountryFilterDialog extends StatefulWidget {
   final Map<String, Map<String, dynamic>> countryResponses;
@@ -18,6 +19,9 @@ class CountryFilterDialog extends StatefulWidget {
   final int? myNetworkResponseCount; // Accurate My Network response count from service
   final Map<String, int>? roomResponseCounts; // Accurate room response counts from service
   final Map<String, String>? roomNames; // Room ID to name mapping
+  final Map<String, Map<String, dynamic>>? generationResponses; // Generation response data
+  final Map<String, double>? generationAverages; // Only for approval questions
+  final Map<String, String?>? generationMostPopular; // Only for multiple choice questions
 
   const CountryFilterDialog({
     Key? key,
@@ -34,6 +38,9 @@ class CountryFilterDialog extends StatefulWidget {
     this.myNetworkResponseCount,
     this.roomResponseCounts,
     this.roomNames,
+    this.generationResponses,
+    this.generationAverages,
+    this.generationMostPopular,
   }) : super(key: key);
 
   static Future<String?> show({
@@ -50,6 +57,9 @@ class CountryFilterDialog extends StatefulWidget {
     int? myNetworkResponseCount,
     Map<String, int>? roomResponseCounts,
     Map<String, String>? roomNames,
+    Map<String, Map<String, dynamic>>? generationResponses,
+    Map<String, double>? generationAverages,
+    Map<String, String?>? generationMostPopular,
   }) {
     return showDialog<String?>(
       context: context,
@@ -66,6 +76,9 @@ class CountryFilterDialog extends StatefulWidget {
         myNetworkResponseCount: myNetworkResponseCount,
         roomResponseCounts: roomResponseCounts,
         roomNames: roomNames,
+        generationResponses: generationResponses,
+        generationAverages: generationAverages,
+        generationMostPopular: generationMostPopular,
         onCountrySelected: (country) => Navigator.of(context).pop(country),
       ),
     );
@@ -258,9 +271,23 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
     if (countryName == 'World') {
       return _getGlobalColor(responseCount);
     }
-    
+
     // Handle My Network option specially - always use primary color
     if (countryName == 'My Network') {
+      return Theme.of(context).primaryColor;
+    }
+
+    // Handle Generation filter - match country color behavior
+    if (countryName.startsWith('Gen:')) {
+      final genId = countryName.substring(4);
+      if (widget.questionType == 'approval' && widget.generationAverages != null) {
+        final average = widget.generationAverages![genId];
+        if (average != null) return _getColorForValue(average);
+      }
+      if (widget.questionType == 'multiple_choice' && widget.generationMostPopular != null) {
+        final mostPopular = widget.generationMostPopular![genId];
+        return getColorForOption(mostPopular);
+      }
       return Theme.of(context).primaryColor;
     }
     
@@ -382,12 +409,12 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
             if (!_isLoadingRooms) ...[
               _buildMyNetworkOption(),
             ],
-            
+
             // Divider between fixed options and searchable content
             Divider(),
-            
+
             SizedBox(height: 8),
-            
+
             // Search bar for rooms and countries
             if (_sortedCountries.isNotEmpty || _userRooms.isNotEmpty) ...[
               Padding(
@@ -410,15 +437,32 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
               ),
               SizedBox(height: 12),
             ],
-            
-            // Combined list: Top 3 rooms (on top) + Top 5 countries (below)
+
+            // Scrollable list: Generations + Rooms + Countries
             Flexible(
               child: ListView(
                 shrinkWrap: true,
                 children: [
+                  // Generations section
+                  ..._buildGenerationsSection(totalResponsesGlobal),
+
                   // Top 3 rooms with >5 responses
                   ..._buildTopRoomsList(),
-                  
+
+                  // Countries heading
+                  if (_sortedCountries.isNotEmpty)
+                    Padding(
+                      padding: EdgeInsets.only(left: 8, top: 8, bottom: 4),
+                      child: Text(
+                        'Countries',
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Colors.grey[500],
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ),
+
                   // Top 5 countries
                   ..._buildTopCountriesList(totalResponsesGlobal),
                 ],
@@ -471,10 +515,10 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    countryName,
+                    countryName.startsWith('Gen:') ? getGenerationLabel(countryName.substring(4)) : countryName,
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      color: isSelected 
-                          ? Theme.of(context).primaryColor 
+                      color: isSelected
+                          ? Theme.of(context).primaryColor
                           : null,
                       fontWeight: isSelected ? FontWeight.bold : null,
                     ),
@@ -584,6 +628,60 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
         ),
       ),
     );
+  }
+
+  List<Widget> _buildGenerationsSection(int totalResponsesGlobal) {
+    if (widget.generationResponses == null || widget.generationResponses!.isEmpty) {
+      return [];
+    }
+
+    var genEntries = widget.generationResponses!.entries
+        .where((e) => (e.value['total'] as int? ?? 0) > 5)
+        .toList()
+      ..sort((a, b) {
+        final aTotal = a.value['total'] as int? ?? 0;
+        final bTotal = b.value['total'] as int? ?? 0;
+        return bTotal.compareTo(aTotal);
+      });
+
+    if (_searchQuery.isNotEmpty) {
+      genEntries = genEntries.where((e) {
+        final label = getGenerationLabel(e.key);
+        return label.toLowerCase().contains(_searchQuery.toLowerCase());
+      }).toList();
+    }
+
+    if (genEntries.isEmpty) return [];
+
+    return [
+      Padding(
+        padding: EdgeInsets.only(left: 8, top: 8, bottom: 4),
+        child: Text(
+          'Generations',
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+            color: Colors.grey[500],
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.5,
+          ),
+        ),
+      ),
+      ...genEntries.map((entry) {
+        final genId = entry.key;
+        final data = entry.value;
+        final total = data['total'] as int? ?? 0;
+        final percentage = totalResponsesGlobal > 0 ? (total / totalResponsesGlobal * 100).round() : 0;
+        final filterKey = 'Gen:$genId';
+
+        return _buildCountryOption(
+          context: context,
+          countryName: filterKey,
+          subtitle: '$percentage% ($total responses)',
+          isSelected: widget.currentSelectedCountry == filterKey,
+          responseCount: total,
+          onTap: () => widget.onCountrySelected(filterKey),
+        );
+      }),
+    ];
   }
 
   List<Widget> _buildTopRoomsList() {

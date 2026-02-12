@@ -14,7 +14,9 @@ import '../widgets/onboarding/anonymous_questions_slide.dart';
 import '../widgets/onboarding/voting_slide.dart';
 import '../widgets/onboarding/daily_question_slide.dart';
 import '../widgets/onboarding/privacy_slide.dart';
+import '../widgets/onboarding/analytics_consent_slide.dart';
 import '../widgets/onboarding/authentication_slide.dart';
+import '../config/build_config.dart';
 import '../widgets/onboarding/community_guidelines_slide.dart';
 import '../widgets/onboarding/location_setup_slide.dart';
 import 'authentication_screen.dart';
@@ -32,7 +34,7 @@ class OnboardingScreen extends StatefulWidget {
 class _OnboardingScreenState extends State<OnboardingScreen> {
   final PageController _pageController = PageController();
   int _currentPage = 0;
-  static const int _totalPages = 8;
+  int get _totalPages => BuildConfig.isFDroidBuild ? 9 : 8;
   DateTime? _onboardingStartTime;
 
   @override
@@ -222,6 +224,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       PrivacySlide(onNext: _nextPage),
                       AuthenticationSlide(onNext: _nextPage),
                       CommunityGuidelinesSlide(onNext: _nextPage),
+                      if (BuildConfig.isFDroidBuild)
+                        AnalyticsConsentSlide(onNext: _nextPage),
                       LocationSetupSlide(
                         onComplete: _onAuthenticationCompleted,
                         triggeredFrom: widget.triggeredFrom,

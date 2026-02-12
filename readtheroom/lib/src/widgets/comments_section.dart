@@ -55,7 +55,7 @@ class _CommentsSectionState extends State<CommentsSection> {
   final int _commentsPerPage = 20;
   final int _commentsPerLoad = 5; // Show 5 more comments each time
   Set<String> _expandedCommentIds = {};
-  String _sortBy = 'chrono'; // 'top' or 'chrono'
+  String _sortBy = 'top'; // 'top' or 'chrono'
   final LizzyVoteService _lizzyVoteService = LizzyVoteService();
 
   @override

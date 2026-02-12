@@ -516,27 +516,52 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
     );
   }
 
-  void _navigateToAnswerScreen(Map<String, dynamic> question) {
+  Future<void> _navigateToAnswerScreen(Map<String, dynamic> question, {Future<List<Map<String, dynamic>>>? trendingFeedFuture}) async {
     // Dismiss any active keyboards before navigation
     FocusScope.of(context).unfocus();
-    
+
+    // Build FeedContext from trending feed if available
+    FeedContext? feedContext;
+    if (trendingFeedFuture != null) {
+      try {
+        final trendingQuestions = await trendingFeedFuture;
+        if (trendingQuestions.isNotEmpty) {
+          final questionId = question['id']?.toString();
+          final deduped = trendingQuestions
+              .where((q) => q['id']?.toString() != questionId)
+              .toList();
+
+          feedContext = FeedContext(
+            feedType: 'trending',
+            filters: {},
+            questions: <Map<String, dynamic>>[question, ...deduped],
+            currentQuestionIndex: 0,
+            originalQuestionId: questionId,
+            originalQuestionIndex: 0,
+          );
+        }
+      } catch (_) {
+        // Navigate without feedContext on failure
+      }
+    }
+
     Widget answerScreen;
-    
+
     switch (question['type']) {
       case 'approval_rating':
-        answerScreen = AnswerApprovalScreen(question: question);
+        answerScreen = AnswerApprovalScreen(question: question, feedContext: feedContext);
         break;
       case 'multiple_choice':
-        answerScreen = AnswerMultipleChoiceScreen(question: question);
+        answerScreen = AnswerMultipleChoiceScreen(question: question, feedContext: feedContext);
         break;
       case 'text':
-        answerScreen = AnswerTextScreen(question: question);
+        answerScreen = AnswerTextScreen(question: question, feedContext: feedContext);
         break;
       default:
         // Fallback to approval screen
-        answerScreen = AnswerApprovalScreen(question: question);
+        answerScreen = AnswerApprovalScreen(question: question, feedContext: feedContext);
     }
-    
+
     // Navigate to answer screen but preserve main screen in stack
     // Remove only the new question screen and question preview screen
     Navigator.pushAndRemoveUntil(
@@ -705,6 +730,13 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
       );
 
       if (submittedQuestion != null) {
+        // Kick off trending feed fetch in parallel with post-submission work
+        final trendingFeedFuture = questionService.fetchOptimizedFeed(
+          feedType: 'trending',
+          limit: 50,
+          useCache: false,
+        ).catchError((_) => <Map<String, dynamic>>[]);
+
         // Haptic feedback on successful submission
         await AppHaptics.mediumImpact();
 
@@ -770,36 +802,34 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
           // Continue with normal flow even if refresh fails
         }
 
-        // Check for congratulations prompt for first question
-        if (isFirstQuestion) {
-          try {
-            final achievementService = AchievementService(
-              userService: userService,
-              context: context,
-            );
-            await achievementService.init();
-            
-            final congratulationsService = CongratulationsService(
-              userService: userService,
-              achievementService: achievementService,
-            );
-            await congratulationsService.init();
-            
-            // Show congratulations if eligible (will handle cooldown logic internally)
-            await congratulationsService.showCongratulationsIfEligible(
-              context,
-              AchievementType.firstQuestion,
-            );
-            
-            // Also check for Camo Counter top 20 since posting questions affects ranking
-            await congratulationsService.showCongratulationsIfEligible(
-              context,
-              AchievementType.camoTop20,
-            );
-          } catch (e) {
-            print('Error showing congratulations for first question: $e');
-            // Don't let this error interrupt the normal flow
-          }
+        // Check for congratulations prompt (every 2nd question + camo top 20)
+        try {
+          final achievementService = AchievementService(
+            userService: userService,
+            context: context,
+          );
+          await achievementService.init();
+
+          final congratulationsService = CongratulationsService(
+            userService: userService,
+            achievementService: achievementService,
+          );
+          await congratulationsService.init();
+
+          // Show congratulations if eligible (will handle cooldown logic internally)
+          await congratulationsService.showCongratulationsIfEligible(
+            context,
+            AchievementType.firstQuestion,
+          );
+
+          // Also check for Camo Counter top 20 since posting questions affects ranking
+          await congratulationsService.showCongratulationsIfEligible(
+            context,
+            AchievementType.camoTop20,
+          );
+        } catch (e) {
+          print('Error showing congratulations: $e');
+          // Don't let this error interrupt the normal flow
         }
 
         // Show notification dialog for first-time question posters
@@ -810,17 +840,17 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
             onCompleted: () {
               // Auto-subscribe to posted question after dialog completes
               AutoSubscriptionHelper.autoSubscribeToPostedQuestion(context, submittedQuestion);
-              
+
               // Navigate to the appropriate answer screen
-              _navigateToAnswerScreen(submittedQuestion);
+              _navigateToAnswerScreen(submittedQuestion, trendingFeedFuture: trendingFeedFuture);
             },
           );
         } else {
           // For subsequent questions, just auto-subscribe and navigate
           AutoSubscriptionHelper.autoSubscribeToPostedQuestion(context, submittedQuestion);
-          
+
           // Navigate to the appropriate answer screen for the newly posted question
-          _navigateToAnswerScreen(submittedQuestion);
+          _navigateToAnswerScreen(submittedQuestion, trendingFeedFuture: trendingFeedFuture);
         }
         
         // Return the question ID

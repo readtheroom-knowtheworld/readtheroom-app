@@ -265,15 +265,15 @@ class _CommentWidgetState extends State<CommentWidget> with SingleTickerProvider
   }
 
   Widget _buildMenuButton() {
-    return PopupMenuButton<String>(
-      icon: Icon(
-        Icons.more_vert,
-        size: 18,
-        color: Colors.grey[600],
-      ),
-      onSelected: _handleMenuSelection,
-      itemBuilder: (context) => [
-        if (_isCurrentUserAuthor) ...[
+    if (_isCurrentUserAuthor) {
+      return PopupMenuButton<String>(
+        icon: Icon(
+          Icons.more_vert,
+          size: 18,
+          color: Colors.grey[600],
+        ),
+        onSelected: _handleMenuSelection,
+        itemBuilder: (context) => [
           PopupMenuItem(
             value: 'delete',
             child: Row(
@@ -284,19 +284,15 @@ class _CommentWidgetState extends State<CommentWidget> with SingleTickerProvider
               ],
             ),
           ),
-        ] else ...[
-          PopupMenuItem(
-            value: 'report',
-            child: Row(
-              children: [
-                Icon(Icons.flag, size: 18, color: Colors.orange),
-                SizedBox(width: 8),
-                Text('Report'),
-              ],
-            ),
-          ),
         ],
-      ],
+      );
+    }
+    return IconButton(
+      icon: Icon(Icons.report, size: 18, color: Colors.grey[400]),
+      padding: EdgeInsets.zero,
+      constraints: BoxConstraints(),
+      splashRadius: 16,
+      onPressed: widget.onReportTap,
     );
   }
 

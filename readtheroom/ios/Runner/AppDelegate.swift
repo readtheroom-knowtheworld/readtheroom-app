@@ -6,10 +6,13 @@ import WidgetKit
 @main
 @objc class AppDelegate: FlutterAppDelegate {
 
-    // Supabase configuration — set via Xcode build settings or xcconfig
-    // SUPABASE_URL and SUPABASE_ANON_KEY must be defined in your project's .xcconfig or environment
-    private let supabaseUrl = Bundle.main.infoDictionary?["SUPABASE_URL"] as? String ?? ""
-    private let supabaseAnonKey = Bundle.main.infoDictionary?["SUPABASE_ANON_KEY"] as? String ?? ""
+    // Supabase configuration — read from Info.plist (build-time injected)
+    private var supabaseUrl: String {
+        Bundle.main.infoDictionary?["SUPABASE_URL"] as? String ?? ""
+    }
+    private var supabaseAnonKey: String {
+        Bundle.main.infoDictionary?["SUPABASE_ANON_KEY"] as? String ?? ""
+    }
     private let appGroupId = "group.com.readtheroom.app"
 
     override func application(

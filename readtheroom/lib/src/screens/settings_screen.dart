@@ -16,6 +16,7 @@ import '../widgets/notification_permission_dialog.dart';
 import '../widgets/question_activity_permission_dialog.dart';
 import '../widgets/whats_new_dialog.dart';
 import '../services/theme_service.dart';
+import '../config/build_config.dart';
 import 'authentication_screen.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:device_info_plus/device_info_plus.dart';
@@ -852,110 +853,186 @@ _checkMigrationEligibility();
                   ],
                 ),
               ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.symmetric(horizontal: 16.0),
-                title: Row(
-                  children: [
-                    Icon(
-                      Icons.today, 
-                      size: 20, 
-                      color: (_supabase.auth.currentUser == null ? true : userService.notifyQOTD) 
-                          ? Theme.of(context).primaryColor 
-                          : Colors.grey,
-                    ),
-                    SizedBox(width: 8),
-                    Expanded(
-                      child: Text('Question of the Day'),
-                    ),
-                  ],
-                ),
-                subtitle: Text(
-                  'Get a nudge when a new Question of the Day is available and you haven\'t answered it yet.',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Colors.grey[600],
-                  ),
-                ),
-                value: _supabase.auth.currentUser == null ? true : userService.notifyQOTD,
-                onChanged: (bool value) async {
-                  if (_supabase.auth.currentUser == null) {
-                    AuthenticationDialog.show(
-                      context,
-                      customMessage: 'To manage notification settings, you need to authenticate as a real person.',
-                      onComplete: () {
-                        // The toggle will be updated when the screen rebuilds after auth
-                      },
-                    );
-                    return;
-                  }
-                  
-                  if (value) {
-                    // Show our custom permission dialog when enabling
-                    NotificationPermissionDialog.show(
-                      context,
-                      onPermissionGranted: () async {
-                        // Permission was granted - enable BOTH notification types
-                        await userService.onNotificationPermissionsGranted();
-                        
-                        // Show success message
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Row(
-                                children: [
-                                  Icon(Icons.notifications_active, color: Colors.white, size: 20),
-                                  SizedBox(width: 8),
-                                  Expanded(child: Text('All notifications enabled! You\'re all set.')),
-                                ],
-                              ),
-                              backgroundColor: Theme.of(context).primaryColor,
-                              duration: Duration(seconds: 3),
-                            ),
-                          );
-                        }
-                      },
-                      onPermissionDenied: () async {
-                        // Permission was denied - keep both toggles off
-                        await userService.onNotificationPermissionsDenied();
-                        
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Row(
-                                children: [
-                                  Icon(Icons.notifications_off, color: Colors.white, size: 20),
-                                  SizedBox(width: 8),
-                                  Expanded(child: Text('Notifications are disabled. You can enable them in device Settings.')),
-                                ],
-                              ),
-                              backgroundColor: Colors.orange,
-                              duration: Duration(seconds: 4),
-                            ),
-                          );
-                        }
-                      },
-                    );
-                  } else {
-                    // Disabling QOTD notifications independently
-                    final notificationService = NotificationService();
-                    await notificationService.unsubscribeFromQOTD();
-                    userService.setNotifyQOTD(false);
-                    
-                    // Show feedback for disabling
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Row(
-                          children: [
-                            Icon(Icons.today, color: Colors.white, size: 20),
-                            SizedBox(width: 8),
-                            Text('QotD notifications disabled :('),
-                          ],
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.symmetric(horizontal: 16.0),
+                    title: Row(
+                      children: [
+                        Icon(
+                          Icons.today,
+                          size: 20,
+                          color: (_supabase.auth.currentUser == null ? true : userService.notifyQOTD)
+                              ? Theme.of(context).primaryColor
+                              : Colors.grey,
                         ),
-                        backgroundColor: Theme.of(context).primaryColor,
-                        duration: Duration(seconds: 2),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text('Question of the Day'),
+                        ),
+                      ],
+                    ),
+                    subtitle: Text(
+                      userService.notifyQOTD
+                          ? 'Get notified at ${userService.qotdReminderTime.format(context)} when a new Question of the Day is available.'
+                          : 'Get a nudge when a new Question of the Day is available and you haven\'t answered it yet.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Colors.grey[600],
                       ),
-                    );
-                  }
-                },
+                    ),
+                    value: _supabase.auth.currentUser == null ? true : userService.notifyQOTD,
+                    onChanged: (bool value) async {
+                      if (_supabase.auth.currentUser == null) {
+                        AuthenticationDialog.show(
+                          context,
+                          customMessage: 'To manage notification settings, you need to authenticate as a real person.',
+                          onComplete: () {
+                            // The toggle will be updated when the screen rebuilds after auth
+                          },
+                        );
+                        return;
+                      }
+
+                      if (value) {
+                        // Show our custom permission dialog when enabling
+                        NotificationPermissionDialog.show(
+                          context,
+                          onPermissionGranted: () async {
+                            // Permission was granted - enable BOTH notification types
+                            await userService.onNotificationPermissionsGranted();
+
+                            // Show success message
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Row(
+                                    children: [
+                                      Icon(Icons.notifications_active, color: Colors.white, size: 20),
+                                      SizedBox(width: 8),
+                                      Expanded(child: Text('All notifications enabled! You\'re all set.')),
+                                    ],
+                                  ),
+                                  backgroundColor: Theme.of(context).primaryColor,
+                                  duration: Duration(seconds: 3),
+                                ),
+                              );
+                            }
+                          },
+                          onPermissionDenied: () async {
+                            // Permission was denied - keep both toggles off
+                            await userService.onNotificationPermissionsDenied();
+
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Row(
+                                    children: [
+                                      Icon(Icons.notifications_off, color: Colors.white, size: 20),
+                                      SizedBox(width: 8),
+                                      Expanded(child: Text('Notifications are disabled. You can enable them in device Settings.')),
+                                    ],
+                                  ),
+                                  backgroundColor: Colors.orange,
+                                  duration: Duration(seconds: 4),
+                                ),
+                              );
+                            }
+                          },
+                        );
+                      } else {
+                        // Disabling QOTD notifications independently
+                        final notificationService = NotificationService();
+                        await notificationService.unsubscribeFromQOTD();
+                        userService.setNotifyQOTD(false);
+
+                        // Show feedback for disabling
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Row(
+                              children: [
+                                Icon(Icons.today, color: Colors.white, size: 20),
+                                SizedBox(width: 8),
+                                Text('QotD notifications disabled :('),
+                              ],
+                            ),
+                            backgroundColor: Theme.of(context).primaryColor,
+                            duration: Duration(seconds: 2),
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                  // Time picker for QOTD notifications (only show when enabled)
+                  if (userService.notifyQOTD)
+                    Padding(
+                      padding: EdgeInsets.only(left: 16.0, right: 16.0, bottom: 16.0),
+                      child: ListTile(
+                        contentPadding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                        leading: Icon(Icons.schedule, color: Theme.of(context).primaryColor),
+                        title: Text('Notification Time'),
+                        subtitle: Text(
+                          'Tap to change when you get the daily question',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Colors.grey[600],
+                          ),
+                        ),
+                        trailing: Container(
+                          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).primaryColor.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: Theme.of(context).primaryColor.withOpacity(0.3),
+                              width: 1,
+                            ),
+                          ),
+                          child: Text(
+                            userService.qotdReminderTime.format(context),
+                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                              color: Theme.of(context).primaryColor,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        onTap: () async {
+                          final TimeOfDay? newTime = await showTimePicker(
+                            context: context,
+                            initialTime: userService.qotdReminderTime,
+                            helpText: 'Select QOTD notification time',
+                            builder: (context, child) {
+                              return MediaQuery(
+                                data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: false),
+                                child: child!,
+                              );
+                            },
+                          );
+
+                          if (newTime != null && newTime != userService.qotdReminderTime) {
+                            userService.setQotdReminderTime(newTime);
+                            AnalyticsService().trackEvent('qotd_reminder_time_changed', {'hour': newTime.hour, 'minute': newTime.minute, 'source': 'settings'});
+
+                            // Show confirmation
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Row(
+                                    children: [
+                                      Icon(Icons.schedule, color: Colors.white, size: 20),
+                                      SizedBox(width: 8),
+                                      Text('QOTD notification time updated to ${newTime.format(context)}'),
+                                    ],
+                                  ),
+                                  backgroundColor: Theme.of(context).primaryColor,
+                                  duration: Duration(seconds: 2),
+                                ),
+                              );
+                            }
+                          }
+                        },
+                      ),
+                    ),
+                ],
               ),
               SwitchListTile(
                 contentPadding: EdgeInsets.symmetric(horizontal: 16.0),
@@ -1302,6 +1379,44 @@ _checkMigrationEligibility();
                     ),
                 ],
               ),
+              // Privacy section (F-Droid only)
+              if (BuildConfig.isFDroidBuild) ...[
+                Padding(
+                  padding: EdgeInsets.fromLTRB(16.0, 24.0, 16.0, 8.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Privacy',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      SizedBox(height: 12),
+                    ],
+                  ),
+                ),
+                FutureBuilder<bool>(
+                  future: AnalyticsService().isOptedOut(),
+                  builder: (context, snapshot) {
+                    final isOptedOut = snapshot.data ?? false;
+                    return SwitchListTile(
+                      contentPadding: EdgeInsets.symmetric(horizontal: 16.0),
+                      title: Text('Anonymous Analytics'),
+                      subtitle: Text(
+                        'Help improve Read the Room with usage metrics (PostHog)',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.grey[600],
+                        ),
+                      ),
+                      value: !isOptedOut,
+                      onChanged: (bool value) async {
+                        await AnalyticsService().setOptOut(!value);
+                        setState(() {});
+                      },
+                    );
+                  },
+                ),
+                Divider(height: 32),
+              ],
               // Mature Content section
               Padding(
                 padding: EdgeInsets.fromLTRB(16.0, 24.0, 16.0, 8.0),

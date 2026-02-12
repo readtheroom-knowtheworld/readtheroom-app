@@ -21,7 +21,7 @@ class DailyQuestionSlide extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // Mock Question of the Day using actual home screen styling
+            // Mock Question of the Day matching home screen styling
             Container(
               margin: EdgeInsets.fromLTRB(0, 4, 0, 12),
               padding: EdgeInsets.all(16),
@@ -43,59 +43,63 @@ class DailyQuestionSlide extends StatelessWidget {
                   width: 1,
                 ),
               ),
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(
-                          children: [
-                            Icon(
-                              Icons.today,
-                              color: Theme.of(context).primaryColor,
-                              size: 16,
-                            ),
-                            SizedBox(width: 6),
-                            Text(
-                              'Question of the Day',
-                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                color: Theme.of(context).primaryColor,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
-                        ),
-                        SizedBox(height: 8),
-                        Text(
-                          "What's one small thing that made you smile today?",
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            fontWeight: FontWeight.w500,
-                          ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
-                    ),
-                  ),
-                  SizedBox(width: 16),
-                  Column(
+                  Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Icon(
-                        Icons.trending_up,
+                        Icons.today,
                         color: Theme.of(context).primaryColor,
-                        size: 24,
+                        size: 16,
                       ),
-                      SizedBox(height: 4),
+                      SizedBox(width: 6),
                       Text(
-                        "12.8k",
+                        'Question of the Day',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          fontWeight: FontWeight.bold,
                           color: Theme.of(context).primaryColor,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                        ),
+                      ),
+                      SizedBox(width: 6),
+                      Icon(
+                        Icons.today,
+                        color: Theme.of(context).primaryColor,
+                        size: 16,
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 12),
+                  Text(
+                    "What's one small thing that made you smile today?",
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w500,
+                      color: Theme.of(context).primaryColor,
+                      fontSize: 16,
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Text(
+                        '3,145 votes',
+                        style: TextStyle(
+                          color: Theme.of(context).primaryColor,
+                          fontSize: 12,
+                        ),
+                      ),
+                      Spacer(),
+                      Text(
+                        '7 comments',
+                        style: TextStyle(
+                          color: Theme.of(context).primaryColor,
+                          fontSize: 12,
                         ),
                       ),
                     ],

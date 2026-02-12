@@ -25,6 +25,7 @@ import '../models/category.dart';
 import '../widgets/swipe_navigation_wrapper.dart';
 import '../utils/category_navigation.dart';
 import '../widgets/animated_submit_button.dart';
+import '../widgets/approval_slider.dart';
 import 'main_screen.dart';
 
 class AnswerApprovalScreen extends StatefulWidget {
@@ -51,7 +52,6 @@ class _AnswerApprovalScreenState extends State<AnswerApprovalScreen> {
   bool _wasViewedAsGuest = false;
   final ScrollController _scrollController = ScrollController();
   bool _showQuestionInTitle = false;
-  int _lastHapticZone = 0; // 0 = neutral, 1 = single thumbs, 2 = double thumbs
 
   @override
   void initState() {
@@ -102,128 +102,6 @@ class _AnswerApprovalScreenState extends State<AnswerApprovalScreen> {
 
   int _getCommentCount(Map<String, dynamic> question) {
     return question['comment_count'] as int? ?? 0;
-  }
-
-  Widget _getIconForValue(double value) {
-    if (value <= -0.8) {
-      // Strongly Disapprove - double thumbs down (red)
-      return Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.thumb_down, color: Colors.red, size: 24),
-          SizedBox(width: 2),
-          Icon(Icons.thumb_down, color: Colors.red, size: 24),
-        ],
-      );
-    } else if (value <= -0.3) {
-      // Disapprove - single thumbs down (light red)
-      return Icon(Icons.thumb_down, color: Colors.red[200], size: 24);
-    } else if (value <= 0.3) {
-      // Neutral - neutral face (grey)
-      return Icon(Icons.sentiment_neutral, color: Colors.grey[600], size: 24);
-    } else if (value <= 0.8) {
-      // Approve - single thumbs up (light green)
-      return Icon(Icons.thumb_up, color: Colors.green[200], size: 24);
-    } else {
-      // Strongly Approve - double thumbs up (green)
-      return Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.thumb_up, color: Colors.green, size: 24),
-          SizedBox(width: 2),
-          Icon(Icons.thumb_up, color: Colors.green, size: 24),
-        ],
-      );
-    }
-  }
-
-  Color _getColorForValue(double value) {
-    if (value < 0) {
-      return Colors.red.withOpacity(value.abs());
-    } else {
-      return Colors.green.withOpacity(value);
-    }
-  }
-
-  Widget _buildSliderWithBinMarkers() {
-    // Bin edge positions (same as in approval_results_screen.dart)
-    final binEdges = [-0.8, -0.3, 0.3, 0.8];
-    
-    return Column(
-      children: [
-        // Bin markers above the slider
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final sliderWidth = constraints.maxWidth - 48; // Account for slider padding
-            
-            return Container(
-              height: 12,
-              child: Stack(
-                children: [
-                  // Draw tick marks for each bin edge
-                  ...binEdges.map((edge) {
-                    // Convert slider value (-1 to 1) to position (0 to 1)
-                    final position = (edge + 1.0) / 2.0;
-                    final leftOffset = 24 + (position * sliderWidth); // 24 is half of slider padding
-                    
-                    return Positioned(
-                      left: leftOffset - 1, // Center the 2px line
-                      child: Container(
-                        width: 2,
-                        height: 12,
-                        decoration: BoxDecoration(
-                          color: Colors.grey[600],
-                          borderRadius: BorderRadius.circular(1),
-                        ),
-                      ),
-                    );
-                  }).toList(),
-                ],
-              ),
-            );
-          },
-        ),
-        
-        // The actual slider
-        Slider(
-          value: _sliderValue,
-          min: -1.0,
-          max: 1.0,
-          divisions: 100,
-          onChanged: (value) {
-            final distanceFromCenter = value.abs();
-
-            // Determine current zone: 0 = neutral, 1 = single thumbs, 2 = double thumbs
-            int currentZone;
-            if (distanceFromCenter >= 0.8) {
-              currentZone = 2; // Double thumbs
-            } else if (distanceFromCenter >= 0.3) {
-              currentZone = 1; // Single thumbs
-            } else {
-              currentZone = 0; // Neutral
-            }
-
-            // Trigger haptic only when entering a new zone (away from center)
-            if (currentZone > _lastHapticZone) {
-              if (currentZone == 2) {
-                AppHaptics.mediumImpact();
-              } else if (currentZone == 1) {
-                AppHaptics.lightImpact();
-              }
-            }
-            _lastHapticZone = currentZone;
-
-            setState(() {
-              _sliderValue = value;
-            });
-          },
-        ),
-        
-        // Current selection icon
-        SizedBox(height: 12),
-        _getIconForValue(_sliderValue),
-      ],
-    );
   }
 
   Future<void> _submitAnswer() async {
@@ -929,7 +807,14 @@ class _AnswerApprovalScreenState extends State<AnswerApprovalScreen> {
                   SizedBox(height: 8),
                   
                   // Custom slider with bin markers
-                  _buildSliderWithBinMarkers(),
+                  ApprovalSlider(
+                    initialValue: _sliderValue,
+                    onChanged: (value) {
+                      setState(() {
+                        _sliderValue = value;
+                      });
+                    },
+                  ),
                 ],
               ),
             ),

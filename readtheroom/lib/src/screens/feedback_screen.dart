@@ -903,7 +903,7 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
                             child: ElevatedButton.icon(
                               onPressed: () => _launchAppStore(),
                               icon: Icon(Icons.star_rate),
-                              label: Text('Leave a review?'),
+                              label: Text('Please rate us on the app store <3'),
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Theme.of(context).primaryColor,
                                 foregroundColor: Colors.white,

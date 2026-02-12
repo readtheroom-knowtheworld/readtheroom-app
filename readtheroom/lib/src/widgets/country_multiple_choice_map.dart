@@ -13,6 +13,7 @@ class CountryMultipleChoiceMap extends StatefulWidget {
   final List<String> options;
   final String questionId;
   final Function(String?)? onCountryTap;
+  final ValueChanged<bool>? onZoomChanged;
 
   const CountryMultipleChoiceMap({
     Key? key,
@@ -21,6 +22,7 @@ class CountryMultipleChoiceMap extends StatefulWidget {
     required this.options,
     required this.questionId,
     this.onCountryTap,
+    this.onZoomChanged,
   }) : super(key: key);
 
   @override
@@ -462,6 +464,7 @@ class _CountryMultipleChoiceMapState extends State<CountryMultipleChoiceMap> {
                         onCountryTap: widget.onCountryTap,
                         markers: _markers,
                         neutralPolygons: _granularity != MapGranularity.country,
+                        onZoomChanged: widget.onZoomChanged,
                       ),
             const SizedBox(height: 16),
             // Custom legend with option colors

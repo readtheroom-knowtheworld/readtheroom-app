@@ -47,6 +47,14 @@ class PrivacySlide extends StatelessWidget {
               "We don't collect personal information",
               Theme.of(context).primaryColor,
             ),
+            SizedBox(height: 16),
+            _buildPrivacyFeature(
+              context,
+              Icons.code,
+              "Open Source",
+              "Our code is publicly available on GitHub",
+              Theme.of(context).primaryColor,
+            ),
             SizedBox(height: 24),
             
             // Privacy policy link

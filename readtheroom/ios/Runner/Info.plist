@@ -85,6 +85,12 @@
 		<string>applinks:readtheroom.site</string>
 	</array>
 
+	<!-- Supabase Configuration (build-time injected) -->
+	<key>SUPABASE_URL</key>
+	<string>$(SUPABASE_URL)</string>
+	<key>SUPABASE_ANON_KEY</key>
+	<string>$(SUPABASE_ANON_KEY)</string>
+
 	<!-- PostHog Configuration -->
 	<key>com.posthog.posthog.API_KEY</key>
 	<string>$(POSTHOG_API_KEY)</string>

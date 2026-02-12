@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import 'package:flutter/foundation.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:posthog_flutter/posthog_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
@@ -57,8 +58,9 @@ class AnalyticsService {
     if (_isOptedOut || !_isInitialized) return;
     
     try {
+      final packageInfo = await PackageInfo.fromPlatform();
       await Posthog().register(
-        'app_version', '0.9.0+59',
+        'app_version', '${packageInfo.version}+${packageInfo.buildNumber}',
       );
       await Posthog().register(
         'platform', defaultTargetPlatform.toString().split('.').last,

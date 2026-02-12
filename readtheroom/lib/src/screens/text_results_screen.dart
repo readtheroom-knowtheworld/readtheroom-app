@@ -27,6 +27,9 @@ import '../widgets/comments_section.dart';
 import '../widgets/linked_questions_section.dart';
 import '../widgets/add_comment_dialog.dart';
 import '../widgets/country_filter_dialog.dart';
+import '../widgets/question_rating_section.dart';
+import '../utils/generation_utils.dart';
+import '../services/analytics_service.dart';
 import 'base_results_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/category_navigation.dart';
@@ -73,6 +76,7 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
   final GlobalKey<State<CommentsSection>> _commentsSectionKey = GlobalKey<State<CommentsSection>>();
   final ScrollController _scrollController = ScrollController();
   bool _showQuestionInTitle = false;
+  bool _hasCompletedRating = false;
 
   void _setupScrollListener() {
     _scrollController.addListener(() {
@@ -126,12 +130,31 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
     return result;
   }
 
+  Map<String, Map<String, dynamic>> _getGenerationResponseData() {
+    final genTotals = <String, int>{};
+    for (var response in _responses) {
+      final gen = response['generation']?.toString();
+      if (gen != null && gen.isNotEmpty) {
+        genTotals[gen] = (genTotals[gen] ?? 0) + 1;
+      }
+    }
+    final result = <String, Map<String, dynamic>>{};
+    genTotals.forEach((gen, total) {
+      if (total > 0) {
+        result[gen] = {'total': total};
+      }
+    });
+    return result;
+  }
+
   Future<void> _showCountryFilterDialog() async {
     final countryData = _getCountryResponseData();
     if (countryData.isEmpty) return;
 
     final questionTitle = widget.question['prompt'] ?? widget.question['title'] ?? 'Question';
     
+    final generationData = _getGenerationResponseData();
+
     final selectedCountry = await CountryFilterDialog.show(
       context: context,
       countryResponses: countryData,
@@ -139,6 +162,7 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
       questionTitle: questionTitle,
       questionId: widget.question['id'].toString(),
       questionType: 'text',
+      generationResponses: generationData.isNotEmpty ? generationData : null,
     );
 
     if (selectedCountry != null || selectedCountry == null) {
@@ -271,20 +295,22 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
       final response = await _supabase
           .from('responses')
           .select('''
-            text_response, 
+            text_response,
             created_at,
+            generation,
             countries!responses_country_code_fkey(country_name_en)
           ''')
           .eq('question_id', widget.question['id'])
           .not('text_response', 'is', null)
           .order('created_at', ascending: false);
-      
+
       if (response != null && response.isNotEmpty) {
         // Convert to the format expected by the rest of the code
         realResponses = response.map((r) => {
           'text_response': r['text_response'],
           'country': r['countries']?['country_name_en'] ?? 'Unknown', // Use full country name
           'created_at': r['created_at'],
+          'generation': r['generation'],
         }).toList();
         
         print('Found ${realResponses.length} real text responses from database');
@@ -1142,7 +1168,19 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
             ],
             
             
+            // Question Rating Section
+            QuestionRatingSection(
+              questionId: widget.question['id']?.toString() ?? '',
+              isAuthor: _questionService?.isCurrentUserAuthor(widget.question) ?? false,
+              onRatingComplete: () {
+                if (mounted) setState(() => _hasCompletedRating = true);
+              },
+            ),
+
+            const SizedBox(height: 16),
+
             // Linked Questions Section
+            if (_hasCompletedRating) ...[
             LinkedQuestionsSection(
               questionId: widget.question['id']?.toString() ?? '',
               comments: _comments,
@@ -1152,9 +1190,9 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
               fromUserScreen: widget.fromUserScreen,
               margin: EdgeInsets.zero, // Remove default margin to align with comments section
             ),
-            
+
             const SizedBox(height: 16), // Add spacing between sections
-            
+
             // Comments Section - always at the end
             CommentsSection(
               key: _commentsSectionKey,
@@ -1169,6 +1207,7 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
                 });
               },
             ),
+            ],
             
             // Swipe to next indicator
             const SizedBox(height: 32),
@@ -1701,6 +1740,13 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
     if (isPrivateQuestion || _selectedCountry == null) {
       return _responses;
     }
+
+    // Handle Generation filtering
+    if (_selectedCountry?.startsWith('Gen:') == true) {
+      final genId = _selectedCountry!.substring(4);
+      return _responses.where((r) => r['generation'] == genId).toList();
+    }
+
     return _responses.where((r) => r['country'] == _selectedCountry).toList();
   }
 
@@ -1723,9 +1769,44 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
       return;
     }
     
+    // Handle Generation filtering
+    if (country.startsWith('Gen:')) {
+      final genId = country.substring(4);
+      final genResponses = _responses.where((r) => r['generation'] == genId).toList();
+
+      if (genResponses.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('No responses from ${getGenerationLabel(genId)} yet'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 3),
+          ),
+        );
+        return;
+      }
+
+      setState(() {
+        _selectedCountry = country;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Showing ${genResponses.length} responses from ${getGenerationLabel(genId)}'),
+          backgroundColor: Theme.of(context).primaryColor,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      AnalyticsService().trackEvent('generation_filter_applied', {
+        'generation': genId,
+        'question_type': 'text',
+        'question_id': widget.question['id'].toString(),
+      });
+      print('Generation selected: $genId, filtered responses: ${genResponses.length}');
+      return;
+    }
+
     // Check if there are actual responses from this country
     final countryResponses = _responses.where((r) => r['country'] == country).toList();
-    
+
     if (countryResponses.isEmpty) {
       // Show message that there are no responses from this country
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1737,7 +1818,7 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
       );
       return; // Don't change the selection
     }
-    
+
     // For countries with < 10 responses, show an informative message
     if (countryResponses.length < 10) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1748,7 +1829,7 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
         ),
       );
     }
-    
+
     setState(() {
       _selectedCountry = country;
       // Force word cloud refresh by clearing the cached data

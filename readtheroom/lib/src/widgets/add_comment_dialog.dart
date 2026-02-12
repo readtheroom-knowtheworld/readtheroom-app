@@ -5,7 +5,9 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../services/achievement_service.dart';
 import '../services/comment_service.dart';
+import '../services/congratulations_service.dart';
 import '../services/profanity_filter_service.dart';
 import '../services/question_service.dart';
 import '../services/user_service.dart';
@@ -310,9 +312,9 @@ class _AddCommentDialogState extends State<AddCommentDialog> {
     final questionIsNSFW = widget.question?['nsfw'] == true;
     
     if (questionIsNSFW) {
-      return 'What are you thinking?\n\nTip: Type @ to search and link other questions';
+      return 'What are your thoughts?';
     } else {
-      return 'What are you thinking?\n\nTip: Type @ to search and link other questions';
+      return 'What are your thoughts?';
     }
   }
 
@@ -381,6 +383,27 @@ class _AddCommentDialogState extends State<AddCommentDialog> {
       // Call the callback before closing dialog to avoid context issues
       if (widget.onCommentAdded != null) {
         widget.onCommentAdded!(newComment);
+      }
+
+      // Check for first comment congratulations
+      try {
+        final userService = Provider.of<UserService>(dialogContext, listen: false);
+        final achievementService = AchievementService(
+          userService: userService,
+          context: dialogContext,
+        );
+        await achievementService.init();
+        final congratulationsService = CongratulationsService(
+          userService: userService,
+          achievementService: achievementService,
+        );
+        await congratulationsService.init();
+        await congratulationsService.showCongratulationsIfEligible(
+          dialogContext,
+          AchievementType.firstComment,
+        );
+      } catch (e) {
+        print('Error showing congratulations for first comment: $e');
       }
 
       print('About to close dialog');
@@ -780,24 +803,11 @@ class _AddCommentDialogState extends State<AddCommentDialog> {
                   ),
                   SizedBox(width: 8),
                   Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Add Comment',
-                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        Text(
-                          widget.questionTitle,
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Colors.grey[600],
-                          ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
+                    child: Text(
+                      widget.questionTitle,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   IconButton(
@@ -818,8 +828,16 @@ class _AddCommentDialogState extends State<AddCommentDialog> {
                 child: Form(
                   key: _formKey,
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
+                      Text(
+                        'Please be respectful, thoughtful, and kind in your comments \u{1F98E}',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.grey[600],
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      SizedBox(height: 24),
                       Column(
                         children: [
                           if (_showQuestionDropdown)
@@ -828,52 +846,33 @@ class _AddCommentDialogState extends State<AddCommentDialog> {
                         ],
                       ),
                       _buildLinkedQuestionsPreview(),
-                      SizedBox(height: 16),
                       if (_shouldShowNSFWOption())
                         _buildNSFWOption(),
+                      SizedBox(height: 24),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: ElevatedButton(
+                          onPressed: _isSubmitting ? null : _submitComment,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Theme.of(context).primaryColor,
+                            foregroundColor: Colors.white,
+                            padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                          ),
+                          child: _isSubmitting
+                              ? SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                  ),
+                                )
+                              : Text('Add Comment'),
+                        ),
+                      ),
                     ],
                   ),
                 ),
-              ),
-            ),
-
-            // Actions
-            Container(
-              padding: EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                border: Border(
-                  top: BorderSide(
-                    color: Theme.of(context).dividerColor.withOpacity(0.3),
-                  ),
-                ),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton(
-                    onPressed: _isSubmitting ? null : () => Navigator.of(context).pop(),
-                    child: Text('Cancel'),
-                  ),
-                  SizedBox(width: 8),
-                  ElevatedButton(
-                    onPressed: _isSubmitting ? null : _submitComment,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Theme.of(context).primaryColor,
-                      foregroundColor: Colors.white,
-                      padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                    ),
-                    child: _isSubmitting
-                        ? SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                            ),
-                          )
-                        : Text('Add Comment'),
-                  ),
-                ],
               ),
             ),
           ],

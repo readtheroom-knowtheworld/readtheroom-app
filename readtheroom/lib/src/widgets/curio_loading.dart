@@ -42,6 +42,7 @@ class _CurioLoadingState extends State<CurioLoading> with SingleTickerProviderSt
     'The world\'s first human bioindicator 🧪',
     'Consensus under construction... 🚧',
     'Testing the waters... 🌡️',
+    'Open source, always 🛠️',
     'Big questions take a moment.\nWe\'re only human after all...',
     'You can swipe between questions 👉👈️',
     'Dismiss uninteresting questions by swiping left 👈️💨',

@@ -126,7 +126,7 @@ class _CongratulationsCurioScreenState extends State<CongratulationsCurioScreen>
                             ),
                           )
                         : const Icon(Icons.star_rate),
-                    label: Text(_isLaunchingAppStore ? 'Opening App Store...' : 'Leave a review?'),
+                    label: Text(_isLaunchingAppStore ? 'Opening App Store...' : 'Please rate us on the app store <3'),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Theme.of(context).primaryColor,
                       foregroundColor: Colors.white,

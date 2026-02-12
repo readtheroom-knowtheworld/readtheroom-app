@@ -9,10 +9,11 @@ import 'dart:convert';
 import 'dart:io';
 import '../services/question_service.dart';
 import '../services/location_service.dart';
+import '../services/question_rating_service.dart';
 import '../utils/time_utils.dart';
+import '../utils/review_tag_navigation.dart';
 import '../services/user_service.dart';
 import '../widgets/question_type_badge.dart';
-import '../models/category.dart';
 
 class SearchScreen extends StatefulWidget {
   final bool isActive; // Track if this tab is currently active
@@ -46,7 +47,8 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
   String _sortMode = 'popular'; // 'popular' or 'new'
   String? _selectedCountry;
   String? _selectedCity;
-  List<String> _selectedCategories = [];
+  List<String> _selectedReviewTags = [];
+  Set<String> _reviewFilterQuestionIds = {};
   
   // Location autocomplete state
   List<String> _countrySuggestions = [];
@@ -1081,13 +1083,13 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
     return 'Location';
   }
 
-  String _getTopicDisplayText() {
-    if (_selectedCategories.isEmpty) {
-      return 'Topics';
-    } else if (_selectedCategories.length == 1) {
-      return _selectedCategories.first;
+  String _getReviewsDisplayText() {
+    if (_selectedReviewTags.isEmpty) {
+      return 'Reviews';
+    } else if (_selectedReviewTags.length == 1) {
+      return ReviewTagNavigation.chipLabels[_selectedReviewTags.first] ?? _selectedReviewTags.first;
     } else {
-      return '${_selectedCategories.length} topics';
+      return '${_selectedReviewTags.length} tags';
     }
   }
 
@@ -1301,11 +1303,9 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
     }
   }
 
-  void _showTopicDialog() {
-    // Use actual categories from the Category model
-    final List<String> availableCategories = Category.allCategories.map((c) => c.name).toList();
-
-    List<String> tempSelectedCategories = List.from(_selectedCategories);
+  void _showReviewsDialog() {
+    final allTags = [...ReviewTagNavigation.positiveChips, ...ReviewTagNavigation.negativeChips];
+    List<String> tempSelectedTags = List.from(_selectedReviewTags);
 
     showDialog(
       context: context,
@@ -1313,20 +1313,20 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
-              title: const Text('Filter by Topic'),
+              title: const Text('Filter by Reviews'),
               content: SizedBox(
                 width: double.maxFinite,
-                height: 400, // Fixed height for better scrolling
                 child: ListView.builder(
                   shrinkWrap: true,
-                  itemCount: availableCategories.length,
+                  itemCount: allTags.length,
                   itemBuilder: (context, index) {
-                    final category = availableCategories[index];
-                    final isSelected = tempSelectedCategories.contains(category);
-                    
+                    final tag = allTags[index];
+                    final label = ReviewTagNavigation.chipLabels[tag] ?? tag;
+                    final isSelected = tempSelectedTags.contains(tag);
+
                     return CheckboxListTile(
                       title: Text(
-                        category,
+                        label,
                         style: TextStyle(fontSize: 14),
                       ),
                       value: isSelected,
@@ -1334,9 +1334,9 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
                       onChanged: (bool? value) {
                         setDialogState(() {
                           if (value == true) {
-                            tempSelectedCategories.add(category);
+                            tempSelectedTags.add(tag);
                           } else {
-                            tempSelectedCategories.remove(category);
+                            tempSelectedTags.remove(tag);
                           }
                         });
                       },
@@ -1348,8 +1348,8 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
                 TextButton(
                   onPressed: () {
                     setState(() {
-                      _selectedCategories.clear();
-                      // Apply filtering to existing results instead of re-searching
+                      _selectedReviewTags.clear();
+                      _reviewFilterQuestionIds.clear();
                       if (_hasSearched && _originalSearchResults.isNotEmpty) {
                         _searchResults = _applyClientSideFilters(_originalSearchResults);
                       }
@@ -1363,15 +1363,28 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
                   child: const Text('Cancel'),
                 ),
                 ElevatedButton(
-                  onPressed: () {
-                    setState(() {
-                      _selectedCategories = tempSelectedCategories;
-                      // Apply filtering to existing results instead of re-searching
-                      if (_hasSearched && _originalSearchResults.isNotEmpty) {
-                        _searchResults = _applyClientSideFilters(_originalSearchResults);
-                      }
-                    });
+                  onPressed: () async {
                     Navigator.of(context).pop();
+                    // Fetch qualifying question IDs
+                    if (tempSelectedTags.isNotEmpty) {
+                      final ratingService = QuestionRatingService();
+                      final ids = await ratingService.getQuestionIdsForTopTags(tempSelectedTags);
+                      setState(() {
+                        _selectedReviewTags = tempSelectedTags;
+                        _reviewFilterQuestionIds = ids;
+                        if (_hasSearched && _originalSearchResults.isNotEmpty) {
+                          _searchResults = _applyClientSideFilters(_originalSearchResults);
+                        }
+                      });
+                    } else {
+                      setState(() {
+                        _selectedReviewTags = tempSelectedTags;
+                        _reviewFilterQuestionIds = {};
+                        if (_hasSearched && _originalSearchResults.isNotEmpty) {
+                          _searchResults = _applyClientSideFilters(_originalSearchResults);
+                        }
+                      });
+                    }
                   },
                   child: const Text('Apply'),
                 ),
@@ -1384,19 +1397,19 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
   }
 
   bool _hasActiveFilters() {
-    return _sortMode != 'popular' || 
-           _selectedCountry != null || 
-           _selectedCity != null || 
-           _selectedCategories.isNotEmpty;
+    return _sortMode != 'popular' ||
+           _selectedCountry != null ||
+           _selectedCity != null ||
+           _selectedReviewTags.isNotEmpty;
   }
 
   String _getActiveFiltersText() {
     List<String> filters = [];
-    
+
     if (_sortMode != 'popular') {
       filters.add('Sorted by: $_sortMode');
     }
-    
+
     if (_selectedCountry != null || _selectedCity != null) {
       if (_selectedCity != null && _selectedCountry != null) {
         filters.add('Location: $_selectedCity, $_selectedCountry');
@@ -1404,15 +1417,16 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
         filters.add('Location: $_selectedCountry');
       }
     }
-    
-    if (_selectedCategories.isNotEmpty) {
-      if (_selectedCategories.length == 1) {
-        filters.add('Topic: ${_selectedCategories.first}');
+
+    if (_selectedReviewTags.isNotEmpty) {
+      if (_selectedReviewTags.length == 1) {
+        final label = ReviewTagNavigation.chipLabels[_selectedReviewTags.first] ?? _selectedReviewTags.first;
+        filters.add('Review: $label');
       } else {
-        filters.add('Topics: ${_selectedCategories.length} selected');
+        filters.add('Reviews: ${_selectedReviewTags.length} selected');
       }
     }
-    
+
     return 'Filters: ${filters.join(' • ')}';
   }
 
@@ -1456,28 +1470,10 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
       }).toList();
     }
     
-    // Apply category filtering - include questions that have at least one matching category
-    if (_selectedCategories.isNotEmpty) {
+    // Apply review tag filtering - include questions whose IDs match the qualifying set
+    if (_selectedReviewTags.isNotEmpty && _reviewFilterQuestionIds.isNotEmpty) {
       filtered = filtered.where((question) {
-        final questionCategories = question['categories'] as List<dynamic>? ?? [];
-        
-        // If no categories on question, exclude it
-        if (questionCategories.isEmpty) {
-          return false;
-        }
-        
-        // Check if any of the question's categories match our selected categories
-        for (final categoryName in questionCategories) {
-          final categoryNameStr = categoryName.toString();
-          
-          for (final selectedCategory in _selectedCategories) {
-            if (categoryNameStr.toLowerCase().contains(selectedCategory.toLowerCase())) {
-              return true; // Include this question since it has a matching category
-            }
-          }
-        }
-        
-        return false; // No matching categories found
+        return _reviewFilterQuestionIds.contains(question['id']?.toString());
       }).toList();
     }
     
@@ -1685,20 +1681,20 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
                     ),
                   ),
                   const SizedBox(width: 8),
-                  // Topic filter
+                  // Reviews filter
                   Expanded(
                     child: InkWell(
-                      onTap: _showTopicDialog,
+                      onTap: _showReviewsDialog,
                       child: Container(
                         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
                         decoration: BoxDecoration(
                           border: Border.all(
-                            color: _selectedCategories.isNotEmpty 
-                                ? Theme.of(context).primaryColor 
+                            color: _selectedReviewTags.isNotEmpty
+                                ? Theme.of(context).primaryColor
                                 : Colors.grey.shade300,
                           ),
                           borderRadius: BorderRadius.circular(20),
-                          color: _selectedCategories.isNotEmpty
+                          color: _selectedReviewTags.isNotEmpty
                               ? Theme.of(context).primaryColor.withOpacity(0.1)
                               : null,
                         ),
@@ -1706,19 +1702,19 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Icon(
-                              Icons.category,
+                              Icons.star,
                               size: 16,
-                              color: _selectedCategories.isNotEmpty
+                              color: _selectedReviewTags.isNotEmpty
                                   ? Theme.of(context).primaryColor
                                   : Colors.grey.shade600,
                             ),
                             const SizedBox(width: 4),
                             Expanded(
                               child: Text(
-                                _getTopicDisplayText(),
+                                _getReviewsDisplayText(),
                                 style: TextStyle(
                                   fontSize: 12,
-                                  color: _selectedCategories.isNotEmpty
+                                  color: _selectedReviewTags.isNotEmpty
                                       ? Theme.of(context).primaryColor
                                       : Colors.grey.shade600,
                                 ),

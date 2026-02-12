@@ -23,8 +23,10 @@ import '../widgets/notification_permission_dialog.dart';
 import '../widgets/authentication_dialog.dart';
 import '../widgets/curio_loading.dart';
 import '../services/temporary_category_filter_notifier.dart';
+import '../services/temporary_review_filter_notifier.dart';
 import '../services/navigation_visibility_notifier.dart';
 import '../widgets/temporary_category_filter_widget.dart';
+import '../widgets/temporary_review_filter_widget.dart';
 import '../widgets/location_filter_dialog.dart';
 import '../widgets/empty_city_feed_widget.dart';
 import '../widgets/empty_country_feed_widget.dart';
@@ -88,6 +90,8 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
 
   // For temporary category filter notifier (saved reference to avoid dispose issues)
   TemporaryCategoryFilterNotifier? _tempFilterNotifier;
+  // For temporary review filter notifier
+  TemporaryReviewFilterNotifier? _tempReviewFilterNotifier;
 
   // Always use global filtering (show all posts)
   final LocationFilterType _locationFilter = LocationFilterType.global;
@@ -380,6 +384,10 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
       // Listen for temporary category filter changes
       _tempFilterNotifier = Provider.of<TemporaryCategoryFilterNotifier>(context, listen: false);
       _tempFilterNotifier!.addListener(_onCategoryFilterChanged);
+
+      // Listen for temporary review filter changes
+      _tempReviewFilterNotifier = Provider.of<TemporaryReviewFilterNotifier>(context, listen: false);
+      _tempReviewFilterNotifier!.addListener(_onCategoryFilterChanged);
     });
     
     // TEMPORARY: Removed auto-timer - now triggers on every answer
@@ -723,11 +731,12 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
     final userService = Provider.of<UserService>(context, listen: false);
     final locationService = Provider.of<LocationService>(context, listen: false);
     final tempFilterNotifier = Provider.of<TemporaryCategoryFilterNotifier>(context, listen: false);
-    
+    final reviewFilterNotifier = Provider.of<TemporaryReviewFilterNotifier>(context, listen: false);
+
     try {
       final questions = questionService.questions;
       if (questions.isEmpty) return;
-      
+
       // Apply the same filtering logic as the main UI to get the actual visible questions
       final filteredQuestions = questions.where((question) {
         // Filter out current Question of the Day from regular feed to avoid duplication
@@ -796,9 +805,16 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
           }
         }
 
+        // Filter by temporary review tag filter
+        if (reviewFilterNotifier.hasTemporaryReviewFilter) {
+          if (!reviewFilterNotifier.qualifyingQuestionIds.contains(question['id']?.toString())) {
+            return false;
+          }
+        }
+
         return true;
       }).toList();
-      
+
       // Get currently visible questions (limit to first 10 for vote count polling)
       final visibleQuestions = filteredQuestions.take(10).toList();
       
@@ -1005,7 +1021,10 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
     
     // Remove temporary category filter listener
     _tempFilterNotifier?.removeListener(_onCategoryFilterChanged);
-    
+
+    // Remove temporary review filter listener
+    _tempReviewFilterNotifier?.removeListener(_onCategoryFilterChanged);
+
     super.dispose();
   }
 
@@ -1704,7 +1723,8 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
             final userService = Provider.of<UserService>(context, listen: false);
             final locationService = Provider.of<LocationService>(context, listen: false);
             final tempFilterNotifier = Provider.of<TemporaryCategoryFilterNotifier>(context, listen: false);
-            
+            final reviewFilterNotifier = Provider.of<TemporaryReviewFilterNotifier>(context, listen: false);
+
             // Check if user is refreshing from a "No Questions Found" state due to filtering
             final currentQuestions = questionService.questions;
             final currentlyFiltered = questions.where((question) {
@@ -1744,9 +1764,15 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
               } else {
                 if (tempFilterNotifier.hasTemporaryCategoryFilter) return false;
               }
+              // Filter by temporary review tag filter
+              if (reviewFilterNotifier.hasTemporaryReviewFilter) {
+                if (!reviewFilterNotifier.qualifyingQuestionIds.contains(question['id']?.toString())) {
+                  return false;
+                }
+              }
               return true;
             }).toList();
-            
+
             // If user is refreshing from empty state and we have questions that are being filtered out
             final shouldResetFilters = currentlyFiltered.isEmpty && 
                                      currentQuestions.isNotEmpty && 
@@ -1758,6 +1784,7 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
               // Reset filtering settings when user pulls to refresh from empty state
               userService.setHideAnsweredQuestions(false);
               tempFilterNotifier.setTemporaryCategoryFilter(null);
+              reviewFilterNotifier.setTemporaryReviewFilter(null);
               
               // Enable all categories if none are enabled
               if (userService.enabledCategories.isEmpty) {
@@ -1941,9 +1968,10 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
     final bottomNavHeight = kBottomNavigationBarHeight + MediaQuery.of(context).padding.bottom;
     
     final tempFilterNotifier = Provider.of<TemporaryCategoryFilterNotifier>(context, listen: false);
+    final reviewFilterNotifier = Provider.of<TemporaryReviewFilterNotifier>(context, listen: false);
     final questionService = Provider.of<QuestionService>(context, listen: false);
     final qotd = questionService.questionOfTheDay;
-    
+
     final filteredQuestions = questions.where((question) {
       // Filter out current Question of the Day from regular feed to avoid duplication
       if (qotd != null && question['id'] == qotd['id']) {
@@ -2027,6 +2055,13 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
       } else {
         // If question has no categories and there's a temporary filter, don't show it
         if (tempFilterNotifier.hasTemporaryCategoryFilter) {
+          return false;
+        }
+      }
+
+      // Filter by temporary review tag filter
+      if (reviewFilterNotifier.hasTemporaryReviewFilter) {
+        if (!reviewFilterNotifier.qualifyingQuestionIds.contains(question['id']?.toString())) {
           return false;
         }
       }
@@ -2117,7 +2152,7 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
                                           child: AnimatedBuilder(
                                             animation: _pulseAnimation,
                                             builder: (context, child) {
-                                              final shouldPulse = _shouldStreakCardPulse(context, hasExtendedStreakToday);
+                                              final shouldPulse = _shouldStreakCardPulse(context, hasExtendedStreakToday, currentStreak);
                                               final pulseScale = shouldPulse ? _pulseAnimation.value : 1.0;
 
                                               return AnimatedBuilder(
@@ -2207,11 +2242,14 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
                 ),
               ),
               SizedBox(height: 16),
-              // Show either temporary category filter or Question of the Day
-              Consumer2<TemporaryCategoryFilterNotifier, UserService>(
-                builder: (context, filterNotifier, userService, child) {
+              // Show either temporary category/review filter or Question of the Day
+              Consumer3<TemporaryCategoryFilterNotifier, TemporaryReviewFilterNotifier, UserService>(
+                builder: (context, filterNotifier, reviewFilterNotifier, userService, child) {
                   if (filterNotifier.hasTemporaryCategoryFilter) {
                     return TemporaryCategoryFilterWidget();
+                  }
+                  if (reviewFilterNotifier.hasTemporaryReviewFilter) {
+                    return TemporaryReviewFilterWidget();
                   }
                   return QuestionOfTheDayWidget(
                     key: _qotdKey,
@@ -2330,9 +2368,11 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
                       onTap: () {
                         // Check if there's a temporary filter active
                         final tempFilterNotifier = Provider.of<TemporaryCategoryFilterNotifier>(context, listen: false);
-                        if (tempFilterNotifier.hasTemporaryCategoryFilter) {
-                          // Clear temporary filter to restore usual settings
+                        final reviewFilterNotifier = Provider.of<TemporaryReviewFilterNotifier>(context, listen: false);
+                        if (tempFilterNotifier.hasTemporaryCategoryFilter || reviewFilterNotifier.hasTemporaryReviewFilter) {
+                          // Clear temporary filters to restore usual settings
                           tempFilterNotifier.setTemporaryCategoryFilter(null);
+                          reviewFilterNotifier.setTemporaryReviewFilter(null);
                         } else {
                           // Reset feed setting to show all questions when adjusting content filters
                           setState(() {
@@ -2343,9 +2383,9 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
                           _showCategoriesDialog();
                         }
                       },
-                      child: Consumer2<UserService, TemporaryCategoryFilterNotifier>(
-                        builder: (context, userService, tempFilterNotifier, child) {
-                          final hasTemporaryFilter = tempFilterNotifier.hasTemporaryCategoryFilter;
+                      child: Consumer3<UserService, TemporaryCategoryFilterNotifier, TemporaryReviewFilterNotifier>(
+                        builder: (context, userService, tempFilterNotifier, reviewFilterNotifier, child) {
+                          final hasTemporaryFilter = tempFilterNotifier.hasTemporaryCategoryFilter || reviewFilterNotifier.hasTemporaryReviewFilter;
                           
                           // Check if all categories are enabled
                           final allCategories = Category.allCategories.map((c) => c.name).toSet();
@@ -2584,7 +2624,7 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
                                             child: AnimatedBuilder(
                                               animation: _pulseAnimation,
                                               builder: (context, child) {
-                                                final shouldPulse = _shouldStreakCardPulse(context, hasExtendedStreakToday);
+                                                final shouldPulse = _shouldStreakCardPulse(context, hasExtendedStreakToday, currentStreak);
                                                 final pulseScale = shouldPulse ? _pulseAnimation.value : 1.0;
 
                                                 return AnimatedBuilder(
@@ -2675,11 +2715,14 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
                 ),
               ),
               SizedBox(height: 16),
-              // Show either temporary category filter or Question of the Day
-              Consumer2<TemporaryCategoryFilterNotifier, UserService>(
-                builder: (context, filterNotifier, userService, child) {
+              // Show either temporary category/review filter or Question of the Day
+              Consumer3<TemporaryCategoryFilterNotifier, TemporaryReviewFilterNotifier, UserService>(
+                builder: (context, filterNotifier, reviewFilterNotifier, userService, child) {
                   if (filterNotifier.hasTemporaryCategoryFilter) {
                     return TemporaryCategoryFilterWidget();
+                  }
+                  if (reviewFilterNotifier.hasTemporaryReviewFilter) {
+                    return TemporaryReviewFilterWidget();
                   }
                   return QuestionOfTheDayWidget(
                     key: _qotdKey,
@@ -2798,17 +2841,19 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
                       onTap: () {
                         // Check if there's a temporary filter active
                         final tempFilterNotifier = Provider.of<TemporaryCategoryFilterNotifier>(context, listen: false);
-                        if (tempFilterNotifier.hasTemporaryCategoryFilter) {
-                          // Clear temporary filter to restore usual settings
+                        final reviewFilterNotifier = Provider.of<TemporaryReviewFilterNotifier>(context, listen: false);
+                        if (tempFilterNotifier.hasTemporaryCategoryFilter || reviewFilterNotifier.hasTemporaryReviewFilter) {
+                          // Clear temporary filters to restore usual settings
                           tempFilterNotifier.setTemporaryCategoryFilter(null);
+                          reviewFilterNotifier.setTemporaryReviewFilter(null);
                         } else {
                           // No temporary filter, show categories dialog as usual
                           _showCategoriesDialog();
                         }
                       },
-                      child: Consumer2<UserService, TemporaryCategoryFilterNotifier>(
-                        builder: (context, userService, tempFilterNotifier, child) {
-                          final hasTemporaryFilter = tempFilterNotifier.hasTemporaryCategoryFilter;
+                      child: Consumer3<UserService, TemporaryCategoryFilterNotifier, TemporaryReviewFilterNotifier>(
+                        builder: (context, userService, tempFilterNotifier, reviewFilterNotifier, child) {
+                          final hasTemporaryFilter = tempFilterNotifier.hasTemporaryCategoryFilter || reviewFilterNotifier.hasTemporaryReviewFilter;
                           
                           // Check if all categories are enabled
                           final allCategories = Category.allCategories.map((c) => c.name).toSet();
@@ -3330,7 +3375,7 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
               index: 2,
               icon: Icons.local_fire_department,
               title: 'New',
-              description: 'The latest but not necessarily the greatest...',
+              description: 'The latest, not the greatest...',
             ),
           ],
         ),
@@ -3410,46 +3455,76 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
                       ),
                     ),
                     SizedBox(height: 12),
-                    Wrap(
-                      spacing: 8.0,
-                      runSpacing: 8.0,
+                    Row(
                       children: UserService.allQuestionTypes.map((questionType) {
                         final typeId = questionType['id'] as String;
-                        final typeName = questionType['name'] as String;
                         final typeIcon = questionType['icon'] as IconData;
                         final isEnabled = userService.enabledQuestionTypes.contains(typeId);
-                        
-                        return FilterChip(
-                          avatar: Icon(
-                            typeIcon,
-                            size: 18,
-                            color: isEnabled ? Theme.of(context).primaryColor : Colors.grey,
-                          ),
-                          label: Text(
-                            typeName,
-                            style: TextStyle(
-                              color: isEnabled 
-                                  ? Theme.of(context).colorScheme.onSurface
-                                  : Theme.of(context).textTheme.bodyMedium?.color,
+
+                        // Map type IDs to descriptive subtitles
+                        final subtitle = typeId == 'approval_rating'
+                            ? 'Approval Slider'
+                            : typeId == 'multiple_choice'
+                                ? 'Multiple Choice'
+                                : 'Text Response';
+
+                        return Expanded(
+                          child: Padding(
+                            padding: EdgeInsets.symmetric(horizontal: 4),
+                            child: GestureDetector(
+                              onTap: () {
+                                if (typeId == 'text' && supabase.auth.currentUser == null) {
+                                  AuthenticationDialog.show(
+                                    context,
+                                    customMessage: 'To enable text questions, you need to authenticate as a real person.',
+                                    onComplete: () {
+                                      userService.toggleQuestionType(typeId);
+                                    },
+                                  );
+                                  return;
+                                }
+                                userService.toggleQuestionType(typeId);
+                              },
+                              child: AnimatedContainer(
+                                duration: Duration(milliseconds: 200),
+                                padding: EdgeInsets.symmetric(vertical: 14),
+                                decoration: BoxDecoration(
+                                  color: isEnabled
+                                      ? Theme.of(context).primaryColor.withOpacity(0.15)
+                                      : Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.5),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: isEnabled
+                                        ? Theme.of(context).primaryColor.withOpacity(0.4)
+                                        : Colors.grey.withOpacity(0.2),
+                                    width: 1.5,
+                                  ),
+                                ),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      typeIcon,
+                                      size: 28,
+                                      color: isEnabled
+                                          ? Theme.of(context).primaryColor
+                                          : Colors.grey,
+                                    ),
+                                    SizedBox(height: 6),
+                                    Text(
+                                      subtitle,
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        color: Colors.grey[500],
+                                        fontWeight: FontWeight.w400,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
                             ),
                           ),
-                          selected: isEnabled,
-                          onSelected: (selected) {
-                            if (typeId == 'text' && supabase.auth.currentUser == null) {
-                              AuthenticationDialog.show(
-                                context,
-                                customMessage: 'To enable text questions, you need to authenticate as a real person.',
-                                onComplete: () {
-                                  userService.toggleQuestionType(typeId);
-                                },
-                              );
-                              return;
-                            }
-                            userService.toggleQuestionType(typeId);
-                          },
-                          showCheckmark: false,
-                          selectedColor: Theme.of(context).primaryColor.withOpacity(0.2),
-                          checkmarkColor: Theme.of(context).primaryColor,
                         );
                       }).toList(),
                     ),
@@ -3888,8 +3963,9 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
     
     // Get the current filtered questions from the feed for swipe navigation
     final tempFilterNotifier = Provider.of<TemporaryCategoryFilterNotifier>(context, listen: false);
+    final reviewFilterNotifier = Provider.of<TemporaryReviewFilterNotifier>(context, listen: false);
     final allQuestions = questionService.questions;
-    
+
     // Apply the same filtering logic as the main feed to get the actual questions users can swipe through
     final filteredQuestions = allQuestions.where((question) {
       // Filter out current Question of the Day from regular feed to avoid duplication
@@ -3968,6 +4044,13 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
       } else {
         // If question has no categories and there's a temporary filter, don't show it
         if (tempFilterNotifier.hasTemporaryCategoryFilter) {
+          return false;
+        }
+      }
+
+      // Filter by temporary review tag filter
+      if (reviewFilterNotifier.hasTemporaryReviewFilter) {
+        if (!reviewFilterNotifier.qualifyingQuestionIds.contains(question['id']?.toString())) {
           return false;
         }
       }
@@ -4653,7 +4736,8 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
   }
 
   // Check if the streak card should pulse (when it's red/urgent)
-  bool _shouldStreakCardPulse(BuildContext context, bool hasExtendedStreakToday) {
+  bool _shouldStreakCardPulse(BuildContext context, bool hasExtendedStreakToday, int currentStreak) {
+    if (currentStreak == 0) return false; // No pulse when streak is zero
     if (!hasExtendedStreakToday) {
       final hoursRemaining = _getHoursRemainingToday();
       return hoursRemaining < 3; // Only pulse when less than 3 hours left
@@ -4774,7 +4858,7 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
 
     // Check if we should show urgent message
     final streakColor = _getStreakCardColor(context, hasExtendedStreakToday);
-    final shouldShowUrgent = _shouldStreakCardPulse(context, hasExtendedStreakToday) ||
+    final shouldShowUrgent = _shouldStreakCardPulse(context, hasExtendedStreakToday, currentStreak) ||
                             streakColor == Color(0xffea6d32); // Red or orange
 
     final dialogBorder = _getStreakDialogBorderDecoration(currentStreak, isTopFive: isTopFive);
@@ -5440,10 +5524,10 @@ class QuestionOfTheDayWidgetState extends State<QuestionOfTheDayWidget> {
                                   ),
                                 ),
                               Spacer(),
-                              // Show comment count only if > 1
-                              if (_getCommentCount(qotd) > 1)
+                              // Show comment count only if > 0
+                              if (_getCommentCount(qotd) > 0)
                                 Text(
-                                  '${_getCommentCount(qotd)} comments',
+                                  '${_getCommentCount(qotd)} ${_getCommentCount(qotd) == 1 ? 'comment' : 'comments'}',
                                   style: TextStyle(
                                     color: hasAnsweredQOTD
                                         ? Colors.grey

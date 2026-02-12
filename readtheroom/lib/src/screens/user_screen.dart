@@ -1054,124 +1054,7 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
         ),
         
         SizedBox(height: 16),
-        
-        // Achievements section
-        Padding(
-          padding: EdgeInsets.symmetric(horizontal: 4),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SizedBox(height: 8),
-              Text(
-                'Camo Collection',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  color: Theme.of(context).textTheme.titleLarge?.color,
-                ),
-              ),
-              SizedBox(height: 2),
-              FutureBuilder<int>(
-                future: _getUnlockedAchievementsCountAsync(),
-                builder: (context, snapshot) {
-                  final count = snapshot.data ?? 0;
-                  return Text(
-                    count == 1 ? '$count badge collected' : '$count badges collected',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.7),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-        ),
-        SizedBox(height: 8),
-        
-        // Question & Response Achievements
-        FutureBuilder<List<Widget>>(
-          future: _getProgressiveQuestionAchievementsAsync(userService, forceRefresh: _forceRefreshAchievements),
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return Container(
-                padding: EdgeInsets.all(16),
-                child: Center(child: CircularProgressIndicator()),
-              );
-            }
-            final questionHunterAchievements = snapshot.data ?? [];
-            return _buildAchievementSubsection('Question Hunter', questionHunterAchievements);
-          },
-        ),
-        
-        SizedBox(height: 12),
-        
-        // Community Achievements
-        FutureBuilder<List<Widget>>(
-          future: _getCommunityAchievementsAsync(forceRefresh: _forceRefreshAchievements),
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return Container(
-                padding: EdgeInsets.all(16),
-                child: Center(child: CircularProgressIndicator()),
-              );
-            }
-            final communityAchievements = snapshot.data ?? [];
-            return _buildAchievementSubsection('RTR Community', communityAchievements);
-          },
-        ),
-        
-        SizedBox(height: 12),
-        
-        // Local Community Achievements
-        FutureBuilder<List<Widget>>(
-          future: _getLocalCommunityAchievementsAsync(forceRefresh: _forceRefreshAchievements),
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return Container(
-                padding: EdgeInsets.all(16),
-                child: Center(child: CircularProgressIndicator()),
-              );
-            }
-            final localCommunityAchievements = snapshot.data ?? [];
-            return _buildAchievementSubsection('Local Community', localCommunityAchievements);
-          },
-        ),
-        
-        SizedBox(height: 12),
-        
-        // Room Achievements
-        FutureBuilder<List<Widget>>(
-          future: _getRoomAchievementsAsync(forceRefresh: _forceRefreshAchievements),
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return Container(
-                padding: EdgeInsets.all(16),
-                child: Center(child: CircularProgressIndicator()),
-              );
-            }
-            final roomAchievements = snapshot.data ?? [];
-            return _buildAchievementSubsection('Rooms and Networks', roomAchievements);
-          },
-        ),
-        
-        SizedBox(height: 12),
-        
-        // Social Achievements - COMMENTED OUT (not working well)
-        // FutureBuilder<List<Widget>>(
-        //   future: _getSocialAchievementsAsync(forceRefresh: true),
-        //   builder: (context, snapshot) {
-        //     if (snapshot.connectionState == ConnectionState.waiting) {
-        //       return Container(
-        //         padding: EdgeInsets.all(16),
-        //         child: Center(child: CircularProgressIndicator()),
-        //       );
-        //     }
-        //     final socialAchievements = snapshot.data ?? [];
-        //     return _buildAchievementSubsection('Social Butterfly', socialAchievements);
-        //   },
-        // ),
-        
-        SizedBox(height: 16),
-        
+
         // My Questions - Expandable section containing all question lists
         Card(
           margin: EdgeInsets.only(bottom: 16),
@@ -1286,11 +1169,128 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
             ],
           ),
         ),
-        
+
         SizedBox(height: 8),
-        
+
         // My Rooms - Expandable section for room management
         MyRoomsSection(key: _myRoomsKey),
+
+        SizedBox(height: 16),
+
+        // Achievements section
+        Padding(
+          padding: EdgeInsets.symmetric(horizontal: 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(height: 8),
+              Text(
+                'Camo Collection',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: Theme.of(context).textTheme.titleLarge?.color,
+                ),
+              ),
+              SizedBox(height: 2),
+              FutureBuilder<int>(
+                future: _getUnlockedAchievementsCountAsync(),
+                builder: (context, snapshot) {
+                  final count = snapshot.data ?? 0;
+                  return Text(
+                    count == 1 ? '$count badge collected' : '$count badges collected',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.7),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+        SizedBox(height: 8),
+        
+        // Question & Response Achievements
+        FutureBuilder<List<Widget>>(
+          future: _getProgressiveQuestionAchievementsAsync(userService, forceRefresh: _forceRefreshAchievements),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return Container(
+                padding: EdgeInsets.all(16),
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            final questionHunterAchievements = snapshot.data ?? [];
+            return _buildAchievementSubsection('Question Hunter', questionHunterAchievements);
+          },
+        ),
+        
+        SizedBox(height: 12),
+        
+        // Community Achievements
+        FutureBuilder<List<Widget>>(
+          future: _getCommunityAchievementsAsync(forceRefresh: _forceRefreshAchievements),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return Container(
+                padding: EdgeInsets.all(16),
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            final communityAchievements = snapshot.data ?? [];
+            return _buildAchievementSubsection('RTR Community', communityAchievements);
+          },
+        ),
+        
+        SizedBox(height: 12),
+        
+        // Local Community Achievements
+        FutureBuilder<List<Widget>>(
+          future: _getLocalCommunityAchievementsAsync(forceRefresh: _forceRefreshAchievements),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return Container(
+                padding: EdgeInsets.all(16),
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            final localCommunityAchievements = snapshot.data ?? [];
+            return _buildAchievementSubsection('Local Community', localCommunityAchievements);
+          },
+        ),
+        
+        SizedBox(height: 12),
+        
+        // Room Achievements
+        FutureBuilder<List<Widget>>(
+          future: _getRoomAchievementsAsync(forceRefresh: _forceRefreshAchievements),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return Container(
+                padding: EdgeInsets.all(16),
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            final roomAchievements = snapshot.data ?? [];
+            return _buildAchievementSubsection('Rooms and Networks', roomAchievements);
+          },
+        ),
+        
+        SizedBox(height: 12),
+        
+        // Social Achievements - COMMENTED OUT (not working well)
+        // FutureBuilder<List<Widget>>(
+        //   future: _getSocialAchievementsAsync(forceRefresh: true),
+        //   builder: (context, snapshot) {
+        //     if (snapshot.connectionState == ConnectionState.waiting) {
+        //       return Container(
+        //         padding: EdgeInsets.all(16),
+        //         child: Center(child: CircularProgressIndicator()),
+        //       );
+        //     }
+        //     final socialAchievements = snapshot.data ?? [];
+        //     return _buildAchievementSubsection('Social Butterfly', socialAchievements);
+        //   },
+        // ),
         
         SizedBox(height: 80),
       ],
@@ -1472,7 +1472,7 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
       builder: (context, snapshot) {
         final camoQuality = snapshot.data?['camoQuality'] as double? ?? 0.0;
         final cqiRank = snapshot.data?['cqiRank'] as int? ?? 0;
-        final hasCamoQuality = camoQuality > 0;
+        final hasCamoQuality = snapshot.data?['hasCqi'] as bool? ?? false;
         
         return Container(
           decoration: BoxDecoration(
@@ -1499,9 +1499,9 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
                         size: 20,
                       ),
                       Text(
-                        camoQuality > 0 ? camoQuality.toStringAsFixed(1) : '0',
+                        hasCamoQuality ? camoQuality.toStringAsFixed(1) : '--',
                         style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          color: hasCamoQuality 
+                          color: hasCamoQuality
                               ? Theme.of(context).primaryColor
                               : Colors.grey[600],
                           fontWeight: FontWeight.bold,
@@ -1518,8 +1518,8 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
                   ),
                   SizedBox(height: 2),
                   Text(
-                    (camoQuality > 0 && cqiRank > 0)
-                        ? (cqiRank <= 100 
+                    (hasCamoQuality && cqiRank > 0)
+                        ? (cqiRank <= 100
                             ? 'Ranked #$cqiRank'
                             : '${_getPercentileText(cqiRank, snapshot.data?['totalChameleons'] as int? ?? 0)}')
                         : 'Tap for details',
@@ -1821,7 +1821,7 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
       builder: (context, snapshot) {
         final camoQuality = snapshot.data?['camoQuality'] as double? ?? 0.0;
         final cqiRank = snapshot.data?['cqiRank'] as int? ?? 0;
-        final hasCamoQuality = camoQuality > 0;
+        final hasCamoQuality = snapshot.data?['hasCqi'] as bool? ?? false;
         
         return Container(
           margin: EdgeInsets.only(bottom: 8),
@@ -1866,9 +1866,9 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
                           ),
                         ),
                         SizedBox(height: 4),
-                        if (camoQuality > 0 && cqiRank > 0)
+                        if (hasCamoQuality && cqiRank > 0)
                           Text(
-                            cqiRank <= 100 
+                            cqiRank <= 100
                                 ? 'You are ranked #$cqiRank !'
                                 : 'You are in the ${_getPercentileText(cqiRank, snapshot.data?['totalChameleons'] as int? ?? 0)} :D',
                             style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -1910,7 +1910,7 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
                           SizedBox(width: 6),
                         ],
                         Text(
-                          camoQuality.toStringAsFixed(1),
+                          hasCamoQuality ? camoQuality.toStringAsFixed(1) : '--',
                           style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                             color: hasCamoQuality ? Colors.white : Colors.grey[600],
                             fontWeight: FontWeight.bold,
@@ -4006,6 +4006,7 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
     final totalUsers = rankingData['totalUsers'] as int? ?? 0;
     final totalChameleons = rankingData['totalChameleons'] as int? ?? 0;
     final questionsPosted = rankingData['questionsPosted'] as int? ?? 0;
+    final hasCqi = rankingData['hasCqi'] as bool? ?? false;
     
     final dialogBorder = _getDialogBorderDecoration(cqiRank);
     
@@ -4034,21 +4035,21 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
                 SizedBox(height: 12),
                 // Centered number
                 Text(
-                  camoQuality.toStringAsFixed(1),
+                  hasCqi ? camoQuality.toStringAsFixed(1) : '--',
                   style: Theme.of(context).textTheme.displayLarge?.copyWith(
                     fontWeight: FontWeight.bold,
-                    color: Theme.of(context).primaryColor,
+                    color: hasCqi ? Theme.of(context).primaryColor : Colors.grey,
                   ),
                   textAlign: TextAlign.center,
                 ),
                 SizedBox(height: 20),
                 // Content
                 Text(
-                  'This is average number of resposes to your questions.',
+                  'This is the average rating chameleons give your questions.',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
                 SizedBox(height: 16),
-                if (camoQuality == 0.0) ...[
+                if (questionsPosted < 3) ...[
                   Container(
                     width: double.infinity,
                     padding: EdgeInsets.all(12),
@@ -4079,7 +4080,7 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
                       ],
                     ),
                   ),
-                ] else if (cqiRank > 0 && totalChameleons > 0 && camoQuality > 0.0) ...[
+                ] else if (hasCqi && cqiRank > 0 && totalChameleons > 0) ...[
                   Container(
                     width: double.infinity,
                     padding: EdgeInsets.all(12),
@@ -4124,9 +4125,9 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
                   ),
                 ],
                 SizedBox(height: 16),
-                if (camoQuality > 10.0) ...[
+                if (hasCqi && camoQuality > 0.5) ...[
                   Text(
-                    'You\'re asking quality questions!',
+                    'Your questions are highly rated!',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: Theme.of(context).primaryColor,
                       fontWeight: FontWeight.w600,
@@ -4134,9 +4135,9 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
                     textAlign: TextAlign.center,
                   ),
                   SizedBox(height: 16),
-                ] else if (camoQuality > 5.0) ...[
+                ] else if (hasCqi && camoQuality > 0.0) ...[
                   Text(
-                    'Your questions are generating good engagement!',
+                    'Your questions are well-received!',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: Theme.of(context).primaryColor,
                       fontWeight: FontWeight.w600,
@@ -4146,7 +4147,7 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
                   SizedBox(height: 16),
                 ],
                 Text(
-                  'The CQI measures how interesting your questions are to other chameleons, on average.',
+                  'The CQI measures how chameleons rate your questions on average, from -1 (negative) to 1 (positive).',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: Colors.grey[600],
                   ),

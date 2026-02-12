@@ -30,6 +30,9 @@ import '../widgets/question_reactions_widget.dart';
 import '../widgets/linked_questions_section.dart';
 import '../widgets/country_filter_dialog.dart';
 import '../widgets/country_comparison_dialog.dart';
+import '../widgets/question_rating_section.dart';
+import '../utils/generation_utils.dart';
+import '../services/analytics_service.dart';
 import 'main_screen.dart';
 
 class ApprovalResultsScreen extends BaseResultsScreen {
@@ -73,7 +76,8 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
   int _immediateCheckCount = 0; // Track immediate checks for lower threshold
   final ScrollController _scrollController = ScrollController();
   bool _showQuestionInTitle = false;
-  
+  bool _hasCompletedRating = false;
+
   // Comparison mode variables
   bool _isComparisonMode = false;
   String? _comparisonCountry1;
@@ -86,13 +90,17 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
         : Color(0xFF55C5B4);
   }
 
-  // Get display name for a filter (country/room/network)
+  // Get display name for a filter (country/room/network/generation)
   String _getDisplayName(String filter) {
     if (filter == 'My Network') return 'My Network';
     if (filter == 'World') return 'World';
     if (filter.startsWith('Room:')) {
       final roomId = filter.substring(5);
       return _roomNames[roomId] ?? 'Room';
+    }
+    if (filter.startsWith('Gen:')) {
+      final genId = filter.substring(4);
+      return getGenerationLabel(genId);
     }
     return filter; // Regular country name
   }
@@ -153,12 +161,48 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
     return result;
   }
 
+  Map<String, Map<String, dynamic>> _getGenerationResponseData() {
+    final genTotals = <String, int>{};
+    for (var response in _responsesByCountry) {
+      final gen = response['generation']?.toString();
+      if (gen != null && gen.isNotEmpty) {
+        genTotals[gen] = (genTotals[gen] ?? 0) + 1;
+      }
+    }
+    final result = <String, Map<String, dynamic>>{};
+    genTotals.forEach((gen, total) {
+      if (total > 0) {
+        result[gen] = {'total': total};
+      }
+    });
+    return result;
+  }
+
+  Map<String, double> _getGenerationAverages() {
+    final genVotes = <String, List<double>>{};
+    for (var response in _responsesByCountry) {
+      final gen = response['generation']?.toString();
+      final value = response['answer'] as double?;
+      if (gen != null && gen.isNotEmpty && value != null) {
+        genVotes.putIfAbsent(gen, () => []);
+        genVotes[gen]!.add(value);
+      }
+    }
+    final result = <String, double>{};
+    genVotes.forEach((gen, votes) {
+      result[gen] = votes.reduce((a, b) => a + b) / votes.length;
+    });
+    return result;
+  }
+
   Future<void> _showCountryFilterDialog() async {
     final countryData = _getCountryResponseData();
     if (countryData.isEmpty) return;
 
     final questionTitle = widget.question['prompt'] ?? widget.question['title'] ?? 'Question';
     
+    final generationData = _getGenerationResponseData();
+
     final selectedCountryResult = await CountryFilterDialog.show(
       context: context,
       countryResponses: countryData,
@@ -168,9 +212,11 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
       questionType: 'approval',
       countryAverages: _countryAverages,
       allResponses: _responsesByCountry,
-      myNetworkResponseCount: _myNetworkResponses.length, // Pass accurate My Network count
-      roomResponseCounts: _roomResponseCounts, // Pass accurate room response counts
-      roomNames: _roomNames, // Pass room names for instant display
+      myNetworkResponseCount: _myNetworkResponses.length,
+      roomResponseCounts: _roomResponseCounts,
+      roomNames: _roomNames,
+      generationResponses: generationData.isNotEmpty ? generationData : null,
+      generationAverages: generationData.isNotEmpty ? _getGenerationAverages() : null,
     );
 
     if (selectedCountryResult != null || selectedCountryResult == null) {
@@ -296,6 +342,7 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
         .select('''
           score,
           created_at,
+          generation,
           countries!responses_country_code_fkey(country_name_en)
         ''')
         .eq('question_id', widget.question['id'])
@@ -309,6 +356,7 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
         'country': r['countries']?['country_name_en'] ?? 'Unknown',
         'answer': (r['score'] as int).toDouble() / 100.0, // Convert to -1 to 1 range
         'created_at': r['created_at'],
+        'generation': r['generation'],
       }).toList();
       
       print('Found ${_responsesByCountry.length} real approval responses from database');
@@ -736,19 +784,25 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
     if (isPrivateQuestion || selectedCountry == null) {
       return _responsesByCountry;
     }
-    
+
     // Handle My Network filtering
     if (selectedCountry == 'My Network') {
       // Return My Network responses (loaded separately via _loadMyNetworkData)
       return _myNetworkResponses;
     }
-    
+
     // Handle Room filtering
     if (selectedCountry?.startsWith('Room:') == true) {
       final roomId = selectedCountry!.substring(5); // Remove 'Room:' prefix
       return _roomResponses[roomId] ?? [];
     }
-    
+
+    // Handle Generation filtering
+    if (selectedCountry?.startsWith('Gen:') == true) {
+      final genId = selectedCountry!.substring(4);
+      return _responsesByCountry.where((r) => r['generation'] == genId).toList();
+    }
+
     // Handle regular country filtering
     return _responsesByCountry.where((r) => r['country'] == selectedCountry).toList();
   }
@@ -807,7 +861,13 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
       final roomId = country.substring(5); // Remove 'Room:' prefix
       return _roomResponses[roomId] ?? [];
     }
-    
+
+    // Handle Generation filtering
+    if (country.startsWith('Gen:')) {
+      final genId = country.substring(4);
+      return _responsesByCountry.where((r) => r['generation'] == genId).toList();
+    }
+
     // Handle regular country filtering
     return _responsesByCountry.where((r) => r['country'] == country).toList();
   }
@@ -1178,7 +1238,7 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
     if (country.startsWith('Room:')) {
       final roomId = country.substring(5); // Remove 'Room:' prefix
       final roomResponses = _roomResponses[roomId] ?? [];
-      
+
       if (roomResponses.isEmpty) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -1191,7 +1251,7 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
         }
         return; // Don't change the selection
       }
-      
+
       if (mounted) {
         setState(() {
           selectedCountry = country;
@@ -1206,22 +1266,65 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
       }
       return;
     }
-    
+
+    // Handle Generation filtering
+    if (country.startsWith('Gen:')) {
+      final genId = country.substring(4);
+      final genResponses = _responsesByCountry.where((r) => r['generation'] == genId).toList();
+
+      if (genResponses.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('No responses from ${getGenerationLabel(genId)} yet'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+        return;
+      }
+
+      if (mounted) {
+        setState(() {
+          selectedCountry = country;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Showing ${genResponses.length} responses from ${getGenerationLabel(genId)}'),
+            backgroundColor: Theme.of(context).primaryColor,
+            duration: Duration(seconds: 2),
+          ),
+        );
+        AnalyticsService().trackEvent('generation_filter_applied', {
+          'generation': genId,
+          'question_type': 'approval',
+          'question_id': widget.question['id'].toString(),
+        });
+      }
+      return;
+    }
+
     // Handle regular country filtering
     final countryResponses = _responsesByCountry.where((r) => r['country'] == country).toList();
     
     if (countryResponses.isEmpty) {
-      // Show message that there are no responses from this country
+      // Reset to all countries if not already showing global
       if (mounted) {
+        if (selectedCountry != null) {
+          setState(() {
+            selectedCountry = null;
+          });
+        }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('No responses from $country yet'),
+            content: Text('No responses from $country — showing all countries'),
             backgroundColor: Colors.orange,
             duration: Duration(seconds: 3),
           ),
         );
       }
-      return; // Don't change the selection
+      return;
     }
     
     // Show informative message when selecting a country
@@ -1861,6 +1964,8 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
                                   roomResponseCounts: _roomResponseCounts,
                                   myNetworkResponseCount: _myNetworkResponses.length,
                                   roomNames: _roomNames,
+                                  generationResponses: _getGenerationResponseData(),
+                                  generationAverages: _getGenerationAverages(),
                                 );
                                 
                                 if (selectedCountries != null && selectedCountries.length == 2) {
@@ -1946,15 +2051,30 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
                         if (countryName != null) {
                           _onCountrySelected(countryName);
                         }
+                      } else {
+                        _onCountrySelected(null);
                       }
                     },
                   ),
               ],
                 SizedBox(height: 24),
               ],
-              
-              
+
+              const SizedBox(height: 16),
+
+              // Question Rating Section
+              QuestionRatingSection(
+                questionId: widget.question['id']?.toString() ?? '',
+                isAuthor: _questionService?.isCurrentUserAuthor(widget.question) ?? false,
+                onRatingComplete: () {
+                  if (mounted) setState(() => _hasCompletedRating = true);
+                },
+              ),
+
+              const SizedBox(height: 16),
+
               // Linked Questions Section
+              if (_hasCompletedRating) ...[
               LinkedQuestionsSection(
                 questionId: widget.question['id']?.toString() ?? '',
                 comments: _comments,
@@ -1964,9 +2084,9 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
                 fromUserScreen: widget.fromUserScreen,
                 margin: EdgeInsets.zero, // Remove default margin to align with comments section
               ),
-              
+
               const SizedBox(height: 16), // Add spacing between sections
-              
+
               // Comments Section - always at the end
               CommentsSection(
                 key: _commentsSectionKey,
@@ -1981,6 +2101,7 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
                 questionContext: widget.question,
                 margin: EdgeInsets.zero, // Remove default margin to align with other widgets
               ),
+              ],
               
               // Swipe to next indicator
               SizedBox(height: 40),

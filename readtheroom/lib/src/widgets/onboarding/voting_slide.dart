@@ -149,7 +149,7 @@ class _VotingSlideState extends State<VotingSlide> {
   Widget build(BuildContext context) {
     return OnboardingSlide(
       title: "Chameleons Vote & Map Responses",
-      description: "Other chameleons vote on behalf of the cities and countries they are a part of. When enough responses are collected, we can visualize how different regions feel about questions in real-time.",
+      description: "Other chameleons vote on behalf of the cities and countries they are a part of.\n\nWhen enough responses are collected, we can visualize how different regions feel about questions in real-time.",
       showCurio: true,
       onNext: widget.onNext,
       customContent: SingleChildScrollView(

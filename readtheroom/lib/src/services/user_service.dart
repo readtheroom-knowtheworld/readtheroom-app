@@ -21,6 +21,7 @@ import '../services/analytics_service.dart';
 import '../services/congratulations_service.dart';
 import '../services/achievement_service.dart';
 import '../services/streak_reminder_service.dart';
+import '../services/qotd_reminder_service.dart';
 import '../services/home_widget_service.dart';
 import '../widgets/notification_bell.dart';
 import 'question_service.dart' show StreakUpdateEvent;
@@ -39,6 +40,7 @@ class UserService extends ChangeNotifier {
   static const String _notifyQOTDKey = 'notify_qotd';
   static const String _notifyStreakRemindersKey = 'notify_streak_reminders';
   static const String _streakReminderTimeKey = 'streak_reminder_time';
+  static const String _qotdReminderTimeKey = 'qotd_reminder_time';
   static const String _showNSFWKey = 'showNSFWContent';
   static const String _boostLocalActivityKey = 'boost_local_activity';
   static const String _enabledCategoriesKey = 'enabled_categories';
@@ -48,7 +50,10 @@ class UserService extends ChangeNotifier {
   static const String _hasEverEnabledNSFWKey = 'hasEverEnabledNSFW';
   static const String _locationHistoryKey = 'location_history';
   static const String _pendingLocationSwitchKey = 'pending_location_switch';
-  
+  static const String _ratedQuestionsKey = 'rated_questions';
+  static const String _questionRatingValuesKey = 'question_rating_values';
+  static const String _generationKey = 'user_generation';
+
   // Device ID migration tracking
   static const String _migrationAttemptCountKey = 'migration_attempt_count';
   static const String _lastMigrationAttemptKey = 'last_migration_attempt';
@@ -86,6 +91,7 @@ class UserService extends ChangeNotifier {
   bool _notifyQOTD = true;
   bool _notifyStreakReminders = false;
   TimeOfDay _streakReminderTime = TimeOfDay(hour: 18, minute: 0); // Default to 6 PM
+  TimeOfDay _qotdReminderTime = TimeOfDay(hour: 19, minute: 30); // Default to 7:30 PM
   bool _showNSFWContent = false;
   bool _hasEverEnabledNSFW = false; // Track if user has ever enabled NSFW in settings
   bool _hideAnsweredQuestions = false;
@@ -100,6 +106,13 @@ class UserService extends ChangeNotifier {
   List<Map<String, dynamic>> _suggestions = [];
   Set<String> _votedSuggestions = {};
   bool _suggestionsLoaded = false;
+
+  // Generation preference
+  String? _generation;
+
+  // Question rating tracking (local-only, anonymous)
+  Set<String> _ratedQuestions = {};
+  Map<String, double> _questionRatingValues = {};
   
   // Location history management
   List<Map<String, dynamic>> _locationHistory = [];
@@ -164,6 +177,7 @@ class UserService extends ChangeNotifier {
   bool get notifyQOTD => _notifyQOTD;
   bool get notifyStreakReminders => _notifyStreakReminders;
   TimeOfDay get streakReminderTime => _streakReminderTime;
+  TimeOfDay get qotdReminderTime => _qotdReminderTime;
   bool get showNSFWContent => _showNSFWContent;
   bool get hideAnsweredQuestions => _hideAnsweredQuestions;
   bool get boostLocalActivity => _boostLocalActivity;
@@ -181,6 +195,20 @@ class UserService extends ChangeNotifier {
   // Streak leaderboard getters
   int get streakRank => _streakRank;
   bool get isTopTenStreak => _isTopTenStreak;
+
+  // Generation getters
+  String? get generation => _generation;
+  bool get hasGeneration => _generation != null;
+
+  Future<void> setGeneration(String? generation) async {
+    _generation = generation;
+    if (generation != null) {
+      await _prefs.setString(_generationKey, generation);
+    } else {
+      await _prefs.remove(_generationKey);
+    }
+    notifyListeners();
+  }
 
   Future<void> _loadData() async {
     _prefs = await SharedPreferences.getInstance();
@@ -214,6 +242,11 @@ class UserService extends ChangeNotifier {
     final savedReminderHour = _prefs.getInt(_streakReminderTimeKey + '_hour') ?? 18;
     final savedReminderMinute = _prefs.getInt(_streakReminderTimeKey + '_minute') ?? 0;
     _streakReminderTime = TimeOfDay(hour: savedReminderHour, minute: savedReminderMinute);
+
+    // Load QOTD reminder time (default to 7:30 PM if not set)
+    final savedQotdHour = _prefs.getInt(_qotdReminderTimeKey + '_hour') ?? 19;
+    final savedQotdMinute = _prefs.getInt(_qotdReminderTimeKey + '_minute') ?? 30;
+    _qotdReminderTime = TimeOfDay(hour: savedQotdHour, minute: savedQotdMinute);
     _showNSFWContent = _prefs.getBool(_showNSFWKey) ?? false;
     _hasEverEnabledNSFW = _prefs.getBool(_hasEverEnabledNSFWKey) ?? _showNSFWContent;
     _boostLocalActivity = _prefs.getBool(_boostLocalActivityKey) ?? true;
@@ -281,7 +314,21 @@ class UserService extends ChangeNotifier {
     if (votedSuggestions != null) {
       _votedSuggestions = Set<String>.from(votedSuggestions);
     }
-    
+
+    // Load rated questions from local storage
+    final ratedQuestions = _prefs.getStringList(_ratedQuestionsKey);
+    if (ratedQuestions != null) {
+      _ratedQuestions = Set<String>.from(ratedQuestions);
+    }
+    final ratingValuesJson = _prefs.getString(_questionRatingValuesKey);
+    if (ratingValuesJson != null) {
+      final decoded = json.decode(ratingValuesJson) as Map<String, dynamic>;
+      _questionRatingValues = decoded.map((k, v) => MapEntry(k, (v as num).toDouble()));
+    }
+
+    // Load generation preference
+    _generation = _prefs.getString(_generationKey);
+
     // Defer feedback loading to improve startup performance
     // Suggestions/feedback will be loaded lazily when needed
     print('=== SUGGESTIONS DEBUG: UserService initialization (skipping feedback loading for faster startup) ===');
@@ -632,20 +679,21 @@ class UserService extends ChangeNotifier {
   void setNotifyQOTD(bool value) async {
     _notifyQOTD = value;
     _prefs.setBool(_notifyQOTDKey, value);
-    
+
     // Handle FCM subscription
     final notificationService = NotificationService();
+    // Handle local QOTD reminder scheduling
+    final qotdReminderService = QOTDReminderService();
     if (value) {
       await notificationService.subscribeToQOTD();
-      // Note: Supabase real-time subscription is handled automatically in NotificationService.initialize()
-      print('QOTD notifications enabled - FCM topic subscribed, Supabase real-time active');
+      await qotdReminderService.setRemindersEnabled(true, _qotdReminderTime);
+      print('QOTD notifications enabled - FCM topic subscribed, local reminders scheduled');
     } else {
       await notificationService.unsubscribeFromQOTD();
-      // Note: Supabase real-time subscription remains active but won't show notifications
-      // since the user preference is checked in the notification handler
-      print('QOTD notifications disabled - FCM topic unsubscribed');
+      await qotdReminderService.setRemindersEnabled(false);
+      print('QOTD notifications disabled - FCM topic unsubscribed, local reminders cancelled');
     }
-    
+
     notifyListeners();
   }
 
@@ -678,6 +726,21 @@ class UserService extends ChangeNotifier {
     }
     
     print('Streak reminder time set to ${time.hour}:${time.minute.toString().padLeft(2, '0')}');
+    notifyListeners();
+  }
+
+  void setQotdReminderTime(TimeOfDay time) async {
+    _qotdReminderTime = time;
+    await _prefs.setInt(_qotdReminderTimeKey + '_hour', time.hour);
+    await _prefs.setInt(_qotdReminderTimeKey + '_minute', time.minute);
+
+    // If QOTD is enabled, reschedule with the new time
+    if (_notifyQOTD) {
+      final qotdReminderService = QOTDReminderService();
+      await qotdReminderService.setRemindersEnabled(true, _qotdReminderTime);
+    }
+
+    print('QOTD reminder time set to ${time.hour}:${time.minute.toString().padLeft(2, '0')}');
     notifyListeners();
   }
 
@@ -905,6 +968,31 @@ class UserService extends ChangeNotifier {
 
   bool hasVotedSuggestion(String suggestionId) {
     return _votedSuggestions.contains(suggestionId);
+  }
+
+  // Question rating tracking methods
+  bool hasRatedQuestion(String questionId) {
+    return _ratedQuestions.contains(questionId);
+  }
+
+  double? getQuestionRating(String questionId) {
+    return _questionRatingValues[questionId];
+  }
+
+  Future<void> setQuestionRating(String questionId, double value) async {
+    _ratedQuestions.add(questionId);
+    _questionRatingValues[questionId] = value;
+    _prefs.setStringList(_ratedQuestionsKey, _ratedQuestions.toList());
+    _prefs.setString(_questionRatingValuesKey, json.encode(_questionRatingValues));
+    notifyListeners();
+  }
+
+  Future<void> clearQuestionRating(String questionId) async {
+    _ratedQuestions.remove(questionId);
+    _questionRatingValues.remove(questionId);
+    _prefs.setStringList(_ratedQuestionsKey, _ratedQuestions.toList());
+    _prefs.setString(_questionRatingValuesKey, json.encode(_questionRatingValues));
+    notifyListeners();
   }
 
   // Check if user has actually voted in the database (for debugging/sync)
@@ -1694,8 +1782,7 @@ class UserService extends ChangeNotifier {
       
       if (updatedCount > 0) {
         print('Updated vote counts for $updatedCount questions');
-        // Clear engagement ranking cache since vote counts changed
-        _cachedEngagementRanking = null;
+        // Expire timestamp to trigger fresh fetch, but keep stale data for UI fallback
         _lastEngagementRankingRefresh = null;
       }
       
@@ -1746,7 +1833,7 @@ class UserService extends ChangeNotifier {
       
       try {
         if (currentUser == null) {
-          return {'rank': 0, 'totalUsers': 0, 'totalChameleons': 0, 'userEngagement': 0, 'camoQuality': 0.0, 'cqiRank': 0, 'questionsPosted': 0, 'recent_30d_rank': 0};
+          return {'rank': 0, 'totalUsers': 0, 'totalChameleons': 0, 'userEngagement': 0, 'camoQuality': 0.0, 'cqiRank': 0, 'questionsPosted': 0, 'recent_30d_rank': 0, 'hasCqi': false};
         }
 
         // Try to use materialized view first (much faster)
@@ -1773,6 +1860,7 @@ class UserService extends ChangeNotifier {
               'cqiRank': response['cqi_rank'] as int? ?? 0,
               'questionsPosted': response['questions_posted'] as int? ?? 0,
               'recent_30d_rank': response['recent_30d_rank'] as int? ?? 0,
+              'hasCqi': response['camo_quality'] != null,
             };
 
             // Cache the result in both local cache and startup cache
@@ -1789,11 +1877,11 @@ class UserService extends ChangeNotifier {
 
         // Simple fallback - return zeros if materialized view is unavailable
         print('Materialized view unavailable, returning default values');
-        return {'rank': 0, 'totalUsers': 0, 'totalChameleons': 0, 'userEngagement': 0, 'camoQuality': 0.0, 'cqiRank': 0, 'questionsPosted': 0, 'recent_30d_rank': 0};
+        return {'rank': 0, 'totalUsers': 0, 'totalChameleons': 0, 'userEngagement': 0, 'camoQuality': 0.0, 'cqiRank': 0, 'questionsPosted': 0, 'recent_30d_rank': 0, 'hasCqi': false};
 
       } catch (e) {
         print('Error calculating user engagement ranking: $e');
-        return {'rank': 0, 'totalUsers': 0, 'totalChameleons': 0, 'userEngagement': 0, 'camoQuality': 0.0, 'cqiRank': 0, 'questionsPosted': 0, 'recent_30d_rank': 0};
+        return {'rank': 0, 'totalUsers': 0, 'totalChameleons': 0, 'userEngagement': 0, 'camoQuality': 0.0, 'cqiRank': 0, 'questionsPosted': 0, 'recent_30d_rank': 0, 'hasCqi': false};
       }
     });
   }

@@ -15,6 +15,8 @@ import 'dart:io';
 import 'package:timezone/timezone.dart' as tz;
 import 'analytics_service.dart';
 import 'notification_log_service.dart';
+import 'qotd_reminder_service.dart';
+import 'home_widget_service.dart';
 import '../models/notification_item.dart';
 
 class NotificationService {
@@ -104,7 +106,7 @@ class NotificationService {
       final initialMessage = await _firebaseMessaging.getInitialMessage();
       if (initialMessage != null) {
         print('🦎 COLD START: App launched from FCM notification tap, type: ${initialMessage.data['type']}');
-        _handleBackgroundMessage(initialMessage);
+        await _handleBackgroundMessage(initialMessage);
       }
     } catch (e) {
       print('🦎 COLD START: Error checking initial FCM message: $e');
@@ -276,27 +278,27 @@ class NotificationService {
     final notificationBody = message.notification?.body ?? '';
     String? payload;
     
-    // Check if it's a QOTD notification
+    // Check if it's a QOTD notification (now data-only — local notification handles display timing)
     if (message.data['type'] == 'qotd') {
       final questionId = message.data['questionId'] ?? message.data['question_id'];
-      if (questionId == null) {
-        print('QOTD notification missing questionId');
-        // Still log to activity feed even if we can't process it
-        await _logNotificationToInAppLog(
-          '📆 Question of the Day',
-          'Check out today\'s question!',
-          null,
-        );
-        return;
-      }
-      
-      payload = 'question_$questionId';
-      // Show local notification with question prompt from FCM data
-      await _showLocalNotification(
-        title: '📆 Question of the Day',
-        body: message.notification?.body ?? 'Check out today\'s question!',
-        payload: payload,
+      final body = message.data['body'] ?? 'Check out today\'s question!';
+
+      // Log to activity feed
+      await _logNotificationToInAppLog(
+        '📆 Question of the Day',
+        body,
+        questionId != null ? 'question_$questionId' : null,
       );
+
+      // Update today's scheduled local notification with actual question text
+      if (questionId != null) {
+        final qotdReminderService = QOTDReminderService();
+        await qotdReminderService.updateTodayContent(body, questionId);
+
+        // Update home screen widget with real question data
+        await _updateQOTDWidgetWithFreshData(questionId, body);
+      }
+      return; // Don't show immediately — local notification fires at preferred time
     }
     // Check if it's a comment notification
     else if (message.data['type'] == 'comment') {
@@ -311,7 +313,15 @@ class NotificationService {
         );
         return;
       }
-      
+
+      // Skip notification if the commenter is the current user
+      final commenterId = message.data['commenterId'] ?? message.data['commenter_id'];
+      final currentUserId = _supabase.auth.currentUser?.id;
+      if (commenterId != null && currentUserId != null && commenterId == currentUserId) {
+        print('🦎 FCM: Skipping comment notification — commenter is current user');
+        return;
+      }
+
       payload = 'question_$questionId';
       // Show local notification using FCM payload
       await _showLocalNotification(
@@ -392,16 +402,38 @@ class NotificationService {
   Future<void> _handleBackgroundMessage(RemoteMessage message) async {
     print('🦎 FCM: Received background message - type: ${message.data['type']}');
     print('🦎 SINGLETON: _handleBackgroundMessage called on instance ${identityHashCode(this)}');
-    
+
+    // Handle data-only QOTD messages in background — update scheduled local notification
+    if (message.data['type'] == 'qotd') {
+      final qotdQuestionId = message.data['questionId'] ?? message.data['question_id'];
+      final body = message.data['body'] ?? 'Check out today\'s question!';
+
+      if (qotdQuestionId != null) {
+        final qotdReminderService = QOTDReminderService();
+        await qotdReminderService.updateTodayContent(body, qotdQuestionId);
+        _pendingQuestionNavigation = qotdQuestionId;
+
+        // Update home screen widget with real question data
+        await _updateQOTDWidgetWithFreshData(qotdQuestionId, body);
+      }
+
+      await _logNotificationToInAppLog(
+        '📆 Question of the Day',
+        body,
+        qotdQuestionId != null ? 'question_$qotdQuestionId' : null,
+      );
+      return; // Don't show immediately — local notification fires at preferred time
+    }
+
     // For background messages, the system already shows the notification
     // But we still want to log it to our in-app activity feed
     final notificationTitle = message.notification?.title ?? 'Notification';
     final notificationBody = message.notification?.body ?? '';
-    
+
     // We just need to handle the tap action here
     final questionId = message.data['questionId'] ?? message.data['question_id'];
     final suggestionId = message.data['suggestionId'] ?? message.data['suggestion_id'];
-    
+
     String? payload;
     if (questionId != null) {
       payload = 'question_$questionId';
@@ -414,7 +446,7 @@ class NotificationService {
       print('🦎 FCM: Stored pending navigation for suggestion: $suggestionId');
       print('🦎 SINGLETON: Stored on instance ${identityHashCode(this)}, _pendingSuggestionNavigation = $_pendingSuggestionNavigation');
     }
-    
+
     // Log to activity feed
     await _logNotificationToInAppLog(
       notificationTitle,
@@ -1598,4 +1630,43 @@ class NotificationService {
       print('🦎 NOTIFICATION LOG: Error logging notification: $e');
     }
   }
-} 
+
+  /// Fetch real vote/comment counts and hasAnswered for a question, then update the home widget.
+  Future<void> _updateQOTDWidgetWithFreshData(String questionId, String questionText) async {
+    try {
+      final voteCountQuery = await _supabase
+          .from('responses')
+          .select('id')
+          .eq('question_id', questionId);
+      final voteCount = voteCountQuery.length;
+
+      final commentCountQuery = await _supabase
+          .from('comments')
+          .select('id')
+          .eq('question_id', questionId);
+      final commentCount = commentCountQuery.length;
+
+      bool hasAnswered = false;
+      final userId = _supabase.auth.currentUser?.id;
+      if (userId != null) {
+        final responseCheck = await _supabase
+            .from('responses')
+            .select('id')
+            .eq('question_id', questionId)
+            .eq('user_id', userId)
+            .maybeSingle();
+        hasAnswered = responseCheck != null;
+      }
+
+      await HomeWidgetService().updateQOTDWidget(
+        questionText: questionText,
+        voteCount: voteCount,
+        commentCount: commentCount,
+        hasAnswered: hasAnswered,
+        questionId: questionId,
+      );
+    } catch (e) {
+      print('🦎 Error updating QOTD widget with fresh data: $e');
+    }
+  }
+}

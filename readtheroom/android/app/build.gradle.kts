@@ -9,13 +9,11 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// Load key.properties from the android/ directory
+// Load key.properties from the android/ directory (optional for F-Droid builds)
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(keystorePropertiesFile.inputStream())
-} else {
-    throw GradleException("Missing key.properties file for signing release builds.")
 }
 
 android {
@@ -27,8 +25,8 @@ android {
         applicationId = "com.readtheroom.app"
         minSdk = 21
         targetSdk = 35
-        versionCode = 76               // 🔧 Must increase with every new Play Store upload
-        versionName = "1.1.3"   // Recommended for user-facing clarity
+        versionCode = 77               // 🔧 Must increase with every new Play Store upload
+        versionName = "1.1.4"   // Recommended for user-facing clarity
     }
 
     compileOptions {
@@ -41,23 +39,27 @@ android {
         jvmTarget = JavaVersion.VERSION_17.toString()
     }
 
-    signingConfigs {
-        create("release") {
-            val storeFilePath = keystoreProperties["storeFile"] as String?
-                ?: throw GradleException("Missing 'storeFile' in key.properties")
-            keyAlias = keystoreProperties["keyAlias"] as String?
-                ?: throw GradleException("Missing 'keyAlias' in key.properties")
-            keyPassword = keystoreProperties["keyPassword"] as String?
-                ?: throw GradleException("Missing 'keyPassword' in key.properties")
-            storePassword = keystoreProperties["storePassword"] as String?
-                ?: throw GradleException("Missing 'storePassword' in key.properties")
-            storeFile = file(storeFilePath)
+    if (keystorePropertiesFile.exists()) {
+        signingConfigs {
+            create("release") {
+                val storeFilePath = keystoreProperties["storeFile"] as String?
+                    ?: throw GradleException("Missing 'storeFile' in key.properties")
+                keyAlias = keystoreProperties["keyAlias"] as String?
+                    ?: throw GradleException("Missing 'keyAlias' in key.properties")
+                keyPassword = keystoreProperties["keyPassword"] as String?
+                    ?: throw GradleException("Missing 'keyPassword' in key.properties")
+                storePassword = keystoreProperties["storePassword"] as String?
+                    ?: throw GradleException("Missing 'storePassword' in key.properties")
+                storeFile = file(storeFilePath)
+            }
         }
     }
 
     buildTypes {
         getByName("release") {
-            signingConfig = signingConfigs.getByName("release")
+            if (keystorePropertiesFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

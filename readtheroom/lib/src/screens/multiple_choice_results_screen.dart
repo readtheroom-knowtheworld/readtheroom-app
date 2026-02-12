@@ -29,6 +29,9 @@ import '../widgets/linked_questions_section.dart';
 import '../widgets/add_comment_dialog.dart';
 import '../widgets/country_filter_dialog.dart';
 import '../widgets/country_comparison_dialog.dart';
+import '../widgets/question_rating_section.dart';
+import '../utils/generation_utils.dart';
+import '../services/analytics_service.dart';
 import 'main_screen.dart';
 
 class MultipleChoiceResultsScreen extends BaseResultsScreen {
@@ -63,6 +66,7 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
   final GlobalKey<State<CommentsSection>> _commentsSectionKey = GlobalKey<State<CommentsSection>>();
   final ScrollController _scrollController = ScrollController();
   bool _showQuestionInTitle = false;
+  bool _hasCompletedRating = false;
   
   // Comparison mode variables
   bool _isComparisonMode = false;
@@ -76,13 +80,17 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
         : Color(0xFF55C5B4);
   }
 
-  // Get display name for a filter (country/room/network)
+  // Get display name for a filter (country/room/network/generation)
   String _getDisplayName(String filter) {
     if (filter == 'My Network') return 'My Network';
     if (filter == 'World') return 'World';
     if (filter.startsWith('Room:')) {
       final roomId = filter.substring(5);
       return _roomNames[roomId] ?? 'Room';
+    }
+    if (filter.startsWith('Gen:')) {
+      final genId = filter.substring(4);
+      return getGenerationLabel(genId);
     }
     return filter; // Regular country name
   }
@@ -105,7 +113,13 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
       final roomId = country.substring(5); // Remove 'Room:' prefix
       return _roomResponses[roomId] ?? [];
     }
-    
+
+    // Handle Generation filtering
+    if (country.startsWith('Gen:')) {
+      final genId = country.substring(4);
+      return widget.responses.where((r) => r['generation'] == genId).toList();
+    }
+
     // Handle regular country filtering
     return widget.responses.where((r) => r['country'] == country).toList();
   }
@@ -325,6 +339,38 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
     return result;
   }
 
+  Map<String, Map<String, dynamic>> _getGenerationResponseData() {
+    final genTotals = <String, int>{};
+    for (var response in widget.responses) {
+      final gen = response['generation']?.toString();
+      if (gen != null && gen.isNotEmpty) {
+        genTotals[gen] = (genTotals[gen] ?? 0) + 1;
+      }
+    }
+    final result = <String, Map<String, dynamic>>{};
+    genTotals.forEach((gen, total) {
+      if (total > 0) {
+        result[gen] = {'total': total};
+      }
+    });
+    return result;
+  }
+
+  String? _getGenerationMostPopular(String genId) {
+    final genResponses = widget.responses.where((r) => r['generation'] == genId).toList();
+    if (genResponses.isEmpty) return null;
+    final optionCounts = <String, int>{};
+    for (var r in genResponses) {
+      final answer = r['answer']?.toString();
+      if (answer != null && answer.isNotEmpty) {
+        optionCounts[answer] = (optionCounts[answer] ?? 0) + 1;
+      }
+    }
+    if (optionCounts.isEmpty) return null;
+    final maxCount = optionCounts.values.reduce((a, b) => a > b ? a : b);
+    return optionCounts.entries.where((e) => e.value == maxCount).first.key;
+  }
+
   Future<void> _showCountryFilterDialog() async {
     final countryData = _getCountryResponseData();
     if (countryData.isEmpty) return;
@@ -336,7 +382,16 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
     for (var country in countryData.keys) {
       countryMostPopular[country] = getMostPopularOptionForCountry(country);
     }
-    
+
+    final generationData = _getGenerationResponseData();
+    Map<String, String?>? genMostPopular;
+    if (generationData.isNotEmpty) {
+      genMostPopular = {};
+      for (var gen in generationData.keys) {
+        genMostPopular[gen] = _getGenerationMostPopular(gen);
+      }
+    }
+
     final selectedCountryResult = await CountryFilterDialog.show(
       context: context,
       countryResponses: countryData,
@@ -347,9 +402,11 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
       questionOptions: options,
       countryMostPopular: countryMostPopular,
       allResponses: widget.responses,
-      myNetworkResponseCount: _myNetworkResponses.length, // Pass accurate My Network count
-      roomResponseCounts: _roomResponseCounts, // Pass accurate room response counts
-      roomNames: _roomNames, // Pass room names for instant display
+      myNetworkResponseCount: _myNetworkResponses.length,
+      roomResponseCounts: _roomResponseCounts,
+      roomNames: _roomNames,
+      generationResponses: generationData.isNotEmpty ? generationData : null,
+      generationMostPopular: genMostPopular,
     );
 
     if (selectedCountryResult != null || selectedCountryResult == null) {
@@ -1046,20 +1103,26 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
     if (isPrivateQuestion || selectedCountry == null) {
       return widget.responses;
     }
-    
+
     // Handle My Network filtering
     if (selectedCountry == 'My Network') {
       print('🔍 DEBUG: Filtering to My Network - returning ${_myNetworkResponses.length} responses');
       // Return My Network responses (loaded separately via _loadMyNetworkData)
       return _myNetworkResponses;
     }
-    
+
     // Handle Room filtering
     if (selectedCountry?.startsWith('Room:') == true) {
       final roomId = selectedCountry!.substring(5); // Remove 'Room:' prefix
       return _roomResponses[roomId] ?? [];
     }
-    
+
+    // Handle Generation filtering
+    if (selectedCountry?.startsWith('Gen:') == true) {
+      final genId = selectedCountry!.substring(4);
+      return widget.responses.where((r) => r['generation'] == genId).toList();
+    }
+
     // Handle regular country filtering
     return widget.responses.where((r) {
       final responseCountry = r['country']?.toString() ?? '';
@@ -1412,7 +1475,41 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
       );
       return;
     }
-    
+
+    // Handle Generation filtering
+    if (country.startsWith('Gen:')) {
+      final genId = country.substring(4);
+      final genResponses = widget.responses.where((r) => r['generation'] == genId).toList();
+
+      if (genResponses.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('No responses from ${getGenerationLabel(genId)} yet'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 3),
+          ),
+        );
+        return;
+      }
+
+      setState(() {
+        selectedCountry = country;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Showing ${genResponses.length} responses from ${getGenerationLabel(genId)}'),
+          backgroundColor: Theme.of(context).primaryColor,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      AnalyticsService().trackEvent('generation_filter_applied', {
+        'generation': genId,
+        'question_type': 'multiple_choice',
+        'question_id': widget.question['id'].toString(),
+      });
+      return;
+    }
+
     // Handle regular country filtering
     final countryResponses = widget.responses.where((r) {
       final responseCountry = r['country']?.toString() ?? '';
@@ -1420,15 +1517,20 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
     }).toList();
     
     if (countryResponses.isEmpty) {
-      // Show message that there are no responses from this country
+      // Reset to all countries if not already showing global
+      if (selectedCountry != null) {
+        setState(() {
+          selectedCountry = null;
+        });
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('No responses from $country yet'),
+          content: Text('No responses from $country — showing all countries'),
           backgroundColor: Colors.orange,
           duration: Duration(seconds: 3),
         ),
       );
-      return; // Don't change the selection
+      return;
     }
     
     // Show informative message when selecting a country
@@ -2007,6 +2109,14 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
                               }
                               
                               final questionTitle = widget.question['prompt'] ?? widget.question['title'] ?? 'Question';
+                              final genData = _getGenerationResponseData();
+                              Map<String, String?>? genMostPop;
+                              if (genData.isNotEmpty) {
+                                genMostPop = {};
+                                for (var gen in genData.keys) {
+                                  genMostPop[gen] = _getGenerationMostPopular(gen);
+                                }
+                              }
                               final selectedCountries = await CountryComparisonDialog.show(
                                 context: context,
                                 countryResponses: countryData,
@@ -2017,6 +2127,8 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
                                 roomResponseCounts: _roomResponseCounts,
                                 myNetworkResponseCount: _myNetworkResponses.length,
                                 roomNames: _roomNames,
+                                generationResponses: genData,
+                                generationMostPopular: genMostPop,
                               );
                               
                               if (selectedCountries != null && selectedCountries.length == 2) {
@@ -2063,6 +2175,8 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
                       if (countryName != null) {
                         _onCountrySelected(countryName);
                       }
+                    } else {
+                      _onCountrySelected(null);
                     }
                   },
                 ),
@@ -2071,7 +2185,19 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
             ],
             
             
+            // Question Rating Section
+            QuestionRatingSection(
+              questionId: widget.question['id']?.toString() ?? '',
+              isAuthor: Provider.of<QuestionService>(context, listen: false).isCurrentUserAuthor(widget.question),
+              onRatingComplete: () {
+                if (mounted) setState(() => _hasCompletedRating = true);
+              },
+            ),
+
+            const SizedBox(height: 16),
+
             // Linked Questions Section
+            if (_hasCompletedRating) ...[
             LinkedQuestionsSection(
               questionId: widget.question['id']?.toString() ?? '',
               comments: _comments,
@@ -2081,9 +2207,9 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
               fromUserScreen: widget.fromUserScreen,
               margin: EdgeInsets.zero, // Remove default margin to align with comments section
             ),
-            
+
             const SizedBox(height: 16), // Add spacing between sections
-            
+
             // Comments Section - always at the end
             CommentsSection(
               key: _commentsSectionKey,
@@ -2098,6 +2224,7 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
                 });
               },
             ),
+            ],
             
             // Swipe to next indicator
             SizedBox(height: 40),

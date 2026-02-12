@@ -5,14 +5,19 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/category.dart';
 import '../services/temporary_category_filter_notifier.dart';
+import '../services/temporary_review_filter_notifier.dart';
 
 class CategoryNavigation {
   // Static method to handle category chip clicks
   static void onCategoryChipTap(BuildContext context, String categoryName) {
+    // Clear any active review filter (mutually exclusive)
+    final reviewNotifier = Provider.of<TemporaryReviewFilterNotifier>(context, listen: false);
+    reviewNotifier.setTemporaryReviewFilter(null);
+
     // Set the temporary category filter
     final filterNotifier = Provider.of<TemporaryCategoryFilterNotifier>(context, listen: false);
     filterNotifier.setTemporaryCategoryFilter(categoryName);
-    
+
     // Navigate back to home screen without destroying it
     Navigator.popUntil(context, (route) => route.isFirst);
   }

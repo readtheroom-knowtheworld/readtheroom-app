@@ -12,6 +12,7 @@ class CountryApprovalMap extends StatefulWidget {
   final String questionTitle;
   final String? questionId;
   final Function(String?)? onCountryTap;
+  final ValueChanged<bool>? onZoomChanged;
 
   const CountryApprovalMap({
     Key? key,
@@ -19,6 +20,7 @@ class CountryApprovalMap extends StatefulWidget {
     required this.questionTitle,
     this.questionId,
     this.onCountryTap,
+    this.onZoomChanged,
   }) : super(key: key);
 
   @override
@@ -419,6 +421,7 @@ class _CountryApprovalMapState extends State<CountryApprovalMap> {
                         onCountryTap: widget.onCountryTap,
                         markers: _markers,
                         neutralPolygons: _granularity != MapGranularity.country,
+                        onZoomChanged: widget.onZoomChanged,
                       ),
             const SizedBox(height: 16),
             // Custom legend with icons

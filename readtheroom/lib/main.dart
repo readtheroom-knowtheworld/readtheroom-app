@@ -22,11 +22,13 @@ import 'src/services/location_service.dart';
 import 'src/services/question_service.dart';
 import 'src/services/notification_service.dart';
 import 'src/services/streak_reminder_service.dart';
+import 'src/services/qotd_reminder_service.dart';
 import 'src/services/deep_link_service.dart';
 import 'src/services/watchlist_service.dart';
 import 'src/services/suggestion_watchlist_service.dart';
 import 'src/services/theme_service.dart';
 import 'src/services/temporary_category_filter_notifier.dart';
+import 'src/services/temporary_review_filter_notifier.dart';
 import 'src/services/navigation_visibility_notifier.dart';
 import 'src/services/question_cache_service.dart';
 import 'src/services/guest_user_tracking_service.dart';
@@ -349,18 +351,9 @@ void main() async {
   }
   
   // Initialize Supabase
-  // Pass via: --dart-define=SUPABASE_URL=... --dart-define=SUPABASE_ANON_KEY=...
-  const supabaseUrl = String.fromEnvironment('SUPABASE_URL');
-  const supabaseAnonKey = String.fromEnvironment('SUPABASE_ANON_KEY');
-  if (supabaseUrl.isEmpty || supabaseAnonKey.isEmpty) {
-    throw Exception(
-      'Missing Supabase configuration. '
-      'Run with: flutter run --dart-define=SUPABASE_URL=<url> --dart-define=SUPABASE_ANON_KEY=<key>',
-    );
-  }
   await Supabase.initialize(
-    url: supabaseUrl,
-    anonKey: supabaseAnonKey,
+    url: const String.fromEnvironment('SUPABASE_URL'),
+    anonKey: const String.fromEnvironment('SUPABASE_ANON_KEY'),
   );
   
   // Initialize Firebase with generated options
@@ -390,7 +383,8 @@ void main() async {
   final notificationService = NotificationService();
   print('🦎 MAIN: Created NotificationService instance ${identityHashCode(notificationService)}');
   final streakReminderService = StreakReminderService();
-  print('🦎 MAIN: Created StreakReminderService instance');
+  final qotdReminderService = QOTDReminderService();
+  print('🦎 MAIN: Created StreakReminderService and QOTDReminderService instances');
   final questionService = QuestionService();
   final watchlistService = WatchlistService();
   final suggestionWatchlistService = SuggestionWatchlistService();
@@ -420,6 +414,7 @@ void main() async {
     initializeNotificationService: () async {
       await notificationService.initialize();
       await streakReminderService.initialize();
+      await qotdReminderService.initialize();
     },
     initializeDeepLinkService: () async {
       // DeepLinkService is initialized in the widget tree
@@ -833,6 +828,7 @@ class _ReadTheRoomAppState extends State<ReadTheRoomApp> with WidgetsBindingObse
         ChangeNotifierProvider.value(value: widget.suggestionWatchlistService),
         ChangeNotifierProvider.value(value: widget.themeService),
         ChangeNotifierProvider(create: (_) => TemporaryCategoryFilterNotifier()),
+        ChangeNotifierProvider(create: (_) => TemporaryReviewFilterNotifier()),
         ChangeNotifierProvider(create: (_) => NavigationVisibilityNotifier()),
         ChangeNotifierProvider(create: (_) => GuestUserTrackingService()),
       ],

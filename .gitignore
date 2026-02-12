@@ -83,6 +83,10 @@ readtheroom/ios/Flutter/Secrets.xcconfig
 # CI/CD pipeline config
 codemagic.yaml
 
+# F-Droid (work in progress)
+metadata/
+fastlane/
+
 # Internal documentation
 CLAUDE.md
 DBarchitecture.md

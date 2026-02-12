@@ -430,8 +430,24 @@ class QuestionService extends ChangeNotifier {
   }
 
   // Find a fallback QOTD by searching for most popular question without reports
+  // Mirrors server logic: last 14 days, excludes past QOTDs, sorted by response count
   Future<Map<String, dynamic>?> _findFallbackQotd(DateTime now) async {
     const maxDaysBack = 30;
+
+    // Fetch last 14 QOTD entries to exclude past selections
+    final Set<String> pastQotdIds = {};
+    try {
+      final history = await _supabase
+          .from('question_of_the_day_history')
+          .select('question_id')
+          .order('date', ascending: false)
+          .limit(14);
+      for (final entry in history) {
+        pastQotdIds.add(entry['question_id'] as String);
+      }
+    } catch (e) {
+      print('Error fetching QOTD history for fallback: $e');
+    }
 
     for (int daysBack = 1; daysBack <= maxDaysBack; daysBack++) {
       final dayStart = now.subtract(Duration(days: daysBack));
@@ -461,9 +477,12 @@ class QuestionService extends ChangeNotifier {
 
         if (questions == null || questions.isEmpty) continue;
 
-        // Get response counts and filter out reported questions
+        // Get response counts and filter out reported/past QOTD questions
         final candidates = <Map<String, dynamic>>[];
         for (var question in questions) {
+          // Skip past QOTDs
+          if (pastQotdIds.contains(question['id'])) continue;
+
           // Check for reports
           try {
             final reports = await _supabase
@@ -3098,15 +3117,21 @@ class QuestionService extends ChangeNotifier {
       
       print('DEBUG: Using country_code: $resolvedCountryCode (from city: ${locationService?.selectedCity?['country_code']}, fallback: $countryCode)');
       
+      // Get user's generation preference
+      final prefs = await SharedPreferences.getInstance();
+      final userGeneration = prefs.getString('user_generation');
+      final generationValue = (userGeneration != null && userGeneration != 'opt_out') ? userGeneration : null;
+
       // Create the response object
       final responseData = {
         'question_id': questionId,
         'option_id': optionId,
         'city_id': cityId,
         'country_code': resolvedCountryCode,
-        'is_authenticated': true
+        'is_authenticated': true,
+        'generation': generationValue,
       };
-      
+
       // Insert into Supabase
       print('DEBUG: Submitting multiple choice response to database: $responseData');
       
@@ -3356,15 +3381,21 @@ class QuestionService extends ChangeNotifier {
       
       print('DEBUG: Using country_code: $resolvedCountryCode (from city: ${locationService?.selectedCity?['country_code']}, fallback: $countryCode)');
       
+      // Get user's generation preference
+      final prefs = await SharedPreferences.getInstance();
+      final userGeneration = prefs.getString('user_generation');
+      final generationValue = (userGeneration != null && userGeneration != 'opt_out') ? userGeneration : null;
+
       // Create the response object
       final responseData = {
         'question_id': questionId,
         'score': scoreInt,
         'city_id': cityId,
         'country_code': resolvedCountryCode,
-        'is_authenticated': true
+        'is_authenticated': true,
+        'generation': generationValue,
       };
-      
+
       // Insert response directly without user_id (responses table has no user_id for anonymity)
       print('Submitting approval response: $responseData');
       final insertResult = await _supabase
@@ -3501,15 +3532,21 @@ class QuestionService extends ChangeNotifier {
       
       print('DEBUG: Using country_code: $resolvedCountryCode (from city: ${locationService?.selectedCity?['country_code']}, fallback: $countryCode)');
       
+      // Get user's generation preference
+      final prefs = await SharedPreferences.getInstance();
+      final userGeneration = prefs.getString('user_generation');
+      final generationValue = (userGeneration != null && userGeneration != 'opt_out') ? userGeneration : null;
+
       // Create the response object
       final responseData = {
         'question_id': questionId,
         'text_response': responseText,
         'city_id': cityId,
         'country_code': resolvedCountryCode,
-        'is_authenticated': true
+        'is_authenticated': true,
+        'generation': generationValue,
       };
-      
+
       // Insert response directly without user_id (responses table has no user_id for anonymity)
       print('Submitting text response: $responseData');
       final insertResult = await _supabase
@@ -4789,7 +4826,7 @@ class QuestionService extends ChangeNotifier {
           .replace(queryParameters: queryParams);
       
       // Use anon key for Edge Functions (required for proper authentication)
-      const anonKey = String.fromEnvironment('SUPABASE_ANON_KEY');
+      const anonKey = String.fromEnvironment('SUPABASE_ANON_KEY', defaultValue: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlncW5xZHJtbGRya3l1Z2hydmNnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDcwMTgxNDAsImV4cCI6MjA2MjU5NDE0MH0.csUnbJgJAlOx4seEi2hV-76t286q56-zGu307Mf0rQE');
       
       print('🔗 Edge Function URL: $uri');
       print('🔍 Request parameters: ${queryParams.toString()}');

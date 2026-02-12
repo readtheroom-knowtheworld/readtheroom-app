@@ -1,6 +1,7 @@
 // Copyright (C) 2025 Soud Al Kharusi
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -43,6 +44,7 @@ class ChoroplethMapBase extends StatefulWidget {
   final Function(String?)? onCountryTap;
   final List<MapMarkerEntry> markers;
   final bool neutralPolygons;
+  final ValueChanged<bool>? onZoomChanged;
 
   const ChoroplethMapBase({
     Key? key,
@@ -51,6 +53,7 @@ class ChoroplethMapBase extends StatefulWidget {
     this.onCountryTap,
     this.markers = const [],
     this.neutralPolygons = false,
+    this.onZoomChanged,
   }) : super(key: key);
 
   @override
@@ -70,10 +73,29 @@ class _ChoroplethMapBaseState extends State<ChoroplethMapBase> {
 
   final MapController _mapController = MapController();
 
+  // Map interaction state: map starts non-interactive, activated by double-tap
+  bool _mapInteractive = false;
+
+  // Hint overlay
+  bool _showHint = false;
+  Timer? _hintTimer;
+
+  // Double-tap detection via passive Listener
+  DateTime? _lastTapTime;
+  Offset? _lastTapPosition;
+  bool _isPointerDrag = false;
+  Offset? _pointerDownPosition;
+
   @override
   void initState() {
     super.initState();
     _loadGeoData();
+  }
+
+  @override
+  void dispose() {
+    _hintTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -210,6 +232,81 @@ class _ChoroplethMapBaseState extends State<ChoroplethMapBase> {
     }
   }
 
+  // --- Double-tap detection (passive, doesn't interfere with scrolling) ---
+
+  void _handlePointerDown(PointerDownEvent event) {
+    _isPointerDrag = false;
+    _pointerDownPosition = event.localPosition;
+    // Show hint whenever user touches the map area (including during scroll)
+    if (!_mapInteractive) {
+      _showHintBriefly();
+    }
+  }
+
+  void _handlePointerMove(PointerMoveEvent event) {
+    if (_pointerDownPosition != null &&
+        (event.localPosition - _pointerDownPosition!).distance > 10) {
+      _isPointerDrag = true;
+    }
+  }
+
+  void _handlePointerUp(PointerUpEvent event) {
+    if (_isPointerDrag || _mapInteractive) return;
+
+    final now = DateTime.now();
+    if (_lastTapTime != null &&
+        now.difference(_lastTapTime!).inMilliseconds < 400 &&
+        _lastTapPosition != null &&
+        (event.localPosition - _lastTapPosition!).distance < 50) {
+      // Double-tap detected
+      _activateMap();
+      _lastTapTime = null;
+      _lastTapPosition = null;
+    } else {
+      _lastTapTime = now;
+      _lastTapPosition = event.localPosition;
+    }
+  }
+
+  void _showHintBriefly() {
+    _hintTimer?.cancel();
+    if (!_showHint && mounted) {
+      setState(() => _showHint = true);
+    }
+    _hintTimer = Timer(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _showHint = false);
+    });
+  }
+
+  void _activateMap() {
+    setState(() {
+      _mapInteractive = true;
+      _showHint = false;
+    });
+    _hintTimer?.cancel();
+    widget.onZoomChanged?.call(true);
+  }
+
+  void _deactivateMap() {
+    setState(() {
+      _mapInteractive = false;
+      _tooltipText = null;
+      _tooltipLocalOffset = null;
+    });
+    widget.onZoomChanged?.call(false);
+    // Clear any active country filter
+    widget.onCountryTap?.call(null);
+    // Reset to initial view
+    _mapController.fitCamera(
+      CameraFit.bounds(
+        bounds: LatLngBounds(
+          const LatLng(-38, -165),
+          const LatLng(73, 180),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -225,42 +322,123 @@ class _ChoroplethMapBaseState extends State<ChoroplethMapBase> {
       child: Stack(
         clipBehavior: Clip.none,
         children: [
-          FlutterMap(
-            mapController: _mapController,
-            options: MapOptions(
-              initialCameraFit: CameraFit.bounds(
-                bounds: LatLngBounds(
-                  const LatLng(-38, -165), // South of New Zealand
-                  const LatLng(73, 180),   // NZ at far right edge
+          // Map — IgnorePointer prevents it from capturing gestures when not
+          // interactive, so the parent scroll view receives drag events normally.
+          IgnorePointer(
+            ignoring: !_mapInteractive,
+            child: FlutterMap(
+              mapController: _mapController,
+              options: MapOptions(
+                initialCameraFit: CameraFit.bounds(
+                  bounds: LatLngBounds(
+                    const LatLng(-38, -165),
+                    const LatLng(73, 180),
+                  ),
+                ),
+                minZoom: 0.3,
+                maxZoom: 15.0,
+                backgroundColor: Colors.transparent,
+                onTap: _mapInteractive ? _onTap : null,
+                interactionOptions: InteractionOptions(
+                  flags: _mapInteractive
+                      ? InteractiveFlag.all & ~InteractiveFlag.rotate
+                      : InteractiveFlag.none,
                 ),
               ),
-              minZoom: 0.3,
-              maxZoom: 15.0,
-              backgroundColor: Colors.transparent,
-              onTap: _onTap,
-              interactionOptions: const InteractionOptions(
-                flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
+              children: [
+                PolygonLayer(
+                  polygons: _buildPolygons(context),
+                  polygonCulling: true,
+                ),
+                if (widget.markers.isNotEmpty)
+                  CircleLayer(
+                    circles: widget.markers
+                        .map((m) => CircleMarker(
+                              point: m.position,
+                              radius: m.radius,
+                              color: m.color.withValues(alpha: 0.75),
+                              borderColor: Colors.white,
+                              borderStrokeWidth: 1.5,
+                            ))
+                        .toList(),
+                  ),
+              ],
+            ),
+          ),
+
+          // Passive double-tap detection overlay (when not interactive).
+          // Listener doesn't participate in the gesture arena, so page
+          // scrolling is unaffected.
+          if (!_mapInteractive)
+            Positioned.fill(
+              child: Listener(
+                behavior: HitTestBehavior.translucent,
+                onPointerDown: _handlePointerDown,
+                onPointerMove: _handlePointerMove,
+                onPointerUp: _handlePointerUp,
+                child: const SizedBox.expand(),
               ),
             ),
-            children: [
-              PolygonLayer(
-                polygons: _buildPolygons(context),
-                polygonCulling: true,
-              ),
-              if (widget.markers.isNotEmpty)
-                CircleLayer(
-                  circles: widget.markers
-                      .map((m) => CircleMarker(
-                            point: m.position,
-                            radius: m.radius,
-                            color: m.color.withValues(alpha: 0.75),
-                            borderColor: Colors.white,
-                            borderStrokeWidth: 1.5,
-                          ))
-                      .toList(),
+
+          // Hint overlay — fades in/out, ignores pointer so taps pass through.
+          if (!_mapInteractive)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: AnimatedOpacity(
+                  opacity: _showHint ? 1.0 : 0.0,
+                  duration: const Duration(milliseconds: 300),
+                  child: Container(
+                    color: Colors.black.withValues(alpha: 0.3),
+                    child: Center(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.7),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.touch_app,
+                                color: Colors.white70, size: 18),
+                            SizedBox(width: 8),
+                            Text(
+                              'Double-tap to pan/zoom',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
-            ],
-          ),
+              ),
+            ),
+
+          // Close button to deactivate map interaction
+          if (_mapInteractive)
+            Positioned(
+              top: 8,
+              right: 8,
+              child: GestureDetector(
+                onTap: _deactivateMap,
+                child: Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.6),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.close,
+                      color: Colors.white, size: 16),
+                ),
+              ),
+            ),
+
           // Tooltip overlay
           if (_tooltipText != null && _tooltipLocalOffset != null)
             Positioned(

@@ -18,6 +18,7 @@ import '../screens/join_room_screen.dart';
 import '../screens/main_screen.dart';
 import '../models/room.dart';
 import 'user_service.dart';
+import 'question_service.dart';
 import 'room_event_service.dart';
 
 // Helper class to track pending deep links
@@ -253,7 +254,8 @@ class DeepLinkService {
         }
         
         print('Deep link: Extracted question ID: $questionId');
-        await _handleQuestionLink(context, questionId);
+        final isQotd = uri.scheme == 'readtheroom' && uri.host == 'qotd';
+        await _handleQuestionLink(context, questionId, isQotd: isQotd);
         return;
       }
       
@@ -295,19 +297,57 @@ class DeepLinkService {
   }
 
   /// Handle question deep link
-  Future<void> _handleQuestionLink(BuildContext context, String questionId) async {
-    print('Deep link: Handling question link for ID: $questionId');
-    
-    // Fetch the question details
+  Future<void> _handleQuestionLink(BuildContext context, String questionId, {bool isQotd = false}) async {
+    print('Deep link: Handling question link for ID: $questionId (isQotd: $isQotd)');
+
+    // Fetch the question details (and trending feed in parallel for QOTD)
     print('Deep link: Fetching question details for ID: $questionId');
-    final question = await _fetchQuestion(questionId);
+
+    FeedContext? feedContext;
+    Map<String, dynamic>? question;
+
+    if (isQotd) {
+      // Fetch QOTD question and trending feed in parallel
+      final questionService = QuestionService();
+      final results = await Future.wait([
+        _fetchQuestion(questionId),
+        questionService.fetchOptimizedFeed(
+          feedType: 'trending',
+          limit: 50,
+          useCache: false,
+        ).catchError((_) => <Map<String, dynamic>>[]),
+      ]);
+
+      question = results[0] as Map<String, dynamic>?;
+      final trendingQuestions = results[1] as List<Map<String, dynamic>>;
+
+      if (question != null && trendingQuestions.isNotEmpty) {
+        // Deduplicate: remove QOTD from trending if present
+        final deduped = trendingQuestions
+            .where((q) => q['id']?.toString() != questionId)
+            .toList();
+
+        final combinedQuestions = <Map<String, dynamic>>[question, ...deduped];
+
+        feedContext = FeedContext(
+          feedType: 'trending',
+          filters: {},
+          questions: combinedQuestions,
+          currentQuestionIndex: 0,
+          originalQuestionId: questionId,
+          originalQuestionIndex: 0,
+        );
+        print('Deep link: Built FeedContext with QOTD + ${deduped.length} trending questions');
+      }
+    } else {
+      question = await _fetchQuestion(questionId);
+    }
+
     if (question == null) {
       print('Deep link: Question not found for ID: $questionId');
       _showErrorSnackBar(context, 'Question not found or may have been removed.');
       return;
     }
-    
-    // print('Deep link: Successfully fetched question: ${question['title']}');  // Commented out excessive logging
 
     // Check if question is hidden (moderated)
     if (question['is_hidden'] == true) {
@@ -330,10 +370,10 @@ class DeepLinkService {
     // Navigate to appropriate screen
     if (hasAnswered) {
       print('Deep link: User has already answered, navigating to results screen');
-      await _navigateToResultsScreen(context, question);
+      await _navigateToResultsScreen(context, question, feedContext: feedContext);
     } else {
       print('Deep link: User has not answered, navigating to answer screen');
-      await _navigateToAnswerScreen(context, question);
+      await _navigateToAnswerScreen(context, question, feedContext: feedContext);
     }
   }
 
@@ -531,7 +571,7 @@ class DeepLinkService {
 
 
   /// Navigate to appropriate answer screen based on question type
-  Future<void> _navigateToAnswerScreen(BuildContext context, Map<String, dynamic> question) async {
+  Future<void> _navigateToAnswerScreen(BuildContext context, Map<String, dynamic> question, {FeedContext? feedContext}) async {
     final questionType = question['type'] as String;
     final questionId = question['id'] as String;
 
@@ -543,13 +583,13 @@ class DeepLinkService {
       Widget screen;
       switch (questionType.toLowerCase()) {
         case 'multiple_choice':
-          screen = AnswerMultipleChoiceScreen(question: question);
+          screen = AnswerMultipleChoiceScreen(question: question, feedContext: feedContext);
           break;
         case 'approval_rating':
-          screen = AnswerApprovalScreen(question: question);
+          screen = AnswerApprovalScreen(question: question, feedContext: feedContext);
           break;
         case 'text':
-          screen = AnswerTextScreen(question: question);
+          screen = AnswerTextScreen(question: question, feedContext: feedContext);
           break;
         default:
           _showErrorSnackBar(context, 'Unknown question type: $questionType');
@@ -598,7 +638,7 @@ class DeepLinkService {
   }
 
   /// Navigate to appropriate results screen based on question type
-  Future<void> _navigateToResultsScreen(BuildContext context, Map<String, dynamic> question) async {
+  Future<void> _navigateToResultsScreen(BuildContext context, Map<String, dynamic> question, {FeedContext? feedContext}) async {
     final questionType = question['type'] as String;
     final questionId = question['id'] as String;
 
@@ -610,19 +650,19 @@ class DeepLinkService {
           final responses = await _fetchMultipleChoiceResponses(questionId, question);
           // Update the question's vote count based on actual responses
           question['votes'] = responses.length;
-          screen = MultipleChoiceResultsScreen(question: question, responses: responses);
+          screen = MultipleChoiceResultsScreen(question: question, responses: responses, feedContext: feedContext);
           break;
         case 'approval_rating':
           final responses = await _fetchApprovalResponses(questionId);
           // Update the question's vote count based on actual responses
           question['votes'] = responses.length;
-          screen = ApprovalResultsScreen(question: question, responses: responses);
+          screen = ApprovalResultsScreen(question: question, responses: responses, feedContext: feedContext);
           break;
         case 'text':
           // For text questions, we need to fetch the response count separately since TextResultsScreen loads its own data
           final textResponseCount = await _fetchTextResponseCount(questionId);
           question['votes'] = textResponseCount;
-          screen = TextResultsScreen(question: question);
+          screen = TextResultsScreen(question: question, feedContext: feedContext);
           break;
         default:
           _showErrorSnackBar(context, 'Unknown question type: $questionType');
