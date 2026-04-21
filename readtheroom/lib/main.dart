@@ -32,6 +32,7 @@ import 'src/services/temporary_review_filter_notifier.dart';
 import 'src/services/navigation_visibility_notifier.dart';
 import 'src/services/question_cache_service.dart';
 import 'src/services/guest_user_tracking_service.dart';
+import 'src/services/boost_service.dart';
 import 'src/services/initialization_coordinator.dart';
 import 'src/services/analytics_service.dart';
 import 'src/services/analytics_navigation_observer.dart';
@@ -831,6 +832,7 @@ class _ReadTheRoomAppState extends State<ReadTheRoomApp> with WidgetsBindingObse
         ChangeNotifierProvider(create: (_) => TemporaryReviewFilterNotifier()),
         ChangeNotifierProvider(create: (_) => NavigationVisibilityNotifier()),
         ChangeNotifierProvider(create: (_) => GuestUserTrackingService()),
+        ChangeNotifierProvider(create: (_) => BoostService()),
       ],
       child: Consumer<ThemeService>(
         builder: (context, themeService, child) {

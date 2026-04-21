@@ -3243,32 +3243,29 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, W
                   // Since icons are stacked vertically, we only need: QuestionTypeBadge width + spacing
                   double leftPadding = 24.0 + 16.0; // Badge width + increased spacing after icons column
                   
-                  // Build subtitle parts (time, votes - no reacts in main feed)
-                  final parts = <String>[];
-                  parts.add(timeAgo);
-                  parts.add('$displayVotes ${displayVotes == 1 ? 'vote' : 'votes'}');
-                  
-                  // Build single line with comments on the right if there are comments
+                  final subtitleColor = hasAnswered ? Colors.grey : null;
+                  final subtitleStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: subtitleColor,
+                  );
+
+                  final iconColor = hasAnswered ? Colors.grey : Theme.of(context).textTheme.bodySmall?.color;
+
+                  // Build single line: time • votes icon ... comments icon
                   return Padding(
                     padding: EdgeInsets.only(left: leftPadding, top: 2.0),
                     child: Row(
                       children: [
-                        Expanded(
-                          child: Text(
-                            parts.join(' • '),
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: hasAnswered ? Colors.grey : null,
-                            ),
-                          ),
-                        ),
-                        // Show comment count if there are comments
-                        if (commentCount > 0)
-                          Text(
-                            '$commentCount ${commentCount == 1 ? 'comment' : 'comments'}',
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: hasAnswered ? Colors.grey : null,
-                            ),
-                          ),
+                        Text(timeAgo, style: subtitleStyle),
+                        Text(' • ', style: subtitleStyle),
+                        Text('$displayVotes', style: subtitleStyle),
+                        SizedBox(width: 3),
+                        Icon(Icons.people_outline, size: 14, color: iconColor),
+                        Spacer(),
+                        if (commentCount > 0) ...[
+                          Text('$commentCount', style: subtitleStyle),
+                          SizedBox(width: 3),
+                          Icon(Icons.chat_bubble_outline, size: 14, color: iconColor),
+                        ],
                       ],
                     ),
                   );
@@ -5509,13 +5506,13 @@ class QuestionOfTheDayWidgetState extends State<QuestionOfTheDayWidget> {
                             overflow: TextOverflow.ellipsis,
                           ),
                           SizedBox(height: 12),
-                          // Display vote and comment counts with votes on left, comments on right
+                          // Display vote and comment counts with icons
                           Row(
                             children: [
                               // Show vote count only if > 1
-                              if (_getVoteCount(qotd) > 1)
+                              if (_getVoteCount(qotd) > 1) ...[
                                 Text(
-                                  '${_getVoteCount(qotd)} votes',
+                                  '${_getVoteCount(qotd)}',
                                   style: TextStyle(
                                     color: hasAnsweredQOTD
                                         ? Colors.grey
@@ -5523,11 +5520,15 @@ class QuestionOfTheDayWidgetState extends State<QuestionOfTheDayWidget> {
                                     fontSize: 12,
                                   ),
                                 ),
+                                SizedBox(width: 3),
+                                Icon(Icons.people_outline, size: 14,
+                                  color: hasAnsweredQOTD ? Colors.grey : Theme.of(context).primaryColor),
+                              ],
                               Spacer(),
                               // Show comment count only if > 0
-                              if (_getCommentCount(qotd) > 0)
+                              if (_getCommentCount(qotd) > 0) ...[
                                 Text(
-                                  '${_getCommentCount(qotd)} ${_getCommentCount(qotd) == 1 ? 'comment' : 'comments'}',
+                                  '${_getCommentCount(qotd)}',
                                   style: TextStyle(
                                     color: hasAnsweredQOTD
                                         ? Colors.grey
@@ -5535,6 +5536,10 @@ class QuestionOfTheDayWidgetState extends State<QuestionOfTheDayWidget> {
                                     fontSize: 12,
                                   ),
                                 ),
+                                SizedBox(width: 3),
+                                Icon(Icons.chat_bubble_outline, size: 14,
+                                  color: hasAnsweredQOTD ? Colors.grey : Theme.of(context).primaryColor),
+                              ],
                             ],
                           ),
                         ],

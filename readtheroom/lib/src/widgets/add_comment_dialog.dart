@@ -9,24 +9,33 @@ import '../services/achievement_service.dart';
 import '../services/comment_service.dart';
 import '../services/congratulations_service.dart';
 import '../services/profanity_filter_service.dart';
+import '../services/question_rating_service.dart';
 import '../services/question_service.dart';
 import '../services/user_service.dart';
 import '../services/watchlist_service.dart';
+import '../utils/review_tag_navigation.dart';
+import 'approval_slider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
+
+enum _CommentDialogStage { ratingSlider, ratingChips, comment }
 
 class AddCommentDialog extends StatefulWidget {
   final String questionId;
   final String questionTitle;
   final Map<String, dynamic>? question;
+  final bool isAuthor;
   final Function(Map<String, dynamic>)? onCommentAdded;
+  final VoidCallback? onRatingSubmitted;
 
   const AddCommentDialog({
     Key? key,
     required this.questionId,
     required this.questionTitle,
     this.question,
+    this.isAuthor = false,
     this.onCommentAdded,
+    this.onRatingSubmitted,
   }) : super(key: key);
 
   @override
@@ -38,7 +47,9 @@ class AddCommentDialog extends StatefulWidget {
     required String questionId,
     required String questionTitle,
     Map<String, dynamic>? question,
+    bool isAuthor = false,
     Function(Map<String, dynamic>)? onCommentAdded,
+    VoidCallback? onRatingSubmitted,
   }) {
     return showDialog<Map<String, dynamic>>(
       context: context,
@@ -46,7 +57,9 @@ class AddCommentDialog extends StatefulWidget {
         questionId: questionId,
         questionTitle: questionTitle,
         question: question,
+        isAuthor: isAuthor,
         onCommentAdded: onCommentAdded,
+        onRatingSubmitted: onRatingSubmitted,
       ),
     );
   }
@@ -68,12 +81,83 @@ class _AddCommentDialogState extends State<AddCommentDialog> {
   bool _showQuestionDropdown = false;
   QuestionService? _questionService;
 
+  // Rating-gate state
+  _CommentDialogStage _stage = _CommentDialogStage.comment;
+  final _ratingService = QuestionRatingService();
+  double _ratingValue = 0.0;
+  final Set<String> _selectedTags = {};
+  bool _isSubmittingRating = false;
+
   @override
   void initState() {
     super.initState();
     _contentController.addListener(_checkForProfanity);
     _contentController.addListener(_parseLinkedQuestions);
     _contentController.addListener(_handleTextChange);
+    _determineInitialStage();
+  }
+
+  void _determineInitialStage() {
+    final isAuthenticated =
+        Supabase.instance.client.auth.currentUser != null;
+    if (widget.isAuthor || !isAuthenticated) {
+      _stage = _CommentDialogStage.comment;
+      return;
+    }
+    // Read userService without listening — we only need a snapshot at open.
+    final userService = Provider.of<UserService>(context, listen: false);
+    _stage = userService.hasRatedQuestion(widget.questionId)
+        ? _CommentDialogStage.comment
+        : _CommentDialogStage.ratingSlider;
+  }
+
+  List<String> get _availableChips {
+    if (_ratingValue <= -0.3) return ReviewTagNavigation.negativeChips;
+    if (_ratingValue > 0.3) return ReviewTagNavigation.positiveChips;
+    return [];
+  }
+
+  Future<void> _onSliderReleased(double value) async {
+    if (_isSubmittingRating) return;
+    setState(() {
+      _isSubmittingRating = true;
+      _ratingValue = value;
+    });
+
+    final submitted =
+        await _ratingService.submitRating(widget.questionId, _ratingValue);
+
+    if (submitted && mounted) {
+      final userService = Provider.of<UserService>(context, listen: false);
+      await userService.setQuestionRating(widget.questionId, _ratingValue);
+      widget.onRatingSubmitted?.call();
+    }
+
+    if (!mounted) return;
+
+    final nextStage = (_ratingValue <= -0.3 || _ratingValue > 0.3)
+        ? _CommentDialogStage.ratingChips
+        : _CommentDialogStage.comment;
+
+    setState(() {
+      _isSubmittingRating = false;
+      _stage = nextStage;
+    });
+  }
+
+  Future<void> _submitTags() async {
+    if (_selectedTags.isNotEmpty) {
+      await _ratingService.submitReviewTags(
+        widget.questionId,
+        _selectedTags.toList(),
+      );
+    }
+    if (!mounted) return;
+    setState(() => _stage = _CommentDialogStage.comment);
+  }
+
+  void _skipTags() {
+    setState(() => _stage = _CommentDialogStage.comment);
   }
 
   @override
@@ -441,6 +525,172 @@ class _AddCommentDialogState extends State<AddCommentDialog> {
         );
       }
     }
+  }
+
+  Widget _buildStageContent(BuildContext context) {
+    switch (_stage) {
+      case _CommentDialogStage.ratingSlider:
+        return _buildRatingSliderStage(context);
+      case _CommentDialogStage.ratingChips:
+        return _buildRatingChipsStage(context);
+      case _CommentDialogStage.comment:
+        return _buildCommentStage(context);
+    }
+  }
+
+  Widget _buildRatingSliderStage(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Text(
+          'Before commenting, thoughts on the question itself?',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Colors.grey[600],
+              ),
+          textAlign: TextAlign.center,
+        ),
+        SizedBox(height: 20),
+        Text(
+          'How would you rate this question?',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        const SizedBox(height: 12),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: const [
+            Icon(Icons.thumb_down, color: Colors.red),
+            Icon(Icons.thumb_up, color: Colors.green),
+          ],
+        ),
+        const SizedBox(height: 4),
+        ApprovalSlider(
+          initialValue: 0.0,
+          onChanged: (value) {
+            _ratingValue = value;
+          },
+          onChangeEnd: _isSubmittingRating ? (_) {} : _onSliderReleased,
+        ),
+        if (_isSubmittingRating) ...[
+          const SizedBox(height: 16),
+          const SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildRatingChipsStage(BuildContext context) {
+    final chips = _availableChips;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'What stood out?',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Optional — pick any that fit.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Colors.grey[600],
+              ),
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: chips.map((tag) {
+            final selected = _selectedTags.contains(tag);
+            return FilterChip(
+              label: Text(ReviewTagNavigation.chipLabels[tag] ?? tag),
+              selected: selected,
+              showCheckmark: false,
+              onSelected: (val) {
+                setState(() {
+                  if (val) {
+                    _selectedTags.add(tag);
+                  } else {
+                    _selectedTags.remove(tag);
+                  }
+                });
+              },
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 20),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            TextButton(
+              onPressed: _skipTags,
+              child: const Text('Skip'),
+            ),
+            ElevatedButton(
+              onPressed: _submitTags,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Theme.of(context).primaryColor,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Continue'),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCommentStage(BuildContext context) {
+    return Form(
+      key: _formKey,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Text(
+            'Please be respectful, thoughtful, and kind in your comments \u{1F98E}',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Colors.grey[600],
+                ),
+            textAlign: TextAlign.center,
+          ),
+          SizedBox(height: 24),
+          Column(
+            children: [
+              if (_showQuestionDropdown) _buildQuestionDropdown(),
+              _buildContentField(),
+            ],
+          ),
+          _buildLinkedQuestionsPreview(),
+          if (_shouldShowNSFWOption()) _buildNSFWOption(),
+          SizedBox(height: 24),
+          Align(
+            alignment: Alignment.centerRight,
+            child: ElevatedButton(
+              onPressed: _isSubmitting ? null : _submitComment,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Theme.of(context).primaryColor,
+                foregroundColor: Colors.white,
+                padding:
+                    EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              ),
+              child: _isSubmitting
+                  ? SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor:
+                            AlwaysStoppedAnimation<Color>(Colors.white),
+                      ),
+                    )
+                  : Text('Post comment'),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildContentField() {
@@ -825,54 +1075,7 @@ class _AddCommentDialogState extends State<AddCommentDialog> {
             Flexible(
               child: SingleChildScrollView(
                 padding: EdgeInsets.all(16),
-                child: Form(
-                  key: _formKey,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Text(
-                        'Please be respectful, thoughtful, and kind in your comments \u{1F98E}',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Colors.grey[600],
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                      SizedBox(height: 24),
-                      Column(
-                        children: [
-                          if (_showQuestionDropdown)
-                            _buildQuestionDropdown(),
-                          _buildContentField(),
-                        ],
-                      ),
-                      _buildLinkedQuestionsPreview(),
-                      if (_shouldShowNSFWOption())
-                        _buildNSFWOption(),
-                      SizedBox(height: 24),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: ElevatedButton(
-                          onPressed: _isSubmitting ? null : _submitComment,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Theme.of(context).primaryColor,
-                            foregroundColor: Colors.white,
-                            padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                          ),
-                          child: _isSubmitting
-                              ? SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                                  ),
-                                )
-                              : Text('Add Comment'),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+                child: _buildStageContent(context),
               ),
             ),
           ],

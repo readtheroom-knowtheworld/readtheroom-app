@@ -165,12 +165,11 @@ class AnalyticsService {
   // Question interaction tracking
   Future<void> trackQuestionViewed(String questionId, String questionType, String category, String viewSource, [Map<String, dynamic>? additionalProperties]) async {
     if (_isOptedOut || !_isInitialized) return;
-    
+
     // Track question revisit behavior
     final revisitData = await _trackQuestionRevisitBehavior(questionId);
-    
+
     final properties = {
-      'question_id': questionId,
       'question_type': questionType,
       'category': category,
       'view_source': viewSource,
@@ -180,7 +179,7 @@ class AnalyticsService {
       'time_since_last_view_minutes': revisitData['timeSinceLastViewMinutes'],
       ...?additionalProperties,
     };
-    
+
     await trackEvent('question_viewed', properties);
     
     // Track specific revisit event if this is a return visit
@@ -256,17 +255,29 @@ class AnalyticsService {
     }
   }
 
-  Future<void> trackQuestionAnswered(String questionId, String questionType, String answerType, [Map<String, dynamic>? additionalProperties]) async {
+  Future<void> trackQuestionAnswerStarted(String questionType) async {
     if (_isOptedOut || !_isInitialized) return;
-    
-    final properties = {
-      'question_id': questionId,
+
+    await trackEvent('question_answer_started', {
+      'question_type': questionType,
+    });
+  }
+
+  Future<void> trackQuestionAnswered(String questionType, String answerType) async {
+    if (_isOptedOut || !_isInitialized) return;
+
+    await trackEvent('question_answered', {
       'question_type': questionType,
       'answer_type': answerType,
-      ...?additionalProperties,
-    };
-    
-    await trackEvent('question_answered', properties);
+    });
+  }
+
+  Future<void> trackQuestionResultsViewed(String questionType) async {
+    if (_isOptedOut || !_isInitialized) return;
+
+    await trackEvent('question_results_viewed', {
+      'question_type': questionType,
+    });
   }
 
   Future<void> trackQuestionRevisited(String questionId, int viewCount, [Map<String, dynamic>? additionalProperties]) async {

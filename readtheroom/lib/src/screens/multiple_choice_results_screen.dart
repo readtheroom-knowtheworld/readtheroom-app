@@ -66,8 +66,8 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
   final GlobalKey<State<CommentsSection>> _commentsSectionKey = GlobalKey<State<CommentsSection>>();
   final ScrollController _scrollController = ScrollController();
   bool _showQuestionInTitle = false;
-  bool _hasCompletedRating = false;
-  
+  int _ratingSectionRefreshKey = 0;
+
   // Comparison mode variables
   bool _isComparisonMode = false;
   String? _comparisonCountry1;
@@ -419,7 +419,7 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
   void initState() {
     super.initState();
     _setupScrollListener();
-    
+
     // Auto-filter to country for country-targeted questions
     if (isCountryTargeted && widget.question['country_code'] != null) {
       selectedCountry = _getCountryNameFromCode(widget.question['country_code']);
@@ -637,7 +637,7 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
   Future<void> _refreshData() async {
     try {
       final questionService = Provider.of<QuestionService>(context, listen: false);
-      
+
       // Fetch fresh individual responses from the database
       final freshResponses = await questionService.getMultipleChoiceIndividualResponses(
         widget.question['id'].toString()
@@ -2185,19 +2185,7 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
             ],
             
             
-            // Question Rating Section
-            QuestionRatingSection(
-              questionId: widget.question['id']?.toString() ?? '',
-              isAuthor: Provider.of<QuestionService>(context, listen: false).isCurrentUserAuthor(widget.question),
-              onRatingComplete: () {
-                if (mounted) setState(() => _hasCompletedRating = true);
-              },
-            ),
-
-            const SizedBox(height: 16),
-
             // Linked Questions Section
-            if (_hasCompletedRating) ...[
             LinkedQuestionsSection(
               questionId: widget.question['id']?.toString() ?? '',
               comments: _comments,
@@ -2210,7 +2198,7 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
 
             const SizedBox(height: 16), // Add spacing between sections
 
-            // Comments Section - always at the end
+            // Comments Section
             CommentsSection(
               key: _commentsSectionKey,
               questionId: widget.question['id'].toString(),
@@ -2224,7 +2212,15 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
                 });
               },
             ),
-            ],
+
+            const SizedBox(height: 16),
+
+            // Question Rating results (only shown after rating, or to authors / signed-out viewers)
+            QuestionRatingSection(
+              key: ValueKey('rating_${widget.question['id']}_$_ratingSectionRefreshKey'),
+              questionId: widget.question['id']?.toString() ?? '',
+              isAuthor: Provider.of<QuestionService>(context, listen: false).isCurrentUserAuthor(widget.question),
+            ),
             
             // Swipe to next indicator
             SizedBox(height: 40),
@@ -2461,9 +2457,15 @@ class _MultipleChoiceResultsScreenState extends BaseResultsScreenState<MultipleC
         questionId: widget.question['id'].toString(),
         questionTitle: questionTitle,
         question: widget.question,
+        isAuthor: Provider.of<QuestionService>(context, listen: false).isCurrentUserAuthor(widget.question),
         onCommentAdded: (newComment) {
           // Refresh the comments section immediately
           (_commentsSectionKey.currentState as dynamic)?.refreshComments();
+        },
+        onRatingSubmitted: () {
+          if (mounted) {
+            setState(() => _ratingSectionRefreshKey++);
+          }
         },
       );
 

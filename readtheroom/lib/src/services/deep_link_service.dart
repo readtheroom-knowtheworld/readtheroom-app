@@ -20,6 +20,7 @@ import '../models/room.dart';
 import 'user_service.dart';
 import 'question_service.dart';
 import 'room_event_service.dart';
+import '../widgets/qotd_overlay.dart';
 
 // Helper class to track pending deep links
 class _PendingDeepLink {
@@ -173,21 +174,22 @@ class DeepLinkService {
       // Handle custom scheme URIs like readtheroom://question/{id} or readtheroom://suggestion/{id}
       // In this case, 'question'/'suggestion' becomes the host and the ID is in the path
       if (uri.scheme == 'readtheroom') {
-        // Handle home link (from widget tap) - just open the app, no navigation needed
-        if (uri.host == 'home') {
-          print('Deep link: Home link received, app already open');
+        // Handle home or QOTD link - show QOTD overlay
+        // Streak widgets use readtheroom://qotd/overlay
+        // QOTD widgets use readtheroom://qotd/{id}
+        // Legacy streak widgets use readtheroom://home
+        if (uri.host == 'home' || uri.host == 'qotd') {
+          print('Deep link: ${uri.host} link received, showing QOTD overlay');
+          Future.delayed(const Duration(milliseconds: 800), () {
+            final ctx = _activeContext;
+            if (ctx != null && ctx.mounted) {
+              QotdOverlay.checkAndShow(ctx);
+            }
+          });
           return;
         }
 
-        // Handle QOTD widget link - routes to question handler
-        if (uri.host == 'qotd') {
-          contentType = 'question';
-          if (uri.pathSegments.isNotEmpty) {
-            questionId = uri.pathSegments[0];
-          } else if (uri.path.isNotEmpty) {
-            questionId = uri.path.startsWith('/') ? uri.path.substring(1) : uri.path;
-          }
-        } else if (uri.host == 'question' || uri.host == 'q') {
+        if (uri.host == 'question' || uri.host == 'q') {
           contentType = 'question';
           if (uri.pathSegments.isNotEmpty) {
             questionId = uri.pathSegments[0];

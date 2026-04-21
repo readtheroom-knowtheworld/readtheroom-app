@@ -259,7 +259,7 @@ class StreakWidgetProvider : AppWidgetProvider() {
 
             // Set click intent to open app via deep link
             val intent = Intent(Intent.ACTION_VIEW).apply {
-                data = Uri.parse("readtheroom://home")
+                data = Uri.parse("readtheroom://qotd/overlay")
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             }
             val pendingIntent = PendingIntent.getActivity(

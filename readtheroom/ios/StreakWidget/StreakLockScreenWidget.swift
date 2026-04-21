@@ -95,7 +95,7 @@ struct StreakLockScreenWidget: Widget {
         StaticConfiguration(kind: kind, provider: LockScreenProvider()) { entry in
             StreakLockScreenWidgetView(entry: entry)
                 .containerBackground(.blue, for: .widget)
-                .widgetURL(URL(string: "readtheroom://home"))
+                .widgetURL(URL(string: "readtheroom://qotd/overlay"))
         }
         .configurationDisplayName("Streak")
         .description("Track your answer streak on your lock screen")

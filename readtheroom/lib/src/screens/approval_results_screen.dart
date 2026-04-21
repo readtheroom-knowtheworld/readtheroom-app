@@ -76,7 +76,7 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
   int _immediateCheckCount = 0; // Track immediate checks for lower threshold
   final ScrollController _scrollController = ScrollController();
   bool _showQuestionInTitle = false;
-  bool _hasCompletedRating = false;
+  int _ratingSectionRefreshKey = 0;
 
   // Comparison mode variables
   bool _isComparisonMode = false;
@@ -610,18 +610,20 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
           .select('''
             score,
             created_at,
+            generation,
             countries!responses_country_code_fkey(country_name_en)
           ''')
           .eq('question_id', widget.question['id'])
           .not('score', 'is', null)
           .order('created_at', ascending: false);
-      
+
       if (response != null && response.isNotEmpty) {
         // Convert to the format expected by the rest of the code
         final freshResponses = response.map((r) => {
           'country': r['countries']?['country_name_en'] ?? 'Unknown',
           'answer': (r['score'] as int).toDouble() / 100.0, // Convert to -1 to 1 range
           'created_at': r['created_at'],
+          'generation': r['generation'],
         }).toList();
         
         if (mounted) {
@@ -2062,19 +2064,7 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
 
               const SizedBox(height: 16),
 
-              // Question Rating Section
-              QuestionRatingSection(
-                questionId: widget.question['id']?.toString() ?? '',
-                isAuthor: _questionService?.isCurrentUserAuthor(widget.question) ?? false,
-                onRatingComplete: () {
-                  if (mounted) setState(() => _hasCompletedRating = true);
-                },
-              ),
-
-              const SizedBox(height: 16),
-
               // Linked Questions Section
-              if (_hasCompletedRating) ...[
               LinkedQuestionsSection(
                 questionId: widget.question['id']?.toString() ?? '',
                 comments: _comments,
@@ -2087,7 +2077,7 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
 
               const SizedBox(height: 16), // Add spacing between sections
 
-              // Comments Section - always at the end
+              // Comments Section
               CommentsSection(
                 key: _commentsSectionKey,
                 questionId: widget.question['id']?.toString() ?? '',
@@ -2101,7 +2091,15 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
                 questionContext: widget.question,
                 margin: EdgeInsets.zero, // Remove default margin to align with other widgets
               ),
-              ],
+
+              const SizedBox(height: 16),
+
+              // Question Rating results (only shown after rating, or to authors / signed-out viewers)
+              QuestionRatingSection(
+                key: ValueKey('rating_${widget.question['id']}_$_ratingSectionRefreshKey'),
+                questionId: widget.question['id']?.toString() ?? '',
+                isAuthor: _questionService?.isCurrentUserAuthor(widget.question) ?? false,
+              ),
               
               // Swipe to next indicator
               SizedBox(height: 40),
@@ -2344,9 +2342,15 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
       questionId: questionId,
       questionTitle: questionTitle,
       question: widget.question,
+      isAuthor: _questionService?.isCurrentUserAuthor(widget.question) ?? false,
       onCommentAdded: (newComment) {
         // Refresh the comments section immediately
         (_commentsSectionKey.currentState as dynamic)?.refreshComments();
+      },
+      onRatingSubmitted: () {
+        if (mounted) {
+          setState(() => _ratingSectionRefreshKey++);
+        }
       },
     );
   }

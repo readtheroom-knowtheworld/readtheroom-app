@@ -6,13 +6,9 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:provider/provider.dart';
-import '../services/user_service.dart';
-import '../services/analytics_service.dart';
-import '../utils/generation_utils.dart';
 
 /// Bump this constant to trigger a new "What's New?" dialog for a release.
-const String whatsNewVersion = '1.2.0-generations';
+const String whatsNewVersion = '1.1.5-boosts';
 
 class WhatsNewDialog extends StatefulWidget {
   const WhatsNewDialog({Key? key}) : super(key: key);
@@ -26,23 +22,37 @@ class WhatsNewDialog extends StatefulWidget {
     );
   }
 
+  static bool _wasShownThisSession = false;
+
+  static bool get wasShownThisSession => _wasShownThisSession;
+
   /// Check SharedPreferences and show the dialog if this version hasn't been seen.
-  static Future<void> checkAndShow(BuildContext context) async {
+  /// Returns true if the dialog was shown.
+  static Future<bool> checkAndShow(BuildContext context) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final seenVersion = prefs.getString('whats_new_seen_version');
 
-      if (seenVersion == whatsNewVersion) return;
+      if (seenVersion == whatsNewVersion) return false;
 
-      if (!context.mounted) return;
+      // First time opening the app after onboarding — silently mark as seen
+      if (seenVersion == null) {
+        await prefs.setString('whats_new_seen_version', whatsNewVersion);
+        return false;
+      }
 
-      showDialog<void>(
+      if (!context.mounted) return false;
+
+      _wasShownThisSession = true;
+      await showDialog<void>(
         context: context,
         barrierDismissible: false,
         builder: (context) => const WhatsNewDialog(),
       );
+      return true;
     } catch (e) {
       print('WhatsNewDialog: Error checking version: $e');
+      return false;
     }
   }
 
@@ -50,55 +60,9 @@ class WhatsNewDialog extends StatefulWidget {
   State<WhatsNewDialog> createState() => _WhatsNewDialogState();
 }
 
-class _WhatsNewDialogState extends State<WhatsNewDialog> with SingleTickerProviderStateMixin {
-  String? _selectedGeneration;
-  bool _showSelectionHint = false;
-  late AnimationController _shimmerController;
-  late Animation<double> _shimmerAnimation;
-
-  @override
-  void initState() {
-    super.initState();
-    _shimmerController = AnimationController(
-      vsync: this,
-      duration: Duration(milliseconds: 2718),
-    );
-    _shimmerAnimation = Tween<double>(begin: -1.0, end: 2.0).animate(
-      CurvedAnimation(parent: _shimmerController, curve: Curves.easeInOut),
-    );
-    // Load existing generation if set
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final userService = Provider.of<UserService>(context, listen: false);
-      if (userService.hasGeneration) {
-        setState(() {
-          _selectedGeneration = userService.generation;
-        });
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _shimmerController.dispose();
-    super.dispose();
-  }
-
-  void _triggerShimmer() {
-    _shimmerController.reset();
-    _shimmerController.forward();
-  }
+class _WhatsNewDialogState extends State<WhatsNewDialog> {
 
   Future<void> _dismiss(BuildContext context) async {
-    // Save generation if selected
-    if (_selectedGeneration != null) {
-      final userService = Provider.of<UserService>(context, listen: false);
-      await userService.setGeneration(_selectedGeneration);
-      AnalyticsService().trackEvent('generation_selected', {
-        'generation': _selectedGeneration,
-        'source': 'whats_new',
-      });
-    }
-
     if (context.mounted) {
       Navigator.of(context).pop();
     }
@@ -126,17 +90,7 @@ class _WhatsNewDialogState extends State<WhatsNewDialog> with SingleTickerProvid
 
   @override
   Widget build(BuildContext context) {
-    return PopScope(
-      canPop: _selectedGeneration != null,
-      onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && _selectedGeneration == null) {
-          setState(() {
-            _showSelectionHint = true;
-          });
-          _triggerShimmer();
-        }
-      },
-      child: AlertDialog(
+    return AlertDialog(
       title: Row(
         children: [
           Icon(
@@ -153,107 +107,67 @@ class _WhatsNewDialogState extends State<WhatsNewDialog> with SingleTickerProvid
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Generation Comparison',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                color: Theme.of(context).primaryColor,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 0.3,
-              ),
+            Row(
+              children: [
+                Icon(Icons.rocket_launch, color: Theme.of(context).primaryColor, size: 20),
+                SizedBox(width: 8),
+                Text(
+                  'Boost Questions',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: Theme.of(context).primaryColor,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ],
             ),
             SizedBox(height: 6),
             Text(
-              'Select your generation to see how different generations answer!',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                height: 1.4,
-              ),
-            ),
-            SizedBox(height: 12),
-            AnimatedBuilder(
-              animation: _shimmerAnimation,
-              builder: (context, child) {
-                final shimmerActive = _shimmerController.isAnimating;
-                final shimmerValue = _shimmerAnimation.value;
-                return Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: List.generate(generations.length, (index) {
-                    final gen = generations[index];
-                    final isSelected = _selectedGeneration == gen.id;
-                    // Each chip lights up as the shimmer passes over its position
-                    final chipPosition = index / generations.length;
-                    final distance = (shimmerValue - chipPosition).abs();
-                    final glow = shimmerActive && distance < 0.4
-                        ? ((0.4 - distance) / 0.4).clamp(0.0, 1.0)
-                        : 0.0;
-                    return Container(
-                      decoration: glow > 0
-                          ? BoxDecoration(
-                              borderRadius: BorderRadius.circular(20),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Color(0xFF00BFA5).withOpacity(glow * 0.6),
-                                  blurRadius: 12,
-                                  spreadRadius: 2,
-                                ),
-                              ],
-                            )
-                          : null,
-                      child: ChoiceChip(
-                        label: Text(gen.label),
-                        selected: isSelected,
-                        showCheckmark: false,
-                        onSelected: (selected) {
-                          setState(() {
-                            _selectedGeneration = selected ? gen.id : null;
-                          });
-                        },
-                        selectedColor: Theme.of(context).primaryColor,
-                        backgroundColor: glow > 0
-                            ? Color.lerp(
-                                Theme.of(context).chipTheme.backgroundColor,
-                                Color(0xFF00BFA5).withOpacity(0.15),
-                                glow,
-                              )
-                            : null,
-                        labelStyle: TextStyle(
-                          color: isSelected ? Colors.white : null,
-                          fontSize: 13,
-                        ),
-                      ),
-                    );
-                  }),
-                );
-              },
-            ),
-            SizedBox(height: 16),
-            Text(
-              'Question Ratings',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                color: Theme.of(context).primaryColor,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 0.3,
-              ),
-            ),
-            SizedBox(height: 6),
-            Text(
-              'Rate questions after viewing results to help surface the best content.',
+              'Found an old gem? Long-press questions in the search screen to nominate them as a future Question of the Day!',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                 height: 1.4,
               ),
             ),
             SizedBox(height: 16),
-            Text(
-              'Open Source',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                color: Theme.of(context).primaryColor,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 0.3,
-              ),
+            Row(
+              children: [
+                Icon(Icons.calendar_today, color: Theme.of(context).primaryColor, size: 20),
+                SizedBox(width: 8),
+                Text(
+                  'QOTD Overlay',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: Theme.of(context).primaryColor,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ],
             ),
             SizedBox(height: 6),
             Text(
-              'Read the Room is now open source! Check out the code and contribute on GitHub.',
+              'The Question of the Day now greets you when you open the app. Answer it right away or pull down to dismiss.',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                height: 1.4,
+              ),
+            ),
+            SizedBox(height: 16),
+            Row(
+              children: [
+                Icon(Icons.comment, color: Theme.of(context).primaryColor, size: 20),
+                SizedBox(width: 8),
+                Text(
+                  'Comments are back!',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: Theme.of(context).primaryColor,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ],
+            ),
+            SizedBox(height: 6),
+            Text(
+              'As per popular demand, comments are now visible by default again! Question ratings are only required to post a comment.',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                 height: 1.4,
               ),
@@ -267,7 +181,7 @@ class _WhatsNewDialogState extends State<WhatsNewDialog> with SingleTickerProvid
                   color: Colors.grey[600],
                 ),
                 children: [
-                  TextSpan(text: 'Enjoying RTR? Leave an '),
+                  TextSpan(text: 'Psst! Please leave an '),
                   TextSpan(
                     text: 'app store review',
                     style: TextStyle(
@@ -284,34 +198,15 @@ class _WhatsNewDialogState extends State<WhatsNewDialog> with SingleTickerProvid
         ),
       ),
       actions: [
-        if (_showSelectionHint && _selectedGeneration == null)
-          Padding(
-            padding: EdgeInsets.only(right: 8),
-            child: Text(
-              'Please select a generation above',
-              style: TextStyle(
-                color: Colors.orange,
-                fontSize: 12,
-              ),
-            ),
-          ),
         ElevatedButton(
-          onPressed: _selectedGeneration != null
-              ? () => _dismiss(context)
-              : () {
-                  setState(() {
-                    _showSelectionHint = true;
-                  });
-                  _triggerShimmer();
-                },
+          onPressed: () => _dismiss(context),
           style: ElevatedButton.styleFrom(
-            backgroundColor: Color(0xFF00BFA5),
+            backgroundColor: Theme.of(context).primaryColor,
             foregroundColor: Colors.white,
           ),
           child: Text('Got it'),
         ),
       ],
-      ),
     );
   }
 }

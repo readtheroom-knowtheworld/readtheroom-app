@@ -26,6 +26,7 @@ import '../widgets/swipe_navigation_wrapper.dart';
 import '../utils/category_navigation.dart';
 import '../widgets/animated_submit_button.dart';
 import '../widgets/approval_slider.dart';
+import '../services/analytics_service.dart';
 import 'main_screen.dart';
 
 class AnswerApprovalScreen extends StatefulWidget {
@@ -57,6 +58,7 @@ class _AnswerApprovalScreenState extends State<AnswerApprovalScreen> {
   void initState() {
     super.initState();
     _setupScrollListener();
+    AnalyticsService().trackQuestionAnswerStarted(widget.question['type']?.toString() ?? 'approval_rating');
   }
 
   @override
@@ -233,7 +235,13 @@ class _AnswerApprovalScreenState extends State<AnswerApprovalScreen> {
       // ONLY mark as answered if database submission was successful
       await Provider.of<UserService>(context, listen: false)
           .addAnsweredQuestion(answeredQuestion, context: context);
-      
+
+      // Track successful answer
+      AnalyticsService().trackQuestionAnswered(
+        widget.question['type']?.toString() ?? 'approval_rating',
+        'approval_rating',
+      );
+
       // Update the question's vote count
       await questionService.updateQuestionVoteCount(widget.question['id'].toString());
       
@@ -782,7 +790,7 @@ class _AnswerApprovalScreenState extends State<AnswerApprovalScreen> {
             
             SizedBox(height: 32),
             Text(
-              'Your response:',
+              'Drag the slider to respond',
               style: Theme.of(context).textTheme.titleMedium,
             ),
             SizedBox(height: 16),

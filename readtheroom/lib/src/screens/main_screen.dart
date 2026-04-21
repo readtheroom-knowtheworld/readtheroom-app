@@ -20,6 +20,7 @@ import '../services/notification_log_service.dart';
 import '../services/streak_reminder_service.dart';
 import '../widgets/authentication_dialog.dart';
 import '../widgets/whats_new_dialog.dart';
+import '../widgets/qotd_overlay.dart';
 
 class MainScreen extends StatefulWidget {
   final int initialIndex;
@@ -60,9 +61,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       },
     );
 
-    // Show "What's New?" dialog if there's a new version to announce
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      WhatsNewDialog.checkAndShow(context);
+    // Show "What's New?" dialog if there's a new version to announce,
+    // then QOTD overlay if WhatsNew was not shown
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await WhatsNewDialog.checkAndShow(context);
+      if (mounted) await QotdOverlay.checkAndShow(context);
     });
   }
   

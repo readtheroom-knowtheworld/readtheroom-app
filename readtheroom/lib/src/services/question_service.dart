@@ -2055,12 +2055,13 @@ class QuestionService extends ChangeNotifier {
   // Get individual multiple choice responses (not country-summarized) for results display
   Future<List<Map<String, dynamic>>> getMultipleChoiceIndividualResponses(String questionId) async {
     try {
-      // Fetch individual responses from database with country information
+      // Fetch individual responses from database with country and generation information
       final response = await _supabase
           .from('responses')
           .select('''
             option_id,
             created_at,
+            generation,
             countries!responses_country_code_fkey(country_name_en),
             question_options!responses_option_id_fkey(option_text)
           ''')
@@ -2074,17 +2075,18 @@ class QuestionService extends ChangeNotifier {
       }
 
       print('Found ${response.length} individual multiple choice responses');
-      
+
       // Convert to the format expected by results screen
       final individualResponses = response.map((r) => {
         'answer': r['question_options']?['option_text'] ?? 'Unknown Option',
         'country': r['countries']?['country_name_en'] ?? 'Unknown',
         'created_at': r['created_at'],
+        'generation': r['generation'],
       }).toList().cast<Map<String, dynamic>>();
 
       // Store the valid response count for this question
       _storeValidResponseCount(questionId, individualResponses.length);
-      
+
       return individualResponses;
     } catch (e) {
       print('Error fetching individual multiple choice responses: $e');
@@ -2122,6 +2124,7 @@ class QuestionService extends ChangeNotifier {
           responses!room_shared_responses_response_id_fkey(
             option_id,
             created_at,
+            generation,
             countries!responses_country_code_fkey(country_name_en),
             question_options!responses_option_id_fkey(option_text)
           )
@@ -2131,6 +2134,7 @@ class QuestionService extends ChangeNotifier {
           responses!room_shared_responses_response_id_fkey(
             score,
             created_at,
+            generation,
             countries!responses_country_code_fkey(country_name_en)
           )
         ''';
@@ -2139,6 +2143,7 @@ class QuestionService extends ChangeNotifier {
           responses!room_shared_responses_response_id_fkey(
             text_response,
             created_at,
+            generation,
             countries!responses_country_code_fkey(country_name_en)
           )
         ''';
@@ -2174,6 +2179,7 @@ class QuestionService extends ChangeNotifier {
             'answer': response['question_options']?['option_text'] ?? 'Unknown Option',
             'country': response['countries']?['country_name_en'] ?? 'Unknown',
             'created_at': response['created_at'],
+            'generation': response['generation'],
             'room_id': 'network', // Mark as network response
           };
         } else if (questionType == 'approval_rating') {
@@ -2181,13 +2187,15 @@ class QuestionService extends ChangeNotifier {
             'answer': ((response['score'] as int?) ?? 0).toDouble() / 100.0, // Convert to -1 to 1 range
             'country': response['countries']?['country_name_en'] ?? 'Unknown',
             'created_at': response['created_at'],
+            'generation': response['generation'],
             'room_id': 'network', // Mark as network response
           };
         } else {
           return {
             'answer': response['text_response'] ?? '',
-            'country': response['countries']?['country_name_en'] ?? 'Unknown', 
+            'country': response['countries']?['country_name_en'] ?? 'Unknown',
             'created_at': response['created_at'],
+            'generation': response['generation'],
             'room_id': 'network', // Mark as network response
           };
         }
@@ -2324,17 +2332,19 @@ class QuestionService extends ChangeNotifier {
           .select('''
             score,
             created_at,
+            generation,
             countries!responses_country_code_fkey(country_name_en)
           ''')
           .eq('question_id', questionId)
           .not('score', 'is', null)
           .order('created_at', ascending: false);
-      
+
       if (response != null && response.isNotEmpty) {
         return response.map((r) => {
           'country': r['countries']?['country_name_en'] ?? 'Unknown',
           'answer': (r['score'] as int).toDouble() / 100.0,
           'created_at': r['created_at'],
+          'generation': r['generation'],
         }).toList();
       }
       return [];
@@ -2370,19 +2380,21 @@ class QuestionService extends ChangeNotifier {
       final response = await _supabase
           .from('responses')
           .select('''
-            text_response, 
+            text_response,
             created_at,
+            generation,
             countries!responses_country_code_fkey(country_name_en)
           ''')
           .eq('question_id', questionId)
           .not('text_response', 'is', null)
           .order('created_at', ascending: false);
-      
+
       if (response != null && response.isNotEmpty) {
         final result = response.map((r) => {
           'text_response': r['text_response'],
           'country': r['countries']?['country_name_en'] ?? 'Unknown',
           'created_at': r['created_at'],
+          'generation': r['generation'],
         }).toList();
         
         // Smart prefetch: When user views a question, prefetch the next question while they're browsing
@@ -4826,7 +4838,7 @@ class QuestionService extends ChangeNotifier {
           .replace(queryParameters: queryParams);
       
       // Use anon key for Edge Functions (required for proper authentication)
-      const anonKey = String.fromEnvironment('SUPABASE_ANON_KEY', defaultValue: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlncW5xZHJtbGRya3l1Z2hydmNnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDcwMTgxNDAsImV4cCI6MjA2MjU5NDE0MH0.csUnbJgJAlOx4seEi2hV-76t286q56-zGu307Mf0rQE');
+      const anonKey = String.fromEnvironment('SUPABASE_ANON_KEY');
       
       print('🔗 Edge Function URL: $uri');
       print('🔍 Request parameters: ${queryParams.toString()}');

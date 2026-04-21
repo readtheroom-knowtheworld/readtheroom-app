@@ -24,6 +24,7 @@ import '../models/category.dart';
 import '../widgets/swipe_navigation_wrapper.dart';
 import '../utils/category_navigation.dart';
 import '../widgets/animated_submit_button.dart';
+import '../services/analytics_service.dart';
 import 'main_screen.dart';
 
 class AnswerMultipleChoiceScreen extends StatefulWidget {
@@ -80,6 +81,7 @@ class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen>
   void initState() {
     super.initState();
     _setupScrollListener();
+    AnalyticsService().trackQuestionAnswerStarted(widget.question['type']?.toString() ?? 'multiple_choice');
   }
 
   @override
@@ -268,7 +270,13 @@ class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen>
       
       // ONLY mark as answered if database submission was successful
       await userService.addAnsweredQuestion(answeredQuestion, context: context);
-      
+
+      // Track successful answer
+      AnalyticsService().trackQuestionAnswered(
+        widget.question['type']?.toString() ?? 'multiple_choice',
+        'multiple_choice',
+      );
+
       // Record that the user has answered this question to prevent duplicate voting
       await questionService.recordUserResponse(widget.question['id'].toString(), userService: userService, context: context);
       
@@ -969,58 +977,56 @@ class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen>
                 ),
               )
             else
-              ..._options.asMap().entries.map((entry) {
-                final index = entry.key;
-                final option = entry.value;
-                final letter = String.fromCharCode(65 + index);
-                
+              ..._options.map((option) {
+                final isSelected = _selectedOption == option;
+                final theme = Theme.of(context);
+
                 return Container(
                   margin: EdgeInsets.only(bottom: 8),
-                  child: RadioListTile<String>(
-                    title: Row(
-                      children: [
-                        Container(
-                          width: 24,
-                          height: 24,
-                          decoration: BoxDecoration(
-                            color: _selectedOption == option
-                                ? Theme.of(context).primaryColor
-                                : Colors.grey.withOpacity(0.3),
-                            shape: BoxShape.circle,
-                          ),
-                          child: Center(
-                            child: Text(
-                              letter,
-                              style: TextStyle(
-                                color: _selectedOption == option
-                                    ? Colors.white
-                                    : Colors.grey[600],
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12,
-                              ),
-                            ),
+                  child: Material(
+                    color: isSelected
+                        ? theme.primaryColor.withOpacity(0.12)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(8),
+                    child: InkWell(
+                      onTap: () async {
+                        await AppHaptics.lightImpact();
+                        setState(() => _selectedOption = option);
+                      },
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: isSelected
+                                ? theme.primaryColor
+                                : theme.dividerColor,
                           ),
                         ),
-                        SizedBox(width: 12),
-                        Expanded(child: Text(option)),
-                      ],
-                    ),
-                    value: option,
-                    groupValue: _selectedOption,
-                    onChanged: (value) async {
-                      await AppHaptics.lightImpact();
-                      setState(() {
-                        _selectedOption = value;
-                      });
-                    },
-                    controlAffinity: ListTileControlAffinity.leading,
-                    contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      side: BorderSide(
-                        color: _selectedOption == option
-                            ? Theme.of(context).primaryColor
-                            : Theme.of(context).dividerColor,
+                        child: Row(
+                          children: [
+                            Radio<String>(
+                              value: option,
+                              groupValue: _selectedOption,
+                              onChanged: (value) async {
+                                await AppHaptics.lightImpact();
+                                setState(() => _selectedOption = value);
+                              },
+                            ),
+                            Expanded(
+                              child: Text(
+                                option,
+                                style: theme.textTheme.bodyLarge?.copyWith(
+                                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                                  color: isSelected
+                                      ? theme.primaryColor
+                                      : theme.textTheme.bodyLarge?.color,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),

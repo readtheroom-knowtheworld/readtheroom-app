@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/user_service.dart';
 import '../services/question_service.dart';
+import '../services/analytics_service.dart';
 import 'answer_approval_screen.dart';
 import 'answer_multiple_choice_screen.dart';
 import '../widgets/swipe_navigation_wrapper.dart';
@@ -29,6 +30,14 @@ abstract class BaseResultsScreen extends StatefulWidget {
 }
 
 abstract class BaseResultsScreenState<T extends BaseResultsScreen> extends State<T> {
+  @override
+  void initState() {
+    super.initState();
+    AnalyticsService().trackQuestionResultsViewed(
+      widget.question['type']?.toString() ?? 'unknown',
+    );
+  }
+
   // Use SwipeNavigationWrapper for consistent swipe behavior
   @override
   Widget build(BuildContext context) {

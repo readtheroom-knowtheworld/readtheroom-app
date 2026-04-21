@@ -36,16 +36,6 @@ class WelcomeSlide extends StatelessWidget {
               ),
               textAlign: TextAlign.center,
             ),
-            SizedBox(height: 8),
-            Text(
-              "We'll produce real-time insights into how the world feels",
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: Theme.of(context).brightness == Brightness.dark 
-                    ? Colors.white70 
-                    : Colors.black87,
-              ),
-              textAlign: TextAlign.center,
-            ),
           ],
         ),
       ),

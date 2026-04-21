@@ -1,7 +1,18 @@
+## [1.1.5] - 2026-04-18
+Added: 
+- QOTD Overlay on app cold start
+- Ability to Boost old questions and add them to the candidate pool for QOTD selection by long-pressing a question on the search screen.
+
+Changed: 
+- Comments now veiwable again by default. Question rating only required before posting a comment.
+- Cleaned up onboarding slides
+- QOTD can repeat is boosted by a user, but only once in 3 months. 
+
 ## [1.1.4] - 2026-02-07
 Added: 
-- Security reviews and open source readiness checks
-- Sub-national map toggle
+- Security review, open sourcing
+- Question ratings and review tags
+- Can now filter responses by Gen Z, Millennial...
 
 Changed: 
 - Light mode theme
@@ -10,6 +21,7 @@ Changed:
 - Deeplink changes
 - Removed Syncfusion dependency to be able to open source the project
 - Text colour in light mode for achievement badges in the Me screen
+- Map interactivity changes
 
 ## [1.1.3] - 2026-02-02
 Added:

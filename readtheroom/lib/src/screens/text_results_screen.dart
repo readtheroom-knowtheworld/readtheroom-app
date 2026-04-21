@@ -76,7 +76,7 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
   final GlobalKey<State<CommentsSection>> _commentsSectionKey = GlobalKey<State<CommentsSection>>();
   final ScrollController _scrollController = ScrollController();
   bool _showQuestionInTitle = false;
-  bool _hasCompletedRating = false;
+  int _ratingSectionRefreshKey = 0;
 
   void _setupScrollListener() {
     _scrollController.addListener(() {
@@ -1168,19 +1168,7 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
             ],
             
             
-            // Question Rating Section
-            QuestionRatingSection(
-              questionId: widget.question['id']?.toString() ?? '',
-              isAuthor: _questionService?.isCurrentUserAuthor(widget.question) ?? false,
-              onRatingComplete: () {
-                if (mounted) setState(() => _hasCompletedRating = true);
-              },
-            ),
-
-            const SizedBox(height: 16),
-
             // Linked Questions Section
-            if (_hasCompletedRating) ...[
             LinkedQuestionsSection(
               questionId: widget.question['id']?.toString() ?? '',
               comments: _comments,
@@ -1193,7 +1181,7 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
 
             const SizedBox(height: 16), // Add spacing between sections
 
-            // Comments Section - always at the end
+            // Comments Section
             CommentsSection(
               key: _commentsSectionKey,
               questionId: widget.question['id'].toString(),
@@ -1207,7 +1195,15 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
                 });
               },
             ),
-            ],
+
+            const SizedBox(height: 16),
+
+            // Question Rating results (only shown after rating, or to authors / signed-out viewers)
+            QuestionRatingSection(
+              key: ValueKey('rating_${widget.question['id']}_$_ratingSectionRefreshKey'),
+              questionId: widget.question['id']?.toString() ?? '',
+              isAuthor: _questionService?.isCurrentUserAuthor(widget.question) ?? false,
+            ),
             
             // Swipe to next indicator
             const SizedBox(height: 32),
@@ -2081,9 +2077,15 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
         questionId: widget.question['id'].toString(),
         questionTitle: questionTitle,
         question: widget.question,
+        isAuthor: _questionService?.isCurrentUserAuthor(widget.question) ?? false,
         onCommentAdded: (newComment) {
           // Refresh the comments section immediately
           (_commentsSectionKey.currentState as dynamic)?.refreshComments();
+        },
+        onRatingSubmitted: () {
+          if (mounted) {
+            setState(() => _ratingSectionRefreshKey++);
+          }
         },
       );
 

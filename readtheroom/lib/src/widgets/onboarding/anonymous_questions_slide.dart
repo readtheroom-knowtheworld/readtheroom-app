@@ -45,7 +45,7 @@ class AnonymousQuestionsSlide extends StatelessWidget {
                       Icon(Icons.create, color: Theme.of(context).primaryColor),
                       SizedBox(width: 8),
                       Text(
-                        "New Question",
+                        "Do you think that...?",
                         style: Theme.of(context).textTheme.titleMedium?.copyWith(
                           fontWeight: FontWeight.bold,
                         ),
@@ -53,9 +53,9 @@ class AnonymousQuestionsSlide extends StatelessWidget {
                     ],
                   ),
                   SizedBox(height: 16),
-                  // Question Type indicators
+                  // Question Types indicators
                   Text(
-                    "Question Type",
+                    "Example Question Types",
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       fontWeight: FontWeight.w500,
                     ),
@@ -93,7 +93,7 @@ class AnonymousQuestionsSlide extends StatelessWidget {
                   ),
                   SizedBox(height: 16),
                   Text(
-                    "Question Audience",
+                    "Target Audiences",
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       fontWeight: FontWeight.w500,
                     ),

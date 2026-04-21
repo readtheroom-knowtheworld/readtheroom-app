@@ -15,7 +15,7 @@ class CommunityGuidelinesSlide extends StatelessWidget {
   Widget build(BuildContext context) {
     return OnboardingSlide(
       title: "Community Guidelines",
-      description: "We're trying to be nice and curious here. So please no doxxing, harassment, or abuse.\n\nLet's keep the community curious, colourful, and cool as a chameleon.",
+      description: "We're trying to be nice and curious here. So please no doxxing, harassment, or abuse.",
       showCurio: true,
       onNext: onNext,
       buttonText: "I understand 🦎",

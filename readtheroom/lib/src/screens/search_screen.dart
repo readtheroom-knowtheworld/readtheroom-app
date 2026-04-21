@@ -13,6 +13,7 @@ import '../services/question_rating_service.dart';
 import '../utils/time_utils.dart';
 import '../utils/review_tag_navigation.dart';
 import '../services/user_service.dart';
+import '../services/boost_service.dart';
 import '../widgets/question_type_badge.dart';
 
 class SearchScreen extends StatefulWidget {
@@ -566,47 +567,9 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
                         ]
                       : null,
                 ),
-                child: ListTile(
-                  title: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Container(
-                        height: 60,
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            if (targetingEmoji != null) ...[
-                              Opacity(
-                                opacity: hasAnswered ? 0.4 : 1.0,
-                                child: Text(
-                                  targetingEmoji,
-                                  style: TextStyle(fontSize: 16),
-                                ),
-                              ),
-                              SizedBox(height: 8),
-                            ],
-                            QuestionTypeBadge(
-                              type: question['type'] ?? 'unknown',
-                              color: hasAnswered ? Colors.grey : Theme.of(context).primaryColor,
-                            ),
-                          ],
-                        ),
-                      ),
-                      SizedBox(width: 16),
-                      Expanded(
-                        child: Text(
-                          question['prompt'] ?? question['title'] ?? 'No Title',
-                          style: TextStyle(
-                            color: hasAnswered ? Colors.grey : null,
-                          ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                  ),
-                  subtitle: _buildSubtitle(context, question),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(8.0),
+                  onLongPress: () => _showBoostDialog(question),
                   onTap: () {
                     final questionService = Provider.of<QuestionService>(context, listen: false);
                     final locationService = Provider.of<LocationService>(context, listen: false);
@@ -619,7 +582,7 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
                       'userCountry': locationService.userLocation?['country_code'],
                       'userCity': locationService.selectedCity?['id'],
                     };
-                    
+
                     final questionIndex = filteredPopularQuestions.indexOf(question);
                     final feedContext = FeedContext(
                       feedType: 'popular_search',
@@ -629,15 +592,55 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
                       originalQuestionId: question['id']?.toString(),
                       originalQuestionIndex: questionIndex,
                     );
-                    
+
                     if (hasAnswered) {
-                      // Navigate to results screen with popular feed context
                       questionService.navigateToResultsScreen(context, question, feedContext: feedContext, fromSearch: true);
                     } else {
-                      // Navigate to answer screen with popular feed context
                       questionService.navigateToAnswerScreen(context, question, feedContext: feedContext, fromSearch: true);
                     }
                   },
+                  child: ListTile(
+                    title: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          height: 60,
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              if (targetingEmoji != null) ...[
+                                Opacity(
+                                  opacity: hasAnswered ? 0.4 : 1.0,
+                                  child: Text(
+                                    targetingEmoji,
+                                    style: TextStyle(fontSize: 16),
+                                  ),
+                                ),
+                                SizedBox(height: 8),
+                              ],
+                              QuestionTypeBadge(
+                                type: question['type'] ?? 'unknown',
+                                color: hasAnswered ? Colors.grey : Theme.of(context).primaryColor,
+                              ),
+                            ],
+                          ),
+                        ),
+                        SizedBox(width: 16),
+                        Expanded(
+                          child: Text(
+                            question['prompt'] ?? question['title'] ?? 'No Title',
+                            style: TextStyle(
+                              color: hasAnswered ? Colors.grey : null,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                    subtitle: _buildSubtitle(context, question),
+                  ),
                 ),
               );
             },
@@ -1528,12 +1531,6 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
             _dismissKeyboard();
           }
         },
-        onPanDown: (details) {
-          // Additional iOS compatibility for pan gestures
-          if (Platform.isIOS && _searchFocusNode.hasFocus) {
-            _dismissKeyboard();
-          }
-        },
         onHorizontalDragStart: (details) {
           // Dismiss keyboard immediately when horizontal drag starts
           if (_searchFocusNode.hasFocus) {
@@ -1883,7 +1880,40 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
                                   ]
                                 : null,
                           ),
-                          child: ListTile(
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(8.0),
+                            onLongPress: () => _showBoostDialog(question),
+                            onTap: () {
+                              final questionService = Provider.of<QuestionService>(context, listen: false);
+                              final userService = Provider.of<UserService>(context, listen: false);
+                              final locationService = Provider.of<LocationService>(context, listen: false);
+
+                              // Create FeedContext from search results
+                              final filters = <String, dynamic>{
+                                'searchQuery': _displayQuery,
+                                'showNSFW': userService.showNSFWContent,
+                                'questionTypes': userService.enabledQuestionTypes,
+                                'userCountry': locationService.userLocation?['country_code'],
+                                'userCity': locationService.selectedCity?['id'],
+                              };
+
+                              final questionIndex = filteredQuestions.indexOf(question);
+                              final feedContext = FeedContext(
+                                feedType: 'search',
+                                filters: filters,
+                                questions: filteredQuestions,
+                                currentQuestionIndex: questionIndex,
+                                originalQuestionId: question['id']?.toString(),
+                                originalQuestionIndex: questionIndex,
+                              );
+
+                              if (hasAnswered) {
+                                questionService.navigateToResultsScreen(context, question, feedContext: feedContext, fromSearch: true);
+                              } else {
+                                questionService.navigateToAnswerScreen(context, question, feedContext: feedContext, fromSearch: true);
+                              }
+                            },
+                            child: ListTile(
                             title: Row(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
@@ -1929,38 +1959,7 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
                               ],
                             ),
                             subtitle: _buildSubtitle(context, question),
-                            onTap: () {
-                              final questionService = Provider.of<QuestionService>(context, listen: false);
-                              final userService = Provider.of<UserService>(context, listen: false);
-                              final locationService = Provider.of<LocationService>(context, listen: false);
-                              
-                              // Create FeedContext from search results
-                              final filters = <String, dynamic>{
-                                'searchQuery': _displayQuery,
-                                'showNSFW': userService.showNSFWContent,
-                                'questionTypes': userService.enabledQuestionTypes,
-                                'userCountry': locationService.userLocation?['country_code'],
-                                'userCity': locationService.selectedCity?['id'],
-                              };
-                              
-                              final questionIndex = filteredQuestions.indexOf(question);
-                              final feedContext = FeedContext(
-                                feedType: 'search',
-                                filters: filters,
-                                questions: filteredQuestions,
-                                currentQuestionIndex: questionIndex,
-                                originalQuestionId: question['id']?.toString(),
-                                originalQuestionIndex: questionIndex, // Start boundary is current question
-                              );
-                              
-                              if (hasAnswered) {
-                                // Navigate to results screen with search feed context
-                                questionService.navigateToResultsScreen(context, question, feedContext: feedContext, fromSearch: true);
-                              } else {
-                                // Navigate to answer screen with search feed context
-                                questionService.navigateToAnswerScreen(context, question, feedContext: feedContext, fromSearch: true);
-                              }
-                            },
+                          ),
                           ),
                         );
                       },
@@ -1974,6 +1973,144 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
         ),
       ),
       ),
+    );
+  }
+
+  void _showBoostDialog(Map<String, dynamic> question) {
+    final boostService = Provider.of<BoostService>(context, listen: false);
+
+    // Quick client-side eligibility check
+    final eligibilityError = boostService.checkEligibility(question);
+    if (eligibilityError != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: Colors.orange,
+          content: Text(
+            BoostResult(success: false, error: eligibilityError).errorMessage,
+            style: TextStyle(color: Colors.white),
+          ),
+        ),
+      );
+      return;
+    }
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(
+              Icons.rocket_launch,
+              color: Theme.of(dialogContext).primaryColor,
+              size: 24,
+            ),
+            SizedBox(width: 12),
+            Text('Boost Question'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Nominate this for Question of the Day!',
+              textAlign: TextAlign.center,
+              style: Theme.of(dialogContext).textTheme.titleSmall?.copyWith(
+                height: 1.4,
+              ),
+            ),
+            SizedBox(height: 20),
+            Container(
+              width: double.infinity,
+              padding: EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: Theme.of(dialogContext).dividerColor,
+                ),
+              ),
+              child: Text(
+                question['prompt'] ?? question['title'] ?? '',
+                textAlign: TextAlign.center,
+                style: Theme.of(dialogContext).textTheme.bodyMedium?.copyWith(
+                ),
+              ),
+            ),
+            SizedBox(height: 20),
+            _buildBoostRule(dialogContext, Icons.today, 'You can boost 1 question per day'),
+            SizedBox(height: 10),
+            _buildBoostRule(dialogContext, Icons.person_off, 'You can\'t boost your own question'),
+            SizedBox(height: 10),
+            _buildBoostRule(dialogContext, Icons.calendar_month, 'Must be over 1 month old'),
+            SizedBox(height: 10),
+            _buildBoostRule(dialogContext, Icons.timelapse, 'At least 3 months since last boost'),
+          ],
+        ),
+        actions: [
+          Row(
+            children: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: Text(
+                  'Cancel',
+                  style: TextStyle(
+                    color: Theme.of(dialogContext).primaryColor,
+                  ),
+                ),
+              ),
+              Spacer(),
+              ElevatedButton(
+                onPressed: () async {
+                  Navigator.of(dialogContext).pop();
+                  final result = await boostService.boostQuestion(question['id'].toString());
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        backgroundColor: result.success
+                            ? Theme.of(context).primaryColor
+                            : Colors.orange,
+                        content: Text(
+                          result.success
+                              ? 'Question boosted! It may appear as a future Question of the Day.'
+                              : result.errorMessage,
+                          style: TextStyle(color: Colors.white),
+                        ),
+                      ),
+                    );
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Theme.of(dialogContext).primaryColor,
+                  foregroundColor: Colors.white,
+                ),
+                child: Text('Boost'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBoostRule(BuildContext context, IconData icon, String text) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          icon,
+          color: Theme.of(context).primaryColor,
+          size: 20,
+        ),
+        SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            text,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              height: 1.3,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

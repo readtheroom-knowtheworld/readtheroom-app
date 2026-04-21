@@ -196,7 +196,7 @@ struct StreakWidgetEntryView: View {
                 }
             }
             .padding(8)
-            .widgetURL(URL(string: entry.questionId.isEmpty ? "readtheroom://home" : "readtheroom://qotd/\(entry.questionId)"))
+            .widgetURL(URL(string: entry.questionId.isEmpty ? "readtheroom://qotd/overlay" : "readtheroom://qotd/\(entry.questionId)"))
         default:
             // Streak Layout (small)
             GeometryReader { geo in
@@ -218,7 +218,7 @@ struct StreakWidgetEntryView: View {
                 .frame(maxWidth: .infinity)
             }
             .padding(6)
-            .widgetURL(URL(string: "readtheroom://home"))
+            .widgetURL(URL(string: "readtheroom://qotd/overlay"))
         }
     }
 

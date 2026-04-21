@@ -25,6 +25,7 @@ import '../services/notification_service.dart';
 import '../widgets/question_activity_permission_dialog.dart';
 import '../widgets/animated_submit_button.dart';
 import '../utils/category_navigation.dart';
+import '../services/analytics_service.dart';
 import 'main_screen.dart';
 
 class AnswerTextScreen extends StatefulWidget {
@@ -65,6 +66,7 @@ class _AnswerTextScreenState extends State<AnswerTextScreen> {
     print('AnswerTextScreen initialized with question ID: ${widget.question['id']}');
     _textController.addListener(_checkForProfanity);
     _setupScrollListener();
+    AnalyticsService().trackQuestionAnswerStarted(widget.question['type']?.toString() ?? 'text');
   }
 
   void _setupScrollListener() {
@@ -309,7 +311,13 @@ class _AnswerTextScreenState extends State<AnswerTextScreen> {
       
       // Add to user's answered questions
       await userService.addAnsweredQuestion(answeredQuestion, context: context);
-      
+
+      // Track successful answer
+      AnalyticsService().trackQuestionAnswered(
+        widget.question['type']?.toString() ?? 'text',
+        'text_response',
+      );
+
       // Record the response in the question service
       await questionService.recordUserResponse(widget.question['id'].toString(), userService: userService, context: context);
       

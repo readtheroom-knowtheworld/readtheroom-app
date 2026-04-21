@@ -36,6 +36,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   int _currentPage = 0;
   int get _totalPages => BuildConfig.isFDroidBuild ? 9 : 8;
   DateTime? _onboardingStartTime;
+  bool _isTouching = false;
 
   @override
   void initState() {
@@ -211,9 +212,20 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             
             // Page content
             Expanded(
-              child: Stack(
-                children: [
-                  PageView(
+              child: Listener(
+                behavior: HitTestBehavior.translucent,
+                onPointerDown: (_) {
+                  if (!_isTouching) setState(() => _isTouching = true);
+                },
+                onPointerUp: (_) {
+                  if (_isTouching) setState(() => _isTouching = false);
+                },
+                onPointerCancel: (_) {
+                  if (_isTouching) setState(() => _isTouching = false);
+                },
+                child: OnboardingTouchingScope(
+                  isTouching: _isTouching,
+                  child: PageView(
                     controller: _pageController,
                     onPageChanged: _onPageChanged,
                     children: [
@@ -232,42 +244,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       ),
                     ],
                   ),
-                  
-                  // Swipe hint for first slide only, positioned lower
-                  if (_currentPage == 0) // Welcome slide only
-                    Positioned(
-                      bottom: 2,
-                      left: 0,
-                      right: 0,
-                      child: Center(
-                        child: Container(
-                          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: Colors.black54,
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.swipe_left,
-                                color: Colors.white,
-                                size: 16,
-                              ),
-                              SizedBox(width: 4),
-                              Text(
-                                'Swipe to explore',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
+                ),
               ),
             ),
           ],

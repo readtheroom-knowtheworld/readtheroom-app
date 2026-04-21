@@ -15,7 +15,7 @@ class PrivacySlide extends StatelessWidget {
   Widget build(BuildContext context) {
     return OnboardingSlide(
       title: "Privacy First",
-      description: "We're all anonymous here.\n\nRead the Room doesn't collect any personally identifiable information, or associate your activity or your responses with a user profile. The majority of your data is stored and processed on your device.\n\nYour comments, and the questions you ask are associated to randomized anonymous identifier to comply with app store policies, and to prevent spam and abuse of the platform.",
+      description: "We're all anonymous here.",
       showCurio: true,
       onNext: onNext,
       customContent: Container(

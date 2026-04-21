@@ -104,10 +104,10 @@ class QuestionCard extends StatelessWidget {
       question['category'] ?? 'unknown',
       'feed',
       {
+        'poll_location': question['targeting_type'] ?? 'globe',
         'is_nsfw': question['is_nsfw'] ?? false,
         'vote_count': question['vote_count'] ?? 0,
         'comment_count': _getCommentCount(question),
-        'location_scope': question['cities'] != null ? 'city' : 'country',
       },
     );
   }

@@ -238,7 +238,7 @@ class _VotingSlideState extends State<VotingSlide> {
               ),
               SizedBox(height: 8),
               Text(
-                "Questions with enough responses produce maps showing regional sentiment:",
+                "Questions with enough responses produce maps showing regional sentiment",
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: Theme.of(context).brightness == Brightness.dark 
                       ? Colors.white70 
@@ -273,17 +273,6 @@ class _VotingSlideState extends State<VotingSlide> {
                       responsesByCountry: _getDemoResponseData(),
                       questionTitle: "How optimistic are you about the future?",
                     ),
-              SizedBox(height: 20),
-              Text(
-                "Watch opinions flow across the globe",
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  fontStyle: FontStyle.italic,
-                  color: Theme.of(context).brightness == Brightness.dark 
-                      ? Colors.white70 
-                      : Colors.black87,
-                ),
-                textAlign: TextAlign.center,
-              ),
             ],
           ),
         ),

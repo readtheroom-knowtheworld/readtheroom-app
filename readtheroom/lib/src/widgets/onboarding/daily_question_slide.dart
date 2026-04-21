@@ -13,7 +13,7 @@ class DailyQuestionSlide extends StatelessWidget {
   Widget build(BuildContext context) {
     return OnboardingSlide(
       title: "Question of the Day",
-      description: "Every day, the world's most popular question is at the top of all our feeds.\n\nIt is the heart of the platform and captures the moment we're all living in.\n\nPlease contribute, help us measure the pulse of the planet!",
+      description: "Every day, the world's most popular question is at the top of all our feeds.\n\nPlease contribute, help us measure the pulse of the planet!",
       showCurio: true,
       onNext: onNext,
       customContent: Container(
