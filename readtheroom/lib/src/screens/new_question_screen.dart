@@ -5,11 +5,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import '../utils/approval_labels.dart';
 import '../utils/haptic_utils.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/user_service.dart';
 import '../services/location_service.dart';
 import '../services/profanity_filter_service.dart';
+import '../widgets/approval_end_labels_row.dart';
+import '../widgets/approval_slider.dart';
 import '../widgets/notification_bell.dart';
 import '../models/category.dart';
 import 'authentication_screen.dart';
@@ -26,6 +29,80 @@ import '../services/congratulations_service.dart';
 import '../services/achievement_service.dart';
 
 class NewQuestionScreen extends StatefulWidget {
+  /// Where the create flow was entered from (for the §4.2 creation funnel).
+  final String entryPoint;
+
+  const NewQuestionScreen({Key? key, this.entryPoint = 'unknown'}) : super(key: key);
+
+  /// Pure, testable summary for the collapsed "Advanced options" header.
+  ///
+  /// Returns `null` when the question is at its defaults (public + world),
+  /// so the collapsed header shows no subtitle/badge. When a non-default
+  /// advanced option is active it returns a short disclosure string so the
+  /// state is never hidden-but-active while the section is collapsed.
+  static String? advancedOptionsSummary({
+    required String targeting,
+    required bool isPrivate,
+    String? countryName,
+    String? cityName,
+  }) {
+    if (isPrivate) return 'Private question';
+    switch (targeting) {
+      case 'country':
+        return 'Targeted: ${countryName ?? 'your country'}';
+      case 'city':
+        return 'Targeted: ${cityName ?? 'your city'}';
+      case 'globe':
+      default:
+        return null; // default audience → nothing to disclose
+    }
+  }
+
+  /// Whether any advanced option deviates from the default public World
+  /// question. Drives the discoverability badge on the collapsed header.
+  static bool hasNonDefaultAdvancedOptions({
+    required String targeting,
+    required bool isPrivate,
+  }) {
+    return isPrivate || targeting != 'globe';
+  }
+
+  /// Pure, testable submission/preview validation.
+  ///
+  /// Returns the list of missing-requirement messages (empty list = ready to
+  /// preview/submit). Topics are optional, so category count is intentionally
+  /// not validated here — a question may be posted with zero topics.
+  static List<String> submissionRequirementErrors({
+    required String type,
+    required String title,
+    required int multipleChoiceOptionCount,
+  }) {
+    final missing = <String>[];
+
+    if (type.isEmpty) {
+      missing.add('• Select a question type');
+    }
+
+    final trimmedTitle = title.trim();
+    if (trimmedTitle.length < 10) {
+      missing.add('• Question must be at least 10 characters long');
+    }
+
+    final wordCount = trimmedTitle
+        .split(RegExp(r'\s+'))
+        .where((word) => word.isNotEmpty)
+        .length;
+    if (wordCount > 30) {
+      missing.add('• Question must be 30 words or less (currently $wordCount words)');
+    }
+
+    if (type == 'multiple_choice' && multipleChoiceOptionCount < 2) {
+      missing.add('• Add at least 2 answer options for multiple choice');
+    }
+
+    return missing;
+  }
+
   @override
   _NewQuestionScreenState createState() => _NewQuestionScreenState();
 }
@@ -37,7 +114,20 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
   final _newOptionController = TextEditingController();
   final _titleFocusNode = FocusNode();
   final _descriptionFocusNode = FocusNode();
-  String _selectedType = '';
+  // Approval slider end labels (WP-B). Persisted as two question_options rows
+  // (sort_order 0 = low end, 1 = high end) — see utils/approval_labels.dart.
+  final _approvalLowController =
+      TextEditingController(text: kDefaultApprovalLowLabel);
+  final _approvalHighController =
+      TextEditingController(text: kDefaultApprovalHighLabel);
+  double _approvalPreviewValue = 0.0;
+  // WP-B: approval ("Thumbs?") is the default question type — it is the one
+  // the QOTD ritual leans on and the cheapest for a reader to answer.
+  String _selectedType = 'multiple_choice'; // default since 2026-09-19 (was approval)
+  // Whether the user actually picked a type, as opposed to keeping the default.
+  // Only used by the creation-funnel "furthest field" analytics, so defaulting
+  // the type doesn't make every abandoned draft look like it reached step 2.
+  bool _typeTouched = false;
   List<String> _options = [];
   List<TextEditingController> _optionControllers = [];
   List<FocusNode> _optionFocusNodes = [];
@@ -65,11 +155,16 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
   Map<String, int> _categoryCounts = {};
   bool _categoryCountsLoaded = false;
   bool _showAllCategories = false;
+  bool _questionSubmitted = false;
 
   @override
   void initState() {
     super.initState();
-    
+
+    // §4.2 creation funnel: user entered the create-question flow.
+    AnalyticsService().trackQuestionCreateStarted(widget.entryPoint);
+
+
     // Add focus listeners to check for profanity when user finishes typing
     _titleFocusNode.addListener(_onTitleFocusChange);
     _descriptionFocusNode.addListener(_onDescriptionFocusChange);
@@ -90,7 +185,6 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
       
       final filters = <String, dynamic>{
         'showNSFW': userService.showNSFWContent,
-        'questionTypes': userService.enabledQuestionTypes,
         'userCountry': locationService.userLocation?['country_code'],
         'userCity': locationService.selectedCity?['id'],
       };
@@ -116,8 +210,31 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
     }
   }
 
+  /// Deepest field the user reached — used for `question_create_abandoned`.
+  /// Never includes the field's text (privacy rule).
+  String _furthestField() {
+    // Advanced options live at the bottom of the form (targeting/privacy);
+    // engaging a non-default value is the deepest reachable step.
+    if (NewQuestionScreen.hasNonDefaultAdvancedOptions(
+      targeting: _selectedTargeting,
+      isPrivate: _isPrivate,
+    )) {
+      return 'advanced_options';
+    }
+    final hasOption = _optionControllers.any((c) => c.text.trim().isNotEmpty);
+    if (hasOption) return 'options';
+    if (_descriptionController.text.trim().isNotEmpty) return 'description';
+    if (_typeTouched) return 'type';
+    if (_titleController.text.trim().isNotEmpty) return 'title';
+    return 'none';
+  }
+
   @override
   void dispose() {
+    // §4.2 creation funnel: left the flow without posting.
+    if (!_questionSubmitted) {
+      AnalyticsService().trackQuestionCreateAbandoned(_furthestField());
+    }
     _titleFocusNode.removeListener(_onTitleFocusChange);
     _descriptionFocusNode.removeListener(_onDescriptionFocusChange);
     _descriptionController.removeListener(() => _checkForCountryMentions(_descriptionController.text));
@@ -126,6 +243,8 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
     _titleController.dispose();
     _descriptionController.dispose();
     _newOptionController.dispose();
+    _approvalLowController.dispose();
+    _approvalHighController.dispose();
     _titleFocusNode.dispose();
     _descriptionFocusNode.dispose();
     
@@ -170,8 +289,17 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
     
     // Also check current option being added
     final newOptionHasProfanity = _newOption.isNotEmpty && _profanityFilter.containsProfanity(_newOption);
-    
-    final hasProfanity = titleHasProfanity || descriptionHasProfanity || optionsHaveProfanity || newOptionHasProfanity;
+
+    // Approval end labels are user-authored copy too (WP-B).
+    final approvalLabelsHaveProfanity = _selectedType == 'approval_rating' &&
+        (_profanityFilter.containsProfanity(_approvalLowController.text) ||
+            _profanityFilter.containsProfanity(_approvalHighController.text));
+
+    final hasProfanity = titleHasProfanity ||
+        descriptionHasProfanity ||
+        optionsHaveProfanity ||
+        newOptionHasProfanity ||
+        approvalLabelsHaveProfanity;
     
     if (hasProfanity != _profanityDetected) {
       setState(() {
@@ -406,26 +534,20 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
     });
   }
 
+  int _validOptionCount() {
+    return _optionControllers
+        .map((controller) => controller.text.trim())
+        .where((text) => text.isNotEmpty)
+        .length;
+  }
+
   bool _canPreview() {
-    // Basic validation for preview
-    if (_selectedType.isEmpty) return false;
-    if (_titleController.text.trim().length < 10) return false;
-    if (_selectedCategories.isEmpty) return false;
-    
-    // For multiple choice, check that we have at least 2 non-empty options
-    if (_selectedType == 'multiple_choice') {
-      final validOptions = _optionControllers
-          .map((controller) => controller.text.trim())
-          .where((text) => text.isNotEmpty)
-          .length;
-      if (validOptions < 2) return false;
-    }
-    
-    // Check word count for title
-    final wordCount = _titleController.text.trim().split(RegExp(r'\s+')).where((word) => word.isNotEmpty).length;
-    if (wordCount > 30) return false;
-    
-    return true;
+    // Topics are optional — validation lives in the pure helper.
+    return NewQuestionScreen.submissionRequirementErrors(
+      type: _selectedType,
+      title: _titleController.text,
+      multipleChoiceOptionCount: _validOptionCount(),
+    ).isEmpty;
   }
 
   void _showPreview() {
@@ -447,6 +569,7 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
           mentionedCountries: _mentionedCountries.isNotEmpty ? _mentionedCountries : null,
           targeting: _selectedTargeting,
           isPrivate: _isPrivate,
+          approvalLabels: _approvalLabels,
           onSubmit: _submitQuestion,
         ),
       ),
@@ -454,36 +577,12 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
   }
 
   void _showPreviewRequirements() {
-    List<String> missing = [];
-    
-    if (_selectedType.isEmpty) {
-      missing.add('• Select a question type');
-    }
-    
-    if (_titleController.text.trim().length < 10) {
-      missing.add('• Question must be at least 10 characters long');
-    }
-    
-    // Check word count for title
-    final wordCount = _titleController.text.trim().split(RegExp(r'\s+')).where((word) => word.isNotEmpty).length;
-    if (wordCount > 30) {
-      missing.add('• Question must be 30 words or less (currently $wordCount words)');
-    }
-    
-    if (_selectedCategories.isEmpty) {
-      missing.add('• Select at least one category');
-    }
-    
-    if (_selectedType == 'multiple_choice') {
-      final validOptions = _optionControllers
-          .map((controller) => controller.text.trim())
-          .where((text) => text.isNotEmpty)
-          .length;
-      if (validOptions < 2) {
-        missing.add('• Add at least 2 answer options for multiple choice');
-      }
-    }
-    
+    final missing = NewQuestionScreen.submissionRequirementErrors(
+      type: _selectedType,
+      title: _titleController.text,
+      multipleChoiceOptionCount: _validOptionCount(),
+    );
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -516,6 +615,9 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
     );
   }
 
+  /// Asker's Pick (Phase 3b): after a successful submission, offer the asker a
+  /// lightweight, skip-able step to nominate an upcoming Question of the Day.
+  ///
   Future<void> _navigateToAnswerScreen(Map<String, dynamic> question, {Future<List<Map<String, dynamic>>>? trendingFeedFuture}) async {
     // Dismiss any active keyboards before navigation
     FocusScope.of(context).unfocus();
@@ -588,12 +690,7 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
     // Authentication and city checks are now handled by the main screen before navigation
     // No need to check again here
 
-    if (_selectedCategories.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Please select at least one category')),
-      );
-      return null;
-    }
+    // Topics are optional — no category requirement gate here.
     if (_selectedType == 'multiple_choice') {
       final validOptions = _optionControllers
           .map((controller) => controller.text.trim())
@@ -727,6 +824,8 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
         targeting: _selectedTargeting,
         cityId: cityId,
         isPrivate: _isPrivate,
+        approvalLowLabel: _approvalLabels.low,
+        approvalHighLabel: _approvalLabels.high,
       );
 
       if (submittedQuestion != null) {
@@ -759,6 +858,11 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
           'mentioned_countries': _mentionedCountries,
         });
 
+        // Asking a question extends the streak for today (QOTD-first §Streak
+        // rule): a day counts if the user answered the effective QOTD OR asked
+        // a question. Fire-and-forget; failure here must not block submission.
+        userService.addStreakCreditForAsking();
+
         // Show success message
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -767,6 +871,9 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
           ),
         );
         
+        // Mark submitted so dispose does not fire question_create_abandoned.
+        _questionSubmitted = true;
+
         // Track question asked event
         AnalyticsService().trackEvent('question_asked', {
           'question_id': submittedQuestion['id'],
@@ -837,9 +944,10 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
           // Show first-time notification dialog
           await FirstQuestionNotificationDialog.show(
             context,
-            onCompleted: () {
+            onCompleted: () async {
               // Auto-subscribe to posted question after dialog completes
               AutoSubscriptionHelper.autoSubscribeToPostedQuestion(context, submittedQuestion);
+
 
               // Navigate to the appropriate answer screen
               _navigateToAnswerScreen(submittedQuestion, trendingFeedFuture: trendingFeedFuture);
@@ -848,6 +956,7 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
         } else {
           // For subsequent questions, just auto-subscribe and navigate
           AutoSubscriptionHelper.autoSubscribeToPostedQuestion(context, submittedQuestion);
+
 
           // Navigate to the appropriate answer screen for the newly posted question
           _navigateToAnswerScreen(submittedQuestion, trendingFeedFuture: trendingFeedFuture);
@@ -940,69 +1049,138 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
     return null; // Fallback return
   }
 
+  /// The labels as currently authored, trimmed/clamped and defaulted (WP-B).
+  ApprovalLabels get _approvalLabels => ApprovalLabels(
+        low: normalizeApprovalLabel(_approvalLowController.text,
+            fallback: kDefaultApprovalLowLabel),
+        high: normalizeApprovalLabel(_approvalHighController.text,
+            fallback: kDefaultApprovalHighLabel),
+      );
+
+  /// Live, non-interactive preview of the approval slider the asker is about to
+  /// ship, with both ends editable (defaults "Disapprove" / "Approve", ≤ 20
+  /// chars, profanity-filtered like every other authored field).
+  Widget _buildApprovalBoundsEditor() {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Slider ends',
+          style: theme.textTheme.titleMedium,
+        ),
+        SizedBox(height: 4),
+        Text(
+          'Name what each end of the slider means.',
+          style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
+        ),
+        SizedBox(height: 12),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: _buildApprovalLabelField(
+                controller: _approvalLowController,
+                label: 'Thumbs-down end',
+                icon: Icons.thumb_down,
+                iconColor: Colors.red,
+                fallback: kDefaultApprovalLowLabel,
+              ),
+            ),
+            SizedBox(width: 12),
+            Expanded(
+              child: _buildApprovalLabelField(
+                controller: _approvalHighController,
+                label: 'Thumbs-up end',
+                icon: Icons.thumb_up,
+                iconColor: Colors.green,
+                fallback: kDefaultApprovalHighLabel,
+              ),
+            ),
+          ],
+        ),
+        SizedBox(height: 12),
+        Container(
+          padding: EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surface,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: theme.dividerColor),
+          ),
+          child: Column(
+            children: [
+              // Says so explicitly: this is a preview, not the asker's answer.
+              Row(
+                children: [
+                  Icon(Icons.visibility_outlined,
+                      size: 14, color: Colors.grey[600]),
+                  SizedBox(width: 6),
+                  Text(
+                    'Preview — what others will see',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: Colors.grey[600],
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ],
+              ),
+              SizedBox(height: 10),
+              ApprovalEndLabelsRow(labels: _approvalLabels),
+              SizedBox(height: 8),
+              // Disabled: this is a preview of what readers will drag, not an
+              // answer the asker gives.
+              ApprovalSlider(
+                initialValue: _approvalPreviewValue,
+                enabled: false,
+                onChanged: (_) {},
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildApprovalLabelField({
+    required TextEditingController controller,
+    required String label,
+    required IconData icon,
+    required Color iconColor,
+    required String fallback,
+  }) {
+    final hasProfanity = _profanityFilter.containsProfanity(controller.text);
+    return TextFormField(
+      controller: controller,
+      decoration: InputDecoration(
+        labelText: label,
+        hintText: fallback,
+        prefixIcon: Icon(icon, color: iconColor, size: 18),
+        prefixIconConstraints: BoxConstraints(minWidth: 32, minHeight: 18),
+        counterText: '',
+        errorText: hasProfanity ? 'Profanity detected' : null,
+      ),
+      maxLength: kApprovalLabelMaxLength,
+      textCapitalization: TextCapitalization.sentences,
+      onChanged: (_) {
+        setState(() {}); // live preview
+        _checkForProfanity();
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('New Question'),
+        title: Text('🦎 Ask a Question'),
       ),
       body: Form(
         key: _formKey,
         child: ListView(
           padding: EdgeInsets.all(16.0),
           children: [
-            Text(
-              '🦎 Start the conversation',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            SizedBox(height: 8),
-            TextFormField(
-              controller: _titleController,
-              focusNode: _titleFocusNode,
-              decoration: InputDecoration(
-                labelText: 'Question prompt',
-                hintText: 'Enter your question',
-              ),
-              maxLines: null,
-              maxLength: 140,
-              keyboardType: TextInputType.multiline,
-              textCapitalization: TextCapitalization.sentences,
-              onChanged: (value) {
-                setState(() {
-                  // Trigger rebuild to update counter colors
-                });
-              },
-              buildCounter: (context, {required currentLength, required isFocused, maxLength}) {
-                return Text(
-                  '$currentLength/$maxLength',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: currentLength < 10 
-                        ? Colors.orange 
-                        : Theme.of(context).textTheme.bodySmall?.color,
-                  ),
-                );
-              },
-              validator: (value) {
-                if (value == null || value.isEmpty) {
-                  return 'Please enter a question';
-                }
-                if (value.trim().length < 10) {
-                  return 'Question must be at least 10 characters long';
-                }
-                
-                // Check word count (split by whitespace and filter out empty strings)
-                final wordCount = value.trim().split(RegExp(r'\s+')).where((word) => word.isNotEmpty).length;
-                if (wordCount > 30) {
-                  return 'Question must be 30 words or less (currently $wordCount words)';
-                }
-                
-                return null;
-              },
-            ),
-            SizedBox(height: 24),
-            
-            // 2. Question Type
+            // 1. Question type — chosen first, so the prompt and the preview below fit it
             Text(
               'Question Type',
               style: Theme.of(context).textTheme.titleMedium,
@@ -1043,10 +1221,7 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
                         if (selected) {
                           setState(() {
                             _selectedType = 'multiple_choice';
-                            // Clear default approval rating text if present
-                            if (_descriptionController.text == '👎🏽 = against, 👍🏽 = for') {
-                              _descriptionController.clear();
-                            }
+                            _typeTouched = true;
                           });
                         }
                       },
@@ -1089,11 +1264,11 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
                       onSelected: (selected) {
                         if (selected) {
                           setState(() {
+                            // The thumbs meaning now lives in the editable
+                            // slider end labels, not in an auto-filled
+                            // description (WP-B).
                             _selectedType = 'approval_rating';
-                            // Set default description text for approval rating
-                            if (_descriptionController.text.isEmpty) {
-                              _descriptionController.text = '👎🏽 = against, 👍🏽 = for';
-                            }
+                            _typeTouched = true;
                           });
                         }
                       },
@@ -1120,7 +1295,7 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
                             ),
                             SizedBox(height: 4),
                             Text(
-                              'Text response',
+                              'Discussion',
                               style: TextStyle(
                                 fontSize: 10, 
                                 fontWeight: FontWeight.bold,
@@ -1137,10 +1312,7 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
                         if (selected) {
                           setState(() {
                             _selectedType = 'text';
-                            // Clear default approval rating text if present
-                            if (_descriptionController.text == '👎🏽 = against, 👍🏽 = for') {
-                              _descriptionController.clear();
-                            }
+                            _typeTouched = true;
                           });
                         }
                       },
@@ -1215,6 +1387,53 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
             ),
             SizedBox(height: 24),
             
+            // 2. Question prompt
+            TextFormField(
+              controller: _titleController,
+              focusNode: _titleFocusNode,
+              decoration: InputDecoration(
+                labelText: 'Question prompt',
+                hintText: 'Enter your question',
+              ),
+              maxLines: null,
+              maxLength: 140,
+              keyboardType: TextInputType.multiline,
+              textCapitalization: TextCapitalization.sentences,
+              onChanged: (value) {
+                setState(() {
+                  // Trigger rebuild to update counter colors
+                });
+              },
+              buildCounter: (context, {required currentLength, required isFocused, maxLength}) {
+                return Text(
+                  '$currentLength/$maxLength',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: currentLength < 10 
+                        ? Colors.orange 
+                        : Theme.of(context).textTheme.bodySmall?.color,
+                  ),
+                );
+              },
+              validator: (value) {
+                if (value == null || value.isEmpty) {
+                  return 'Please enter a question';
+                }
+                if (value.trim().length < 10) {
+                  return 'Question must be at least 10 characters long';
+                }
+                
+                // Check word count (split by whitespace and filter out empty strings)
+                final wordCount = value.trim().split(RegExp(r'\s+')).where((word) => word.isNotEmpty).length;
+                if (wordCount > 30) {
+                  return 'Question must be 30 words or less (currently $wordCount words)';
+                }
+                
+                return null;
+              },
+            ),
+            SizedBox(height: 24),
+
             // 3. Description
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1225,11 +1444,14 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
                   decoration: InputDecoration(
                     labelText: 'Description (optional)',
                     hintText: 'Add more context to your question.',
-                    helperText: _showCountrySuggestions 
+                    // No idle hint here (the "@ to tag countries" line was
+                    // dropped 2026-09-01 with the QOTD-first refocus); the
+                    // helper only appears while the @ feature is in use.
+                    helperText: _showCountrySuggestions
                         ? 'Type to search countries...'
-                        : _mentionedCountries.isNotEmpty 
+                        : _mentionedCountries.isNotEmpty
                             ? 'Country tagged: ${_mentionedCountries.join(", ")}'
-                            : 'Use @ to tag countries aside from your own (optional)',
+                            : null,
                     helperStyle: TextStyle(
                       color: _showCountrySuggestions ? Theme.of(context).primaryColor : null,
                     ),
@@ -1238,10 +1460,7 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
                   maxLines: null,
                   maxLength: 500,
                   keyboardType: TextInputType.multiline,
-                  // Only auto-capitalize if it's not approval rating (which has default text)
-                  textCapitalization: _selectedType != 'approval_rating' 
-                      ? TextCapitalization.sentences 
-                      : TextCapitalization.none,
+                  textCapitalization: TextCapitalization.sentences,
                 ),
                 SizedBox(height: 4),
                 Align(
@@ -1287,6 +1506,14 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
               
                           SizedBox(height: 24),
             
+            // 4a. Approval slider preview with editable end labels (WP-B).
+            // Below the description, where the other types put their
+            // type-specific section (2026-09-19; it used to sit above it).
+            if (_selectedType == 'approval_rating') ...[
+              _buildApprovalBoundsEditor(),
+              SizedBox(height: 24),
+            ],
+
             // 4. Answer Options (if multiple choice)
             if (_selectedType == 'multiple_choice') ...[
               Row(
@@ -1588,14 +1815,91 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
                 ),
             ],
             SizedBox(height: 24),
-            
-            // 5. Audience (Who should see this question)
-            Text(
-              'Who should see this question?',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            SizedBox(height: 8),
-            
+            // Advanced options (collapsed by default) — targeting + privacy +
+            // NSFW + topics.
+            Consumer<LocationService>(
+              builder: (context, locationService, child) {
+                final advancedSummary = NewQuestionScreen.advancedOptionsSummary(
+                  targeting: _selectedTargeting,
+                  isPrivate: _isPrivate,
+                  countryName: locationService.selectedCountry,
+                  cityName: locationService.selectedCity?['name'] as String?,
+                );
+                final hasNonDefault = advancedSummary != null;
+                return Container(
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surface,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: hasNonDefault
+                          ? Theme.of(context).primaryColor.withOpacity(0.4)
+                          : Theme.of(context).dividerColor,
+                    ),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: Theme(
+                    data: Theme.of(context)
+                        .copyWith(dividerColor: Colors.transparent),
+                    child: ExpansionTile(
+                      key: const Key('advanced_options_tile'),
+                      initiallyExpanded: false,
+                      tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+                      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      leading: Icon(
+                        Icons.tune,
+                        color: hasNonDefault
+                            ? Theme.of(context).primaryColor
+                            : Theme.of(context).hintColor,
+                      ),
+                      title: Row(
+                        children: [
+                          Text(
+                            'Advanced options',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          if (hasNonDefault) ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: Theme.of(context).primaryColor,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                      subtitle: advancedSummary == null
+                          ? null
+                          : Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(
+                          advancedSummary,
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: hasNonDefault
+                                    ? Theme.of(context).primaryColor
+                                    : Theme.of(context).textTheme.bodySmall?.color,
+                                fontWeight: hasNonDefault
+                                    ? FontWeight.w500
+                                    : FontWeight.normal,
+                              ),
+                        ),
+                      ),
+                      children: [
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 12),
+                            child: Text(
+                              'Add topics, target a country or city, or make the question private.',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(color: Theme.of(context).hintColor),
+                            ),
+                          ),
+                        ),
             // Private question switch
             Container(
               margin: EdgeInsets.only(bottom: 16),
@@ -1655,6 +1959,7 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
                         // Reset to global when turning off private mode
                         if (_isPrivate) {
                           _selectedTargeting = 'city';
+                          _selectedCategories.clear();
                         } else {
                           _selectedTargeting = 'globe';
                         }
@@ -1949,158 +2254,14 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
                 },
               ),
             ),
-            SizedBox(height: 24),
-            
-            // 6. Topics
-            Text(
-              'Topics (select 1–5)',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            SizedBox(height: 8),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // First row: Always show Serious and Funny
-                if (_categoryCountsLoaded) ...[
-                  Wrap(
-                    spacing: 8.0,
-                    runSpacing: 8.0,
-                    children: () {
-                      final orderedCategories = Category.getOrderedCategoriesByStaticUsage();
-                      final seriousAndFunny = orderedCategories.take(2).toList(); // Serious and Funny are always first
-                      
-                      return seriousAndFunny.map((category) {
-                        final isSelected = _selectedCategories.contains(category);
-                        
-                        return FilterChip(
-                          label: Text(
-                            category.name,
-                            style: TextStyle(
-                              color: isSelected 
-                                  ? Theme.of(context).colorScheme.onSurface
-                                  : Theme.of(context).textTheme.bodyMedium?.color,
-                            ),
-                          ),
-                          selected: isSelected,
-                          onSelected: (selected) => _toggleCategory(category),
-                          showCheckmark: false,
-                          selectedColor: category.isNSFW 
-                              ? Colors.red.withOpacity(0.2)
-                              : Theme.of(context).primaryColor.withOpacity(0.2),
-                          checkmarkColor: Theme.of(context).primaryColor,
-                        );
-                      }).toList();
-                    }(),
-                  ),
-                  SizedBox(height: 8),
-                  
-                  // Remaining categories (top 13 more, or all if show more is enabled)
-                  Wrap(
-                    spacing: 8.0,
-                    runSpacing: 8.0,
-                    children: () {
-                      final orderedCategories = Category.getOrderedCategoriesByStaticUsage();
-                      final remainingCategories = orderedCategories.skip(2); // Skip Serious and Funny
-                      final categoriesToShow = _showAllCategories 
-                          ? remainingCategories.toList()
-                          : remainingCategories.take(8).toList(); // Show 8 more (total 10)
-                      
-                      return categoriesToShow.map((category) {
-                        final isSelected = _selectedCategories.contains(category);
-                        
-                        return FilterChip(
-                          label: Text(
-                            category.name,
-                            style: TextStyle(
-                              color: isSelected 
-                                  ? Theme.of(context).colorScheme.onSurface
-                                  : Theme.of(context).textTheme.bodyMedium?.color,
-                            ),
-                          ),
-                          selected: isSelected,
-                          onSelected: (selected) => _toggleCategory(category),
-                          showCheckmark: false,
-                          selectedColor: category.isNSFW 
-                              ? Colors.red.withOpacity(0.2)
-                              : Theme.of(context).primaryColor.withOpacity(0.2),
-                          checkmarkColor: Theme.of(context).primaryColor,
-                        );
-                      }).toList();
-                    }(),
-                  ),
-                  
-                  // Show more/less button
-                  if (Category.allCategories.length > 10) ...[
-                    SizedBox(height: 8),
-                    GestureDetector(
-                      onTap: () {
-                        setState(() {
-                          _showAllCategories = !_showAllCategories;
-                        });
-                      },
-                      child: Text(
-                        _showAllCategories ? '(show less)' : '(show more)',
-                        style: TextStyle(
-                          color: Theme.of(context).primaryColor,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ),
-                  ],
-                ] else ...[
-                  // Loading indicator
-                  Container(
-                    padding: EdgeInsets.all(16),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                        SizedBox(width: 8),
-                        Text(
-                          'Loading categories...',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
+                        const SizedBox(height: 8),
+                        _buildNsfwToggle(context),
+                        const SizedBox(height: 12),
+                        _buildTopicsSection(context),
                       ],
                     ),
                   ),
-                ],
-              ],
-            ),
-            SizedBox(height: 24),
-            SwitchListTile(
-              title: Row(
-                children: [
-                  Text('NSFW content (18+)'),
-                  if (_profanityDetected) ...[
-                    SizedBox(width: 8),
-                    Tooltip(
-                      message: 'Profanity detected - this question must be marked as NSFW',
-                      child: Icon(Icons.warning_amber_rounded, color: Colors.orange),
-                    ),
-                  ],
-                ],
-              ),
-              subtitle: Text('This question is addressed to adults only'),
-              value: _isNSFW,
-              onChanged: (bool value) {
-                // Only allow turning off NSFW if no profanity is detected
-                if (_profanityDetected && !value) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Cannot disable NSFW flag because profanity was detected.'),
-                      backgroundColor: Colors.orange,
-                    ),
-                  );
-                  return;
-                }
-                setState(() {
-                  _isNSFW = value;
-                });
+                );
               },
             ),
             SizedBox(height: 24),
@@ -2123,6 +2284,190 @@ class _NewQuestionScreenState extends State<NewQuestionScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  /// NSFW toggle — moved into the collapsed "Advanced options" section
+  /// (2026-09-01). Profanity detection still force-enables it and blocks
+  /// turning it off, even while the section is collapsed.
+  Widget _buildNsfwToggle(BuildContext context) {
+    return SwitchListTile(
+      contentPadding: EdgeInsets.zero,
+      title: Row(
+        children: [
+          Text('NSFW content (18+)'),
+          if (_profanityDetected) ...[
+            SizedBox(width: 8),
+            Tooltip(
+              message: 'Profanity detected - this question must be marked as NSFW',
+              child: Icon(Icons.warning_amber_rounded, color: Colors.orange),
+            ),
+          ],
+        ],
+      ),
+      subtitle: Text('This question is addressed to adults only'),
+      value: _isNSFW,
+      onChanged: (bool value) {
+        // Only allow turning off NSFW if no profanity is detected
+        if (_profanityDetected && !value) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Cannot disable NSFW flag because profanity was detected.'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+          return;
+        }
+        setState(() {
+          _isNSFW = value;
+        });
+      },
+    );
+  }
+
+  /// Topics picker — optional, so it lives inside the collapsed
+  /// "Advanced options" section (moved 2026-08-31). Hidden for private
+  /// questions, which never carry topics.
+  Widget _buildTopicsSection(BuildContext context) {
+    if (_isPrivate) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+                Text(
+                  'Topics (optional)',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                SizedBox(height: 4),
+                Text(
+                  'Add up to 5 to help people find your question — or skip it.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).hintColor,
+                  ),
+                ),
+                SizedBox(height: 8),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // First row: Always show Serious and Funny
+                    if (_categoryCountsLoaded) ...[
+                      Wrap(
+                        spacing: 8.0,
+                        runSpacing: 8.0,
+                        children: () {
+                          final orderedCategories = Category.getOrderedCategoriesByStaticUsage();
+                          final seriousAndFunny = orderedCategories.take(2).toList(); // Serious and Funny are always first
+                      
+                          return seriousAndFunny.map((category) {
+                            final isSelected = _selectedCategories.contains(category);
+                        
+                            return FilterChip(
+                              label: Text(
+                                category.name,
+                                style: TextStyle(
+                                  color: isSelected 
+                                      ? Theme.of(context).colorScheme.onSurface
+                                      : Theme.of(context).textTheme.bodyMedium?.color,
+                                ),
+                              ),
+                              selected: isSelected,
+                              onSelected: (selected) => _toggleCategory(category),
+                              showCheckmark: false,
+                              selectedColor: category.isNSFW 
+                                  ? Colors.red.withOpacity(0.2)
+                                  : Theme.of(context).primaryColor.withOpacity(0.2),
+                              checkmarkColor: Theme.of(context).primaryColor,
+                            );
+                          }).toList();
+                        }(),
+                      ),
+                      SizedBox(height: 8),
+                  
+                      // Remaining categories: collapsed to the top few (about a line
+                      // or two of chips) until "(show more)"; selected chips stay
+                      // visible even when they fall outside the collapsed set.
+                      Wrap(
+                        spacing: 8.0,
+                        runSpacing: 8.0,
+                        children: () {
+                          final orderedCategories = Category.getOrderedCategoriesByStaticUsage();
+                          final remainingCategories = orderedCategories.skip(2); // Skip Serious and Funny
+                          final categoriesToShow = _showAllCategories
+                              ? remainingCategories.toList()
+                              : [
+                                  ...remainingCategories.take(4),
+                                  ...remainingCategories
+                                      .skip(4)
+                                      .where((c) => _selectedCategories.contains(c)),
+                                ]; // Show 4 more (total 6) + any hidden selections
+                      
+                          return categoriesToShow.map((category) {
+                            final isSelected = _selectedCategories.contains(category);
+                        
+                            return FilterChip(
+                              label: Text(
+                                category.name,
+                                style: TextStyle(
+                                  color: isSelected 
+                                      ? Theme.of(context).colorScheme.onSurface
+                                      : Theme.of(context).textTheme.bodyMedium?.color,
+                                ),
+                              ),
+                              selected: isSelected,
+                              onSelected: (selected) => _toggleCategory(category),
+                              showCheckmark: false,
+                              selectedColor: category.isNSFW 
+                                  ? Colors.red.withOpacity(0.2)
+                                  : Theme.of(context).primaryColor.withOpacity(0.2),
+                              checkmarkColor: Theme.of(context).primaryColor,
+                            );
+                          }).toList();
+                        }(),
+                      ),
+                  
+                      // Show more/less button
+                      if (Category.allCategories.length > 6) ...[
+                        SizedBox(height: 8),
+                        GestureDetector(
+                          onTap: () {
+                            setState(() {
+                              _showAllCategories = !_showAllCategories;
+                            });
+                          },
+                          child: Text(
+                            _showAllCategories ? '(show less)' : '(show more)',
+                            style: TextStyle(
+                              color: Theme.of(context).primaryColor,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ] else ...[
+                      // Loading indicator
+                      Container(
+                        padding: EdgeInsets.all(16),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                            SizedBox(width: 8),
+                            Text(
+                              'Loading categories...',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+      ],
     );
   }
 }

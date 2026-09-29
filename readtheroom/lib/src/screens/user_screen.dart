@@ -19,6 +19,8 @@ import 'answer_approval_screen.dart';
 import 'answer_multiple_choice_screen.dart';
 import 'answer_text_screen.dart';
 import 'authentication_screen.dart';
+import '../widgets/answer_streak_dialog.dart';
+import '../widgets/profile_header.dart';
 import '../widgets/question_type_badge.dart';
 import '../services/question_service.dart';
 import '../services/watchlist_service.dart';
@@ -29,14 +31,12 @@ import '../services/device_id_provider.dart';
 import '../services/passkeys_service.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'dart:io';
-import '../widgets/my_rooms_section.dart';
 import '../services/achievement_service.dart';
 import '../services/congratulations_service.dart';
-import '../services/room_service.dart';
-import '../models/room.dart';
+import '../services/friend_service.dart';
+import '../utils/badge_logic.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 class UserScreen extends StatefulWidget {
   final bool fromAuthentication;
@@ -48,11 +48,12 @@ class UserScreen extends StatefulWidget {
 }
 
 class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
-  late AchievementService _achievementService;
-  bool _achievementServiceInitialized = false;
-  bool _forceRefreshAchievements = false;
-  final GlobalKey<MyRoomsSectionState> _myRoomsKey = GlobalKey<MyRoomsSectionState>();
-  
+  // Camo Collection: server-side badge stats, loaded by _loadBadgeData().
+  _BadgeData? _badgeData;
+  bool _badgeLoading = false;
+  bool _badgeForcedReloadQueued = false;
+  String? _badgeLoadedForKey;
+
   // Cache the subscribed questions future to prevent multiple calls
   Future<List<Map<String, dynamic>>>? _cachedSubscribedQuestionsFuture;
 
@@ -83,7 +84,7 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         _refreshSubscribedQuestionsCache();
-        _initAchievementService();
+        _loadBadgeData();
         // Start vote count polling for user questions
         _startVoteCountPolling();
         // Disabled aggressive cleanup - was causing subscribed questions to disappear
@@ -92,17 +93,6 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
     });
   }
   
-  Future<void> _initAchievementService() async {
-    final userService = Provider.of<UserService>(context, listen: false);
-    _achievementService = AchievementService(userService: userService, context: context);
-    await _achievementService.init();
-    if (mounted) {
-      setState(() {
-        _achievementServiceInitialized = true;
-      });
-    }
-  }
-
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -155,32 +145,15 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
             },
             child: RefreshIndicator(
               onRefresh: () async {
-                // Set force refresh flag for achievements
-                setState(() {
-                  _forceRefreshAchievements = true;
-                });
-                
                 // Refresh engagement ranking when user pulls to refresh
                 final userService = Provider.of<UserService>(context, listen: false);
                 await userService.refreshEngagementRanking();
-                
+
                 // Refresh subscribed questions cache
                 _refreshSubscribedQuestionsCache();
-                
-                // Refresh room data and member counts
-                await _myRoomsKey.currentState?.refreshRooms();
-                
-                // Refresh achievement data
-                if (_achievementServiceInitialized) {
-                  await _achievementService.refreshAllAchievements();
-                }
-                
-                // Reset force refresh flag after refresh
-                if (mounted) {
-                  setState(() {
-                    _forceRefreshAchievements = false;
-                  });
-                }
+
+                // Refresh badges, bypassing their caches
+                await _loadBadgeData(forceRefresh: true);
               },
                   child: SingleChildScrollView(
                     physics: AlwaysScrollableScrollPhysics(), // Enable pull-to-refresh even when content is short
@@ -189,6 +162,10 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        // Chameleon identity header (avatar + handle + edit).
+                        if (Supabase.instance.client.auth.currentUser != null)
+                          const ProfileHeader(),
+
                         // Authentication message for non-authenticated users - show first
                         if (Supabase.instance.client.auth.currentUser == null)
                           Container(
@@ -570,7 +547,6 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
     
     return Consumer2<UserService, WatchlistService>(
       builder: (context, userService, watchlistService, child) {
-        final isSaved = userService.savedQuestions.any((q) => q['id'] == question['id']);
         final isSubscribed = watchlistService.isWatching(question['id'].toString());
         
         // Create a safe time ago string with error handling
@@ -731,58 +707,7 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
                         }
                       },
                     )
-                  : (isSaved && userService.savedQuestions.contains(question)
-                      ? IconButton(
-                          icon: Icon(Icons.bookmark, color: Theme.of(context).primaryColor),
-                          onPressed: () {
-                            userService.removeSavedQuestion(question['id']);
-                            final scaffoldMessenger = ScaffoldMessenger.of(context);
-                            final primaryColor = Theme.of(context).primaryColor;
-                            scaffoldMessenger.showSnackBar(
-                              SnackBar(
-                                content: Row(
-                                  children: [
-                                    Icon(Icons.bookmark_border, color: Colors.white, size: 20),
-                                    SizedBox(width: 8),
-                                    Expanded(child: Text('Question removed from saved')),
-                                    TextButton(
-                                      onPressed: () {
-                                        userService.addSavedQuestion(question);
-                                        scaffoldMessenger.showSnackBar(
-                                          SnackBar(
-                                            content: Row(
-                                              children: [
-                                                Icon(Icons.bookmark, color: Colors.white, size: 20),
-                                                SizedBox(width: 8),
-                                                Text('Question re-saved'),
-                                              ],
-                                            ),
-                                            backgroundColor: primaryColor,
-                                            duration: Duration(seconds: 1),
-                                          ),
-                                        );
-                                      },
-                                      style: TextButton.styleFrom(
-                                        padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                        minimumSize: Size(0, 0),
-                                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                      ),
-                                      child: Text(
-                                        'UNDO',
-                                        style: TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                backgroundColor: primaryColor,
-                              ),
-                            );
-                          },
-                        )
-                      : null),
+                  : null,
               onTap: () async {
                 // Fetch complete question data with priority caching
                 final questionService = Provider.of<QuestionService>(context, listen: false);
@@ -1076,7 +1001,6 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
                 final allQuestions = <Map<String, dynamic>>[];
                 allQuestions.addAll(userService.postedQuestions);
                 allQuestions.addAll(userService.answeredQuestions);
-                allQuestions.addAll(userService.savedQuestions);
                 _initializeCommentLoadingQueue(allQuestions);
               }
             },
@@ -1095,18 +1019,6 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
                         isSubscribedSection: true,
                       );
                     },
-                  );
-                },
-              ),
-              // Saved Questions section
-              FutureBuilder<List<Map<String, dynamic>>>(
-                future: userService.getFilteredSavedQuestions(Provider.of<QuestionService>(context, listen: false)),
-                builder: (context, snapshot) {
-                  final questions = snapshot.data ?? userService.savedQuestions;
-                  return _buildQuestionSection(
-                    'Saved Questions',
-                    questions,
-                    Icons.bookmark,
                   );
                 },
               ),
@@ -1170,128 +1082,12 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
           ),
         ),
 
-        SizedBox(height: 8),
-
-        // My Rooms - Expandable section for room management
-        MyRoomsSection(key: _myRoomsKey),
-
         SizedBox(height: 16),
 
-        // Achievements section
-        Padding(
-          padding: EdgeInsets.symmetric(horizontal: 4),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SizedBox(height: 8),
-              Text(
-                'Camo Collection',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  color: Theme.of(context).textTheme.titleLarge?.color,
-                ),
-              ),
-              SizedBox(height: 2),
-              FutureBuilder<int>(
-                future: _getUnlockedAchievementsCountAsync(),
-                builder: (context, snapshot) {
-                  final count = snapshot.data ?? 0;
-                  return Text(
-                    count == 1 ? '$count badge collected' : '$count badges collected',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.7),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-        ),
-        SizedBox(height: 8),
-        
-        // Question & Response Achievements
-        FutureBuilder<List<Widget>>(
-          future: _getProgressiveQuestionAchievementsAsync(userService, forceRefresh: _forceRefreshAchievements),
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return Container(
-                padding: EdgeInsets.all(16),
-                child: Center(child: CircularProgressIndicator()),
-              );
-            }
-            final questionHunterAchievements = snapshot.data ?? [];
-            return _buildAchievementSubsection('Question Hunter', questionHunterAchievements);
-          },
-        ),
-        
-        SizedBox(height: 12),
-        
-        // Community Achievements
-        FutureBuilder<List<Widget>>(
-          future: _getCommunityAchievementsAsync(forceRefresh: _forceRefreshAchievements),
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return Container(
-                padding: EdgeInsets.all(16),
-                child: Center(child: CircularProgressIndicator()),
-              );
-            }
-            final communityAchievements = snapshot.data ?? [];
-            return _buildAchievementSubsection('RTR Community', communityAchievements);
-          },
-        ),
-        
-        SizedBox(height: 12),
-        
-        // Local Community Achievements
-        FutureBuilder<List<Widget>>(
-          future: _getLocalCommunityAchievementsAsync(forceRefresh: _forceRefreshAchievements),
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return Container(
-                padding: EdgeInsets.all(16),
-                child: Center(child: CircularProgressIndicator()),
-              );
-            }
-            final localCommunityAchievements = snapshot.data ?? [];
-            return _buildAchievementSubsection('Local Community', localCommunityAchievements);
-          },
-        ),
-        
-        SizedBox(height: 12),
-        
-        // Room Achievements
-        FutureBuilder<List<Widget>>(
-          future: _getRoomAchievementsAsync(forceRefresh: _forceRefreshAchievements),
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return Container(
-                padding: EdgeInsets.all(16),
-                child: Center(child: CircularProgressIndicator()),
-              );
-            }
-            final roomAchievements = snapshot.data ?? [];
-            return _buildAchievementSubsection('Rooms and Networks', roomAchievements);
-          },
-        ),
-        
-        SizedBox(height: 12),
-        
-        // Social Achievements - COMMENTED OUT (not working well)
-        // FutureBuilder<List<Widget>>(
-        //   future: _getSocialAchievementsAsync(forceRefresh: true),
-        //   builder: (context, snapshot) {
-        //     if (snapshot.connectionState == ConnectionState.waiting) {
-        //       return Container(
-        //         padding: EdgeInsets.all(16),
-        //         child: Center(child: CircularProgressIndicator()),
-        //       );
-        //     }
-        //     final socialAchievements = snapshot.data ?? [];
-        //     return _buildAchievementSubsection('Social Butterfly', socialAchievements);
-        //   },
-        // ),
-        
+        // Achievements section ("Camo Collection"). Grid and counter render
+        // the same catalog, see utils/badge_logic.dart.
+        ..._buildBadgeCollection(userService),
+
         SizedBox(height: 80),
       ],
     );
@@ -1928,6 +1724,56 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
     );
   }
 
+  List<Widget> _buildBadgeCollection(UserService userService) {
+    _maybeReloadBadges(userService);
+    final friendCount = Provider.of<FriendService>(context).friendCount;
+    final sections = buildBadgeSections(_badgeStats(userService, friendCount));
+    final collected = countCollectedBadges(sections);
+    final loading = _badgeData == null;
+
+    return [
+      Padding(
+        padding: EdgeInsets.symmetric(horizontal: 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(height: 8),
+            Text(
+              'Camo Collection',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: Theme.of(context).textTheme.titleLarge?.color,
+              ),
+            ),
+            SizedBox(height: 2),
+            Text(
+              loading
+                  ? 'Counting badges...'
+                  : (collected == 1 ? '1 badge collected' : '$collected badges collected'),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.7),
+              ),
+            ),
+          ],
+        ),
+      ),
+      SizedBox(height: 8),
+      if (loading)
+        Container(
+          padding: EdgeInsets.all(16),
+          child: Center(child: CircularProgressIndicator()),
+        )
+      else
+        for (final section in sections) ...[
+          _buildAchievementSubsection(
+            section.title,
+            section.badges.map(_buildBadgeChip).toList(),
+          ),
+          SizedBox(height: 12),
+        ],
+    ];
+  }
+
   Widget _buildAchievementSubsection(String title, List<Widget> chips) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1957,1064 +1803,376 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
     );
   }
 
-  Future<List<Widget>> _getProgressiveQuestionAchievementsAsync(UserService userService, {bool forceRefresh = false}) async {
-    // Check if we have cached data from today
-    final prefs = await SharedPreferences.getInstance();
-    final cacheKey = 'progressive_question_achievements_cache';
-    final cacheTimeKey = 'progressive_question_achievements_cache_time';
-    final cacheAnsweredCountKey = 'progressive_question_achievements_answered_count';
-    
-    if (!forceRefresh) {
-      final cacheTime = prefs.getString(cacheTimeKey);
-      final cachedAnsweredCount = prefs.getInt(cacheAnsweredCountKey);
-      
-      if (cacheTime != null && cachedAnsweredCount != null) {
-        final cacheDateTime = DateTime.parse(cacheTime);
-        final now = DateTime.now();
-        
-        // Use cache if from today
-        if (cacheDateTime.year == now.year && 
-            cacheDateTime.month == now.month && 
-            cacheDateTime.day == now.day) {
-          print('Using cached progressive question achievements');
-          return await _buildProgressiveQuestionAchievements(userService, cachedAnsweredCount);
-        }
-      }
-    }
-    
-    print('Building fresh progressive question achievements');
-    final List<Widget> unlockedAchievements = [];
-    final List<Widget> lockedAchievements = [];
-    
-    // Use the same filtered count that appears in My Questions "Answered" section
-    // This excludes hidden/deleted/private questions to match what users see
-    final filteredAnsweredQuestions = await userService.getFilteredAnsweredQuestions(Provider.of<QuestionService>(context, listen: false));
-    final answeredCount = filteredAnsweredQuestions.length;
-    
-    // Cache the answered count for today
-    await prefs.setInt(cacheAnsweredCountKey, answeredCount);
-    await prefs.setString(cacheTimeKey, DateTime.now().toIso8601String());
-    final votedCount = answeredCount; // Using answered as proxy for voted
-    final hasFirstQuestion = userService.postedQuestions.isNotEmpty;
-    
-    // Sort into unlocked and locked lists
-    
-    // First question achievement
-    final postedCount = userService.postedQuestions.length;
-    if (hasFirstQuestion) {
-      unlockedAchievements.add(_buildAchievementChip('❓', 'Not a lurker!', 'Posted a question', true,
-          progress: 'Total posted: $postedCount questions', count: postedCount > 1 ? postedCount : null));
-    } else {
-      lockedAchievements.add(_buildAchievementChip('❓', 'Not a lurker!', 'Posted a question', false,
-          progress: 'Post your first question to unlock'));
-    }
-    
-    // Answer achievements (progressive) - Only show these, not vote achievements since they're the same
-    if (answeredCount >= 1000) {
-      unlockedAchievements.add(_buildAchievementChip('✅🏆', 'Answer Champion', 'Answered 1000+ questions', true,
-          progress: 'Current: ${answeredCount} answers'));
-    } else if (answeredCount >= 100) {
-      unlockedAchievements.add(_buildAchievementChip('💯✅', 'Century Club', 'Answered 100+ questions', true,
-          progress: 'Current: ${answeredCount} answers'));
-      lockedAchievements.add(_buildAchievementChip('✅🏆', 'Answer Champion', 'Answered 1000+ questions', false,
-          progress: 'Progress: ${answeredCount}/1000 answers'));
-    } else if (answeredCount >= 10) {
-      unlockedAchievements.add(_buildAchievementChip('10✅', 'Getting Started', 'Answered 10+ questions', true,
-          progress: 'Current: ${answeredCount} answers'));
-      lockedAchievements.add(_buildAchievementChip('💯✅', 'Century Club', 'Answered 100+ questions', false,
-          progress: 'Progress: ${answeredCount}/100 answers'));
-    }
-    
-    // Count achievements for questions that can be achieved multiple times
-    int popularQuestionCount = 0;
-    int viralQuestionCount = 0;
-    
-    for (var question in userService.postedQuestions) {
-      final votes = question['votes'] ?? 0;
-      if (votes >= 500) {
-        viralQuestionCount++;
-      } else if (votes >= 100) {
-        popularQuestionCount++;
-      }
-    }
-    
-    // Store achievements with counts for sorting
-    List<Map<String, dynamic>> countedAchievements = [];
-    
-    // Popular Question achievement (100+ responses)
-    if (popularQuestionCount > 0) {
-      countedAchievements.add({
-        'count': popularQuestionCount,
-        'widget': _buildAchievementChip('🎤', 'Popular Question', 'Your question reached 100+ responses', true,
-            progress: popularQuestionCount == 1 ? 'Achievement unlocked!' : 'Achieved $popularQuestionCount times', 
-            count: popularQuestionCount)
-      });
-    } else {
-      lockedAchievements.add(_buildAchievementChip('🎤', 'Popular Question', 'Your question reached 100+ responses', false,
-          progress: 'Get 100+ responses on a question'));
-    }
-    
-    // Viral Question achievement (500+ responses)
-    if (viralQuestionCount > 0) {
-      countedAchievements.add({
-        'count': viralQuestionCount,
-        'widget': _buildAchievementChip('🧿', 'Viral Question', 'Your question reached 500+ responses', true,
-            progress: viralQuestionCount == 1 ? 'Achievement unlocked!' : 'Achieved $viralQuestionCount times', 
-            count: viralQuestionCount)
-      });
-    } else {
-      lockedAchievements.add(_buildAchievementChip('🧿', 'Viral Question', 'Your question reached 500+ responses', false,
-          progress: 'Get 500+ responses on a question'));
-    }
-    
-    // QOTD Star achievement (check if user has had a question as Question of the Day)
-    final qotdStarUnlocked = await _isAchievementUnlocked('qotd_star');
-    final hasBeenQotd = await _hasQuestionBeenQotd();
-    final qotdCount = hasBeenQotd ? await _getQotdCount() : 0;
-    
-    if (qotdStarUnlocked || hasBeenQotd) {
-      if (!qotdStarUnlocked && hasBeenQotd) {
-        await _setAchievementUnlocked('qotd_star');
-        
-        // Show congratulations for QOTD achievement if eligible
-        try {
-          final userService = Provider.of<UserService>(context, listen: false);
-          final achievementService = AchievementService(
-            userService: userService,
-            context: context,
-          );
-          await achievementService.init();
-          
-          final congratulationsService = CongratulationsService(
-            userService: userService,
-            achievementService: achievementService,
-          );
-          await congratulationsService.init();
-          
-          await congratulationsService.showCongratulationsIfEligible(
-            context,
-            AchievementType.qotdBadge,
-          );
-        } catch (e) {
-          print('Error showing congratulations for QOTD achievement: $e');
-          // Don't let this error interrupt the normal flow
-        }
-      }
-      
-      // Add QOTD to counted achievements for sorting
-      final progressText = qotdCount == 1 ? 'You have had 1 QOTD' : 'You have had $qotdCount QOTDs';
-      countedAchievements.add({
-        'count': qotdCount,
-        'widget': _buildAchievementChip('📅⭐', 'QOTD Star', 'Your post became Question of the Day', true,
-            progress: progressText, customOnTap: _showQotdHistoryDialog, count: qotdCount)
-      });
-    } else {
-      lockedAchievements.add(_buildAchievementChip('📅⭐', 'QOTD Star', 'Your post became Question of the Day', false,
-          progress: 'Get your question featured as QOTD'));
-    }
-    
-    // Sort counted achievements by count (highest first) and add to unlocked list
-    countedAchievements.sort((a, b) => (b['count'] as int).compareTo(a['count'] as int));
-    for (var achievement in countedAchievements) {
-      unlockedAchievements.add(achievement['widget']);
-    }
-    
-    // COMMENTED OUT - achievements we can't verify yet
-    // lockedAchievements.add(_buildAchievementChip('🌍', 'Globetrotter', 'Your question got responses from 10+ countries', false));
-    // lockedAchievements.add(_buildAchievementChip('🗓️', '365 Club', 'Answered a question daily for 1 year', false));
-    // lockedAchievements.add(_buildAchievementChip('⚡', 'First Responder', 'First to answer 100+ times', false));
-    
-    // Combine lists: unlocked first, then locked
-    final List<Widget> achievements = [];
-    achievements.addAll(unlockedAchievements);
-    achievements.addAll(lockedAchievements);
-    
-    return achievements;
+  // ---------------------------------------------------------------------------
+  // Camo Collection (badges)
+  //
+  // Every unlock rule lives in utils/badge_logic.dart. This screen only gathers
+  // the numbers: local state is read live in build(), and everything that needs
+  // Supabase is fetched here into [_badgeData] (cached for an hour, forced on
+  // pull-to-refresh). The grid and the "N badges collected" line both render
+  // the same buildBadgeSections() output, so they always agree.
+
+  // Every badge cache and high-water mark is keyed by user id, so switching
+  // accounts on one device never carries badges across.
+  static const Duration _badgeServerCacheTtl = Duration(hours: 1);
+  static String _badgeKey(String userId, String name) => 'badge_${userId}_$name';
+
+  static const List<String> _stickyBadgeFlags = [
+    BadgeFlags.alphaTester,
+    BadgeFlags.betaTester,
+    BadgeFlags.birthdayBuddy,
+    BadgeFlags.qotdStar,
+    BadgeFlags.firstLizzy,
+    BadgeFlags.dragonLizzy,
+    BadgeFlags.dinoLizzy,
+    BadgeFlags.popcornTime,
+    BadgeFlags.plantingSeed,
+    BadgeFlags.communityBuilding,
+    BadgeFlags.localLegend,
+    BadgeFlags.globalSeed,
+    BadgeFlags.globalCommunity,
+  ];
+
+  /// Reloads badge data when the inputs it was built from have changed
+  /// (a new post or answer). Cheap: the server half is served from cache.
+  void _maybeReloadBadges(UserService userService) {
+    final key = _badgeInputsKey(userService);
+    if (key == _badgeLoadedForKey || _badgeLoading) return;
+    _badgeLoadedForKey = key;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _loadBadgeData();
+    });
   }
 
-  // Helper method to build progressive question achievements using cached data (no DB calls)
-  Future<List<Widget>> _buildProgressiveQuestionAchievements(UserService userService, int answeredCount) async {
-    final List<Widget> unlockedAchievements = [];
-    final List<Widget> lockedAchievements = [];
-    
-    final hasFirstQuestion = userService.postedQuestions.isNotEmpty;
-    
-    // First question achievement
-    final postedCount = userService.postedQuestions.length;
-    if (hasFirstQuestion) {
-      unlockedAchievements.add(_buildAchievementChip('❓', 'Not a lurker!', 'Posted a question', true,
-          progress: 'Total posted: $postedCount questions', count: postedCount > 1 ? postedCount : null));
-    } else {
-      lockedAchievements.add(_buildAchievementChip('❓', 'Not a lurker!', 'Posted a question', false,
-          progress: 'Post your first question to unlock'));
-    }
-    
-    // Answer achievements (progressive) - Only show these, not vote achievements since they're the same
-    if (answeredCount >= 1000) {
-      unlockedAchievements.add(_buildAchievementChip('✅🏆', 'Answer Champion', 'Answered 1000+ questions', true,
-          progress: 'Current: ${answeredCount} answers'));
-    } else if (answeredCount >= 100) {
-      unlockedAchievements.add(_buildAchievementChip('💯✅', 'Century Club', 'Answered 100+ questions', true,
-          progress: 'Current: ${answeredCount} answers'));
-      lockedAchievements.add(_buildAchievementChip('✅🏆', 'Answer Champion', 'Answered 1000+ questions', false,
-          progress: 'Progress: ${answeredCount}/1000 answers'));
-    } else if (answeredCount >= 10) {
-      unlockedAchievements.add(_buildAchievementChip('10✅', 'Getting Started', 'Answered 10+ questions', true,
-          progress: 'Current: ${answeredCount} answers'));
-      lockedAchievements.add(_buildAchievementChip('💯✅', 'Century Club', 'Answered 100+ questions', false,
-          progress: 'Progress: ${answeredCount}/100 answers'));
-    }
-    
-    // Count achievements for questions that can be achieved multiple times (using cached data)
-    int popularQuestionCount = 0;
-    int viralQuestionCount = 0;
-    
-    for (var question in userService.postedQuestions) {
-      final votes = question['votes'] ?? 0;
-      if (votes >= 500) {
-        viralQuestionCount++;
-      } else if (votes >= 100) {
-        popularQuestionCount++;
-      }
-    }
-    
-    // Store achievements with counts for sorting
-    List<Map<String, dynamic>> countedAchievements = [];
-    
-    // Popular Question achievement (100+ responses)
-    if (popularQuestionCount > 0) {
-      countedAchievements.add({
-        'count': popularQuestionCount,
-        'widget': _buildAchievementChip('🎤', 'Popular Question', 'Your question reached 100+ responses', true,
-            progress: popularQuestionCount == 1 ? 'Achievement unlocked!' : 'Achieved $popularQuestionCount times', 
-            count: popularQuestionCount)
-      });
-    } else {
-      lockedAchievements.add(_buildAchievementChip('🎤', 'Popular Question', 'Your question reached 100+ responses', false,
-          progress: 'Get 100+ responses on a question'));
-    }
-    
-    // Viral Question achievement (500+ responses) - using cached data
-    if (viralQuestionCount > 0) {
-      countedAchievements.add({
-        'count': viralQuestionCount,
-        'widget': _buildAchievementChip('🧿', 'Viral Question', 'Your question reached 500+ responses', true,
-            progress: viralQuestionCount == 1 ? 'Achievement unlocked!' : 'Achieved $viralQuestionCount times', 
-            count: viralQuestionCount)
-      });
-    } else {
-      lockedAchievements.add(_buildAchievementChip('🧿', 'Viral Question', 'Your question reached 500+ responses', false,
-          progress: 'Get 500+ responses on a question'));
-    }
-    
-    // QOTD Star achievement (using cached check)
-    final qotdStarUnlocked = await _isAchievementUnlocked('qotd_star');
-    final hasBeenQotd = await _hasQuestionBeenQotd(); // This method has its own caching
-    final qotdCount = hasBeenQotd ? await _getQotdCount() : 0;
-    
-    if (qotdStarUnlocked || hasBeenQotd) {
-      final progressText = qotdCount == 1 ? 'You have had 1 QOTD' : 'You have had $qotdCount QOTDs';
-      countedAchievements.add({
-        'count': qotdCount,
-        'widget': _buildAchievementChip('📅⭐', 'QOTD Star', 'Your post became Question of the Day', true,
-            progress: progressText, customOnTap: _showQotdHistoryDialog, count: qotdCount)
-      });
-    } else {
-      lockedAchievements.add(_buildAchievementChip('📅⭐', 'QOTD Star', 'Your post became Question of the Day', false,
-          progress: 'Get your question featured as QOTD'));
-    }
-    
-    // Sort counted achievements by count (highest first) and add to unlocked list
-    countedAchievements.sort((a, b) => (b['count'] as int).compareTo(a['count'] as int));
-    for (var achievement in countedAchievements) {
-      unlockedAchievements.add(achievement['widget']);
-    }
-    
-    // Combine lists: unlocked first, then locked
-    final List<Widget> achievements = [];
-    achievements.addAll(unlockedAchievements);
-    achievements.addAll(lockedAchievements);
-    
-    return achievements;
-  }
+  String _badgeInputsKey(UserService userService) =>
+      '${Supabase.instance.client.auth.currentUser?.id}|'
+      '${userService.postedQuestions.length}|'
+      '${userService.answeredQuestions.length}';
 
-  // Helper method to check Birthday Buddy achievement
-  bool _checkBirthdayBuddy(UserService userService) {
-    print('Checking birthday buddy for ${userService.postedQuestions.length} posted questions');
-    for (var question in userService.postedQuestions) {
-      if (question['created_at'] != null) {
-        try {
-          final createdAt = DateTime.parse(question['created_at']);
-          print('Question posted on: ${createdAt.month}/${createdAt.day}/${createdAt.year}');
-          // Check if posted in November (any day, any year) - RTR's birthday month
-          if (createdAt.month == 11) {
-            print('Found November question! Birthday Buddy achieved!');
-            return true;
-          }
-        } catch (e) {
-          print('Error parsing date for question: $e');
-          // Skip if date parsing fails
-          continue;
-        }
-      }
+  Future<void> _loadBadgeData({bool forceRefresh = false}) async {
+    if (_badgeLoading) {
+      // A pull-to-refresh during a load must not be dropped.
+      if (forceRefresh) _badgeForcedReloadQueued = true;
+      return;
     }
-    print('No November questions found');
-    return false;
-  }
-
-  // Get room achievements based on actual room data
-  Future<List<Widget>> _getRoomAchievementsAsync({bool forceRefresh = false}) async {
+    _badgeLoading = true;
     try {
-      final data = await _getRoomAchievementData(forceRefresh: forceRefresh);
-      final roomCount = data['roomCount'] ?? 0;
-      final hasJoinedRoom = data['hasJoinedRoom'] ?? false;
-      final hasCreatedRoom = data['hasCreatedRoom'] ?? false;
-      final hasTurnedTheKey = data['hasTurnedTheKey'] ?? false;
-      final isNetworker = data['isNetworker'] ?? false;
-
-      final List<Widget> unlockedAchievements = [];
-      final List<Widget> lockedAchievements = [];
-
-      // Check SharedPreferences for permanently unlocked achievements
-      final prefs = data['prefs'];
-      
-      // Room achievements (progressive - show based on user's progress)
-      final youreInvitedUnlocked = prefs?.getBool('achievement_youre_invited') ?? false;
-      final roomFounderUnlocked = prefs?.getBool('achievement_room_founder') ?? false;
-      final turnedTheKeyUnlocked = prefs?.getBool('achievement_turned_the_key') ?? false;
-      
-      // Set unlocked flags if conditions are met
-      if (hasJoinedRoom && !youreInvitedUnlocked) {
-        prefs?.setBool('achievement_youre_invited', true);
-      }
-      if (hasCreatedRoom && !roomFounderUnlocked) {
-        prefs?.setBool('achievement_room_founder', true);
-      }
-      if (hasTurnedTheKey && !turnedTheKeyUnlocked) {
-        prefs?.setBool('achievement_turned_the_key', true);
-      }
-
-      // Progressive display logic
-      if (roomCount == 0) {
-        // No rooms yet - show basic invitation achievements
-        lockedAchievements.add(_buildAchievementChip('🎪🎉', 'You\'re Invited!!', 'Joined your first room', false,
-            progress: 'Join or create your first room'));
-      } else {
-        // Has rooms - show You're Invited as unlocked
-        unlockedAchievements.add(_buildAchievementChip('🎪🎉', 'You\'re Invited!!', 'Joined your first room', true,
-            progress: 'In $roomCount room${roomCount != 1 ? 's' : ''}'));
-        
-        // Show Room Founder if created or next logical step
-        if (roomFounderUnlocked || hasCreatedRoom) {
-          unlockedAchievements.add(_buildAchievementChip('🎪🌱', 'Room Founder', 'Created your first room', true,
-              progress: 'Achievement unlocked!'));
-          
-          // Show Turned the Key if unlocked/achieved or as next step
-          if (turnedTheKeyUnlocked || hasTurnedTheKey) {
-            unlockedAchievements.add(_buildAchievementChip('🎪🔑', 'Turned the Key', 'Room unlocked with 5+ members', true,
-                progress: 'Achievement unlocked!'));
-          } else {
-            unlockedAchievements.add(_buildAchievementChip('🎪🔑', 'Turned the Key', 'Room unlocked with 5+ members', false,
-                progress: 'Get a room to 5+ members'));
-          }
-        } else {
-          // Show Room Founder as next step
-          lockedAchievements.add(_buildAchievementChip('🎪🌱', 'Room Founder', 'Created your first room', false,
-              progress: 'Create a room to unlock'));
-        }
-        
-        // Show Networker if in 3+ rooms (approaching the 5+ requirement)
-        // This achievement shows dynamic progress that can decrease if user leaves rooms
-        if (roomCount >= 3) {
-          if (isNetworker) {
-            // Currently in 5+ rooms - show as unlocked with current count
-            unlockedAchievements.add(_buildAchievementChip('🎪🤝', 'Networker', 'You\'ve been in 5+ rooms', true,
-                progress: 'In $roomCount rooms'));
-          } else {
-            // Approaching 5 rooms but not there yet - show progress
-            lockedAchievements.add(_buildAchievementChip('🎪🤝', 'Networker', 'You\'ve been in 5+ rooms', false,
-                progress: 'Progress: $roomCount/5 rooms'));
-          }
-        }
-      }
-
-      // Check for room ranking achievements using actual room data
-      final roomRankings = await _checkRoomRankings();
-      final hasTop10Room = roomRankings['hasTop10Room'] ?? false;
-      final hasRank1Room = roomRankings['hasRank1Room'] ?? false;
-      final hasRank2Room = roomRankings['hasRank2Room'] ?? false;
-      final hasRank3Room = roomRankings['hasRank3Room'] ?? false;
-      final bestRank = roomRankings['bestRank'] as int?;
-
-      // Room Oracles (Top 10)
-      if (hasTop10Room) {
-        unlockedAchievements.add(_buildAchievementChip('🎪🔮', 'Room Oracles', 'A room you are in was ranked in top 10', true,
-            progress: 'Best rank: #$bestRank'));
-      } else {
-        lockedAchievements.add(_buildAchievementChip('🎪🔮', 'Room Oracles', 'A room you are in was ranked in top 10', false,
-            progress: 'Get your room ranked in top 10'));
-      }
-
-      // Room ranking achievements (1st, 2nd, 3rd)
-      if (hasRank1Room) {
-        unlockedAchievements.add(_buildAchievementChip('🎪🏆', 'Room Champions', 'Your room ranked #1 globally', true,
-            progress: 'Achievement unlocked!'));
-      } else {
-        lockedAchievements.add(_buildAchievementChip('🎪🏆', 'Room Champions', 'Your room ranked #1 globally', false,
-            progress: 'Get your room to #1 rank'));
-      }
-
-      if (hasRank2Room) {
-        unlockedAchievements.add(_buildAchievementChip('🎪🥈', 'Silver Room', 'Your room ranked #2 globally', true,
-            progress: 'Achievement unlocked!'));
-      } else {
-        lockedAchievements.add(_buildAchievementChip('🎪🥈', 'Silver Room', 'Your room ranked #2 globally', false,
-            progress: 'Get your room to #2 rank'));
-      }
-
-      if (hasRank3Room) {
-        unlockedAchievements.add(_buildAchievementChip('🎪🥉', 'Bronze Room', 'Your room ranked #3 globally', true,
-            progress: 'Achievement unlocked!'));
-      } else {
-        lockedAchievements.add(_buildAchievementChip('🎪🥉', 'Bronze Room', 'Your room ranked #3 globally', false,
-            progress: 'Get your room to #3 rank'));
-      }
-
-      // Other room achievements
-      lockedAchievements.add(_buildAchievementChip('🎪🔥', 'Boiler Room', 'Members of your room have given 10,000+ responses collectively', false,
-          progress: 'Get 10,000+ responses in a room'));
-      lockedAchievements.add(_buildAchievementChip('🌐🐉', 'Networking Dragon', 'Your network size is 100+', false,
-          progress: 'Build a large network'));
-      
-      // Combine lists: unlocked first, then locked
-      final List<Widget> achievements = [];
-      achievements.addAll(unlockedAchievements);
-      achievements.addAll(lockedAchievements);
-      
-      return achievements;
-    } catch (e) {
-      // Return empty list if there's an error
-      return [];
-    }
-  }
-
-  // Helper method to get all room achievement data with daily caching
-  Future<Map<String, dynamic>> _getRoomAchievementData({bool forceRefresh = false}) async {
-    try {
+      final userService = Provider.of<UserService>(context, listen: false);
+      final questionService = Provider.of<QuestionService>(context, listen: false);
       final prefs = await SharedPreferences.getInstance();
-      final cacheKey = 'room_achievement_data';
-      final cacheTimeKey = 'room_achievement_data_last_checked';
-      
-      // Check cache first (unless force refresh)
-      if (!forceRefresh) {
-        final cachedData = prefs.getString(cacheKey);
-        final lastChecked = prefs.getString(cacheTimeKey);
-        
-        if (cachedData != null && lastChecked != null) {
-          final lastCheckedDate = DateTime.parse(lastChecked);
-          final now = DateTime.now();
-          
-          // Use cache if checked today (same day)
-          if (lastCheckedDate.year == now.year && 
-              lastCheckedDate.month == now.month && 
-              lastCheckedDate.day == now.day) {
-            print('Using cached room achievement data');
-            final Map<String, dynamic> cached = Map<String, dynamic>.from(
-              Uri.splitQueryString(cachedData).map((k, v) => MapEntry(k, v == 'true'))
-            );
-            // Add numeric values back
-            if (prefs.containsKey('cached_room_count')) {
-              cached['roomCount'] = prefs.getInt('cached_room_count') ?? 0;
-            }
-            cached['prefs'] = prefs;
-            return cached;
-          }
-        }
-      }
-      
-      print('Fetching room achievement data from services');
-      final rooms = await RoomService().getUserRooms();
-      final roomCount = rooms.length;
-      final hasJoinedRoom = roomCount > 0;
-      final isNetworker = roomCount >= 5;
-      
-      bool hasCreatedRoom = false;
-      bool hasTurnedTheKey = false;
-      
-      for (var room in rooms) {
-        if (room.isUnlocked) {
-          hasTurnedTheKey = true;
-        }
-      }
+      final userId = Supabase.instance.client.auth.currentUser?.id;
+      final signedIn = userId != null;
+      _badgeLoadedForKey = _badgeInputsKey(userService);
 
-      // Check room creation
-      hasCreatedRoom = await _checkIfUserCreatedAnyRoom(rooms);
-
-      final data = {
-        'prefs': prefs,
-        'roomCount': roomCount,
-        'hasJoinedRoom': hasJoinedRoom,
-        'hasCreatedRoom': hasCreatedRoom,
-        'hasTurnedTheKey': hasTurnedTheKey,
-        'isNetworker': isNetworker,
-      };
-      
-      // Cache the boolean results
-      final cacheData = {
-        'hasJoinedRoom': hasJoinedRoom.toString(),
-        'hasCreatedRoom': hasCreatedRoom.toString(),
-        'hasTurnedTheKey': hasTurnedTheKey.toString(),
-        'isNetworker': isNetworker.toString(),
-      };
-      await prefs.setString(cacheKey, Uri(queryParameters: cacheData).query);
-      await prefs.setInt('cached_room_count', roomCount);
-      await prefs.setString(cacheTimeKey, DateTime.now().toIso8601String());
-      
-      return data;
-    } catch (e) {
-      print('Error fetching room achievement data: $e');
-      return {};
-    }
-  }
-
-  // Helper method to check if user has created any rooms
-  Future<bool> _checkIfUserCreatedAnyRoom(List<Room> rooms) async {
-    final roomService = RoomService();
-    for (var room in rooms) {
+      // Same filtered count as the "Answered" list, recomputed on every load
+      // (the old grid cached it for a whole day while the counter did not).
+      int answered;
       try {
-        if (await roomService.isRoomAdmin(room.id)) {
-          return true;
-        }
+        answered = (await userService.getFilteredAnsweredQuestions(questionService)).length;
       } catch (e) {
-        // Continue checking other rooms if one fails
-        continue;
+        answered = userService.answeredQuestions.length;
       }
+
+      DateTime? createdAt;
+      int qotdCount = 0;
+      Map<String, int> server = const {};
+      if (signedIn) {
+        final results = await Future.wait<dynamic>([
+          _getUserCreationDate(forceRefresh: forceRefresh),
+          _getQotdData(forceRefresh: forceRefresh),
+          _fetchBadgeServerStats(prefs, userService, forceRefresh: forceRefresh),
+        ]);
+        createdAt = (results[0] as Map<String, dynamic>)['created_at'] as DateTime?;
+        qotdCount = ((results[1] as Map<String, dynamic>)['count'] as int?) ?? 0;
+        server = results[2] as Map<String, int>;
+      }
+
+      // High-water marks: deleting a comment, removing a reaction or
+      // unfriending someone never takes a badge back.
+      int hwm(String name, int? value) {
+        if (userId == null) return value ?? 0;
+        final key = _badgeKey(userId, 'hwm_$name');
+        final previous = prefs.getInt(key) ?? 0;
+        if (value != null && value > previous) {
+          prefs.setInt(key, value);
+          return value;
+        }
+        return previous;
+      }
+
+      final flags = <String>{
+        for (final flag in _stickyBadgeFlags)
+          if (prefs.getBool('achievement_$flag') ?? false) flag,
+      };
+
+      // Persist the tester flags so they survive an offline load.
+      if (createdAt != null) {
+        if (createdAt.isBefore(kAlphaTesterCutoff) && flags.add(BadgeFlags.alphaTester)) {
+          prefs.setBool('achievement_${BadgeFlags.alphaTester}', true);
+        }
+        if (createdAt.isBefore(kBetaTesterCutoff) && flags.add(BadgeFlags.betaTester)) {
+          prefs.setBool('achievement_${BadgeFlags.betaTester}', true);
+        }
+      }
+      if (_checkBirthdayBuddy(userService) && flags.add(BadgeFlags.birthdayBuddy)) {
+        prefs.setBool('achievement_${BadgeFlags.birthdayBuddy}', true);
+      }
+      final firstQotd = qotdCount > 0 && !flags.contains(BadgeFlags.qotdStar);
+      if (firstQotd) {
+        flags.add(BadgeFlags.qotdStar);
+        await prefs.setBool('achievement_${BadgeFlags.qotdStar}', true);
+      }
+
+      final data = _BadgeData(
+        answeredCount: answered,
+        qotdCount: qotdCount,
+        accountCreatedAt: createdAt,
+        commentCount: hwm('comments', server['comment_count']),
+        maxLizzies: hwm('max_lizzies', server['max_lizzies']),
+        popcornCount: hwm('popcorn', server['popcorn']),
+        reactionsGiven: hwm('reactions_given', server['reactions_given']),
+        reactionsReceived: hwm('reactions_received', server['reactions_received']),
+        legacyCityQuestions: server['legacy_city_questions'] ?? 0,
+        legacyCountryQuestions: server['legacy_country_questions'] ?? 0,
+        legacyUniqueCities: server['legacy_unique_cities'] ?? 0,
+        userId: userId,
+        friendHwm: userId == null ? 0 : (prefs.getInt(_badgeKey(userId, 'hwm_friends')) ?? 0),
+        flags: flags,
+      );
+
+      if (!mounted) return;
+      setState(() => _badgeData = data);
+      if (firstQotd) _showQotdCongratulations();
+    } catch (e) {
+      print('Error loading badges: $e');
+    } finally {
+      _badgeLoading = false;
+      if (_badgeForcedReloadQueued && mounted) {
+        _badgeForcedReloadQueued = false;
+        _loadBadgeData(forceRefresh: true);
+      }
+    }
+  }
+
+  /// Everything that needs a query. Each stat is fetched on its own so one
+  /// failing query (an RLS change, a missing table) only blanks that stat.
+  Future<Map<String, int>> _fetchBadgeServerStats(
+    SharedPreferences prefs,
+    UserService userService, {
+    bool forceRefresh = false,
+  }) async {
+    final client = Supabase.instance.client;
+    final userId = client.auth.currentUser?.id;
+    if (userId == null) return {};
+    final cacheKey = _badgeKey(userId, 'server_stats_v1');
+    final cacheTimeKey = _badgeKey(userId, 'server_stats_v1_time');
+    final popcornIdsKey = _badgeKey(userId, 'popcorn_question_ids');
+
+    if (!forceRefresh) {
+      final cached = prefs.getString(cacheKey);
+      final cachedAt = DateTime.tryParse(prefs.getString(cacheTimeKey) ?? '');
+      if (cached != null &&
+          cachedAt != null &&
+          DateTime.now().difference(cachedAt) < _badgeServerCacheTtl) {
+        try {
+          return (jsonDecode(cached) as Map).map(
+              (k, v) => MapEntry(k.toString(), (v as num).toInt()));
+        } catch (_) {
+          // Corrupt cache: fall through to a fresh fetch.
+        }
+      }
+    }
+
+    final postedIds = userService.postedQuestions
+        .map((q) => q['id']?.toString() ?? '')
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList();
+    final stats = <String, int>{};
+
+    Future<void> guard(String name, Future<void> Function() body) async {
+      try {
+        await body();
+      } catch (e) {
+        print('Badge stat "$name" failed: $e');
+      }
+    }
+
+    List<List<String>> chunks(List<String> ids, int size) => [
+          for (var i = 0; i < ids.length; i += size)
+            ids.sublist(i, i + size > ids.length ? ids.length : i + size),
+        ];
+
+    await Future.wait([
+      // Comments the user posted. RLS hides shadow-banned comments.
+      guard('comment_count', () async {
+        stats['comment_count'] =
+            await client.from('comments').count().eq('author_id', userId);
+      }),
+      // Best single comment, by 🦎 lizzies.
+      guard('max_lizzies', () async {
+        final rows = await client
+            .from('comments')
+            .select('upvote_lizard_count')
+            .eq('author_id', userId)
+            .order('upvote_lizard_count', ascending: false)
+            .limit(1);
+        stats['max_lizzies'] = rows.isEmpty
+            ? 0
+            : ((rows.first['upvote_lizard_count'] as num?)?.toInt() ?? 0);
+      }),
+      // Emoji reactions the user left on questions.
+      guard('reactions_given', () async {
+        stats['reactions_given'] =
+            await client.from('question_reactions').count().eq('user_id', userId);
+      }),
+      // Emoji reactions other people left on the user's questions.
+      guard('reactions_received', () async {
+        var total = 0;
+        for (final chunk in chunks(postedIds, 100)) {
+          total += await client
+              .from('question_reactions')
+              .count()
+              .inFilter('question_id', chunk)
+              .neq('user_id', userId);
+        }
+        stats['reactions_received'] = total;
+      }),
+      // Questions with 5+ comments. A question that qualified once is
+      // remembered, so only the rest are re-counted on later loads.
+      guard('popcorn', () async {
+        final known = (prefs.getStringList(popcornIdsKey) ?? const <String>[]).toSet();
+        final toCheck = postedIds.where((id) => !known.contains(id)).toList();
+        for (final batch in chunks(toCheck, 10)) {
+          await Future.wait(batch.map((id) async {
+            final n = await client.from('comments').count().eq('question_id', id);
+            if (n >= 5) known.add(id);
+          }));
+        }
+        await prefs.setStringList(popcornIdsKey, known.toList());
+        stats['popcorn'] = known.length;
+      }),
+      // Retired city/country badges: only questions from before retirement.
+      guard('legacy_local', () async {
+        final rows = await client
+            .from('questions')
+            .select('city_id, country_code, targeting_type')
+            .eq('author_id', userId)
+            .lt('created_at', kLocalBadgesRetiredAt.toIso8601String());
+        var city = 0;
+        var country = 0;
+        final cities = <String>{};
+        for (final row in rows) {
+          if (row['targeting_type'] == 'city' && row['city_id'] != null) {
+            city++;
+            cities.add(row['city_id'].toString());
+          } else if (row['targeting_type'] == 'country' && row['country_code'] != null) {
+            country++;
+          }
+        }
+        stats['legacy_city_questions'] = city;
+        stats['legacy_country_questions'] = country;
+        stats['legacy_unique_cities'] = cities.length;
+      }),
+    ]);
+
+    await prefs.setString(cacheKey, jsonEncode(stats));
+    await prefs.setString(cacheTimeKey, DateTime.now().toIso8601String());
+    return stats;
+  }
+
+  Future<void> _showQotdCongratulations() async {
+    try {
+      final userService = Provider.of<UserService>(context, listen: false);
+      final achievementService = AchievementService(userService: userService, context: context);
+      await achievementService.init();
+      final congratulationsService = CongratulationsService(
+        userService: userService,
+        achievementService: achievementService,
+      );
+      await congratulationsService.init();
+      if (!mounted) return;
+      await congratulationsService.showCongratulationsIfEligible(
+        context,
+        AchievementType.qotdBadge,
+      );
+    } catch (e) {
+      print('Error showing congratulations for QOTD achievement: $e');
+    }
+  }
+
+  /// The stats snapshot the catalog is built from: live local state merged
+  /// with the last server load.
+  BadgeStats _badgeStats(UserService userService, int liveFriendCount) {
+    var popular = 0;
+    var viral = 0;
+    for (final question in userService.postedQuestions) {
+      final votes = (question['votes'] as num?)?.toInt() ?? 0;
+      if (votes >= 500) {
+        viral++;
+      } else if (votes >= 100) {
+        popular++;
+      }
+    }
+
+    // Friend count is live; remember the best seen so unfriending is harmless.
+    // Ignore a snapshot loaded for a different account.
+    final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+    final data = (_badgeData?.userId == currentUserId) ? _badgeData : null;
+    var friends = liveFriendCount;
+    if (data != null && currentUserId != null) {
+      if (liveFriendCount > data.friendHwm) {
+        data.friendHwm = liveFriendCount;
+        SharedPreferences.getInstance().then((prefs) =>
+            prefs.setInt(_badgeKey(currentUserId, 'hwm_friends'), liveFriendCount));
+      }
+      friends = data.friendHwm;
+    }
+
+    return BadgeStats(
+      isSignedIn: Supabase.instance.client.auth.currentUser != null,
+      postedCount: userService.postedQuestions.length,
+      answeredCount: data?.answeredCount ?? userService.answeredQuestions.length,
+      popularQuestionCount: popular,
+      viralQuestionCount: viral,
+      qotdCount: data?.qotdCount ?? 0,
+      accountCreatedAt: data?.accountCreatedAt,
+      postedInNovember: _checkBirthdayBuddy(userService),
+      qotdNotificationsOn: userService.notifyQOTD,
+      friendCount: friends,
+      commentCount: data?.commentCount ?? 0,
+      maxLizziesOnOneComment: data?.maxLizzies ?? 0,
+      popcornQuestionCount: data?.popcornCount ?? 0,
+      reactionsGiven: data?.reactionsGiven ?? 0,
+      reactionsReceived: data?.reactionsReceived ?? 0,
+      legacyCityQuestions: data?.legacyCityQuestions ?? 0,
+      legacyCountryQuestions: data?.legacyCountryQuestions ?? 0,
+      legacyUniqueCities: data?.legacyUniqueCities ?? 0,
+      earnedFlags: data?.flags ?? const <String>{},
+    );
+  }
+
+  Widget _buildBadgeChip(BadgeView badge) {
+    return _buildAchievementChip(
+      badge.emoji,
+      badge.title,
+      badge.description,
+      badge.unlocked,
+      progress: badge.progress,
+      count: (badge.stack ?? 0) > 1 ? badge.stack : null,
+      customOnTap: badge.id == 'qotd_star' && badge.unlocked ? _showQotdHistoryDialog : null,
+    );
+  }
+
+  /// Any question posted in November (RTR's birthday month).
+  bool _checkBirthdayBuddy(UserService userService) {
+    for (final question in userService.postedQuestions) {
+      final createdAt = DateTime.tryParse(question['created_at']?.toString() ?? '');
+      if (createdAt != null && createdAt.month == 11) return true;
     }
     return false;
   }
 
-  // Helper method to check room ranking achievements
-  Future<Map<String, dynamic>> _checkRoomRankings() async {
-    try {
-      final rooms = await RoomService().getUserRooms();
-      
-      bool hasTop10Room = false;
-      bool hasRank1Room = false;
-      bool hasRank2Room = false;
-      bool hasRank3Room = false;
-      int? bestRank;
-
-      for (var room in rooms) {
-        final rank = room.globalRank;
-        if (rank != null && rank > 0) {
-          // Track the best (lowest) rank
-          if (bestRank == null || rank < bestRank) {
-            bestRank = rank;
-          }
-
-          // Check specific ranking achievements
-          if (rank <= 10) {
-            hasTop10Room = true;
-          }
-          if (rank == 1) {
-            hasRank1Room = true;
-          }
-          if (rank == 2) {
-            hasRank2Room = true;
-          }
-          if (rank == 3) {
-            hasRank3Room = true;
-          }
-        }
-      }
-
-      return {
-        'hasTop10Room': hasTop10Room,
-        'hasRank1Room': hasRank1Room,
-        'hasRank2Room': hasRank2Room,
-        'hasRank3Room': hasRank3Room,
-        'bestRank': bestRank,
-      };
-    } catch (e) {
-      print('Error checking room rankings: $e');
-      return {
-        'hasTop10Room': false,
-        'hasRank1Room': false,
-        'hasRank2Room': false,
-        'hasRank3Room': false,
-        'bestRank': null,
-      };
-    }
-  }
-
-  // Get community achievements including Alpha/Beta tester badges
-  Future<List<Widget>> _getCommunityAchievementsAsync({bool forceRefresh = false}) async {
-    final userService = Provider.of<UserService>(context, listen: false);
-    final List<Widget> unlockedAchievements = [];
-    final List<Widget> lockedAchievements = [];
-    
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      
-      // Check user creation date from database
-      final userCreationData = await _getUserCreationDate(forceRefresh: forceRefresh);
-      final userCreatedAt = userCreationData['created_at'] as DateTime?;
-      
-      if (userCreatedAt != null) {
-        // Format date for Hatchling achievement
-        final formattedDate = '${userCreatedAt.day}/${userCreatedAt.month}/${userCreatedAt.year}';
-        
-        // Alpha Tester: joined before July 21, 2025 (only show if unlocked)
-        final alphaDate = DateTime(2025, 7, 21);
-        final alphaTesterUnlocked = prefs.getBool('achievement_alpha_tester') ?? false;
-        final isAlphaTester = userCreatedAt.isBefore(alphaDate);
-        
-        if (alphaTesterUnlocked || isAlphaTester) {
-          if (!alphaTesterUnlocked && isAlphaTester) {
-            prefs.setBool('achievement_alpha_tester', true);
-          }
-          unlockedAchievements.add(_buildAchievementChip('🧪🐣', 'Alpha Tester', 'User created before July 21 2025', true,
-              progress: 'Achievement unlocked!'));
-        }
-        
-        // Beta Tester: joined before September 1, 2025 (only show if unlocked)
-        final betaDate = DateTime(2025, 9, 1);
-        final betaTesterUnlocked = prefs.getBool('achievement_beta_tester') ?? false;
-        final isBetaTester = userCreatedAt.isBefore(betaDate);
-        
-        if (betaTesterUnlocked || isBetaTester) {
-          if (!betaTesterUnlocked && isBetaTester) {
-            prefs.setBool('achievement_beta_tester', true);
-          }
-          unlockedAchievements.add(_buildAchievementChip('🐝🔧', 'Beta Tester', 'User created before Sept 1 2025', true,
-              progress: 'Achievement unlocked!'));
-        }
-        
-        // Hatchling: authenticated as human (always unlocked for any user with creation date)
-        final hatchlingUnlocked = prefs.getBool('achievement_hatchling') ?? false;
-        
-        if (!hatchlingUnlocked) {
-          prefs.setBool('achievement_hatchling', true);
-        }
-        unlockedAchievements.add(_buildAchievementChip('🐣', 'Hatchling', 'Authenticated as human on $formattedDate', true,
-            progress: 'Achievement unlocked!'));
-      }
-      
-      // Birthday Buddy achievement (check posted questions) - permanently unlock once achieved
-      final birthdayBuddyUnlocked = await _isAchievementUnlocked('birthday_buddy');
-      final hasBirthdayPost = _checkBirthdayBuddy(userService);
-      
-      if (birthdayBuddyUnlocked || hasBirthdayPost) {
-        // Permanently unlock if condition is met
-        if (!birthdayBuddyUnlocked && hasBirthdayPost) {
-          await _setAchievementUnlocked('birthday_buddy');
-        }
-        unlockedAchievements.add(_buildAchievementChip('🎂', 'Birthday Buddy', 'Posted a question during RTR\'s birthday month', true,
-            progress: 'Achievement unlocked!'));
-      } else {
-        lockedAchievements.add(_buildAchievementChip('🎂', 'Birthday Buddy', 'Posted a question during RTR\'s birthday month', false,
-            progress: 'Post a question in November'));
-      }
-      
-    } catch (e) {
-      print('Error loading community achievements: $e');
-      // Fallback to just birthday buddy if user creation check fails
-      final birthdayBuddyUnlocked = await _isAchievementUnlocked('birthday_buddy');
-      final hasBirthdayPost = _checkBirthdayBuddy(userService);
-      
-      if (birthdayBuddyUnlocked || hasBirthdayPost) {
-        if (!birthdayBuddyUnlocked && hasBirthdayPost) {
-          await _setAchievementUnlocked('birthday_buddy');
-        }
-        unlockedAchievements.add(_buildAchievementChip('🎂', 'Birthday Buddy', 'Posted a question during RTR\'s birthday month', true,
-            progress: 'Achievement unlocked!'));
-      } else {
-        lockedAchievements.add(_buildAchievementChip('🎂', 'Birthday Buddy', 'Posted a question during RTR\'s birthday month', false,
-            progress: 'Post a question in November'));
-      }
-    }
-    
-    // Notification enablement achievement
-    final notificationsEnabled = userService.notifyResponses;
-    if (notificationsEnabled) {
-      unlockedAchievements.add(_buildAchievementChip('🦎📡', 'Call me, beep me', 'Enabled notifications for new Questions of the Day', true,
-          progress: 'Achievement unlocked!'));
-    } else {
-      lockedAchievements.add(_buildAchievementChip('🦎📡', 'Call me, beep me', 'Enabled notifications for new Questions of the Day', false,
-          progress: 'Enable notifications in settings'));
-    }
-    
-    // Streak reminder enablement achievement
-    final streakRemindersEnabled = userService.notifyStreakReminders;
-    if (streakRemindersEnabled) {
-      unlockedAchievements.add(_buildAchievementChip('🔒🎯', 'Locked-in', 'Your streak reminders are on!', true,
-          progress: 'Achievement unlocked!'));
-    } else {
-      lockedAchievements.add(_buildAchievementChip('🔒🎯', 'Locked-in', 'Your streak reminders are on!', false,
-          progress: 'Enable streak reminders in settings'));
-    }
-    
-    // Combine lists: unlocked first, then locked
-    final List<Widget> achievements = [];
-    achievements.addAll(unlockedAchievements);
-    achievements.addAll(lockedAchievements);
-    
-    return achievements;
-  }
-
-  // Get social achievements based on lizzy and comment data from database
-  Future<List<Widget>> _getSocialAchievementsAsync({bool forceRefresh = false}) async {
-    final userService = Provider.of<UserService>(context, listen: false);
-    final List<Widget> unlockedAchievements = [];
-    final List<Widget> lockedAchievements = [];
-    
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      
-      // Check social data from database with daily caching
-      final socialData = await _getSocialAchievementData(forceRefresh: forceRefresh);
-      final maxLizzies = socialData['max_lizzies'] ?? 0;
-      final totalLizzies = socialData['total_lizzies'] ?? 0;
-      final commentsWithLizzies = socialData['comments_with_lizzies'] ?? 0;
-      final questionsWithComments = socialData['questions_with_comments'] ?? 0;
-      
-      // Lizzy achievements (progressive - only show highest tier + next tier)
-      final firstLizzyUnlocked = prefs.getBool('achievement_first_lizzy') ?? false;
-      final dragonLizzyUnlocked = prefs.getBool('achievement_dragon_lizzy') ?? false;
-      final dinoLizzyUnlocked = prefs.getBool('achievement_dino_lizzy') ?? false;
-      
-      final hasFirstLizzy = commentsWithLizzies > 0;
-      final hasDragonLizzy = maxLizzies >= 10;
-      final hasDinoLizzy = maxLizzies >= 50;
-      
-      // Set unlocked flags if conditions are met
-      if (hasFirstLizzy && !firstLizzyUnlocked) {
-        prefs.setBool('achievement_first_lizzy', true);
-      }
-      if (hasDragonLizzy && !dragonLizzyUnlocked) {
-        prefs.setBool('achievement_dragon_lizzy', true);
-      }
-      if (hasDinoLizzy && !dinoLizzyUnlocked) {
-        prefs.setBool('achievement_dino_lizzy', true);
-      }
-      
-      // Progressive display: show highest unlocked + next tier
-      if (dinoLizzyUnlocked || hasDinoLizzy) {
-        // Show Dino Lizzy (highest tier)
-        unlockedAchievements.add(_buildAchievementChip('🦎🦕', 'Dino Lizzy', 'Your comment got 50+ lizzies', true,
-            progress: 'Highest: $maxLizzies lizzies'));
-      } else if (dragonLizzyUnlocked || hasDragonLizzy) {
-        // Show Dragon Lizzy (middle tier) and next tier
-        unlockedAchievements.add(_buildAchievementChip('🦎🐉', 'Dragon Lizzy', 'Your comment got 10+ lizzies', true,
-            progress: 'Highest: $maxLizzies lizzies'));
-        unlockedAchievements.add(_buildAchievementChip('🦎🦕', 'Dino Lizzy', 'Your comment got 50+ lizzies', false,
-            progress: 'Progress: $maxLizzies/50 lizzies'));
-      } else if (firstLizzyUnlocked || hasFirstLizzy) {
-        // Show First Lizzy (lowest tier) and next tier
-        unlockedAchievements.add(_buildAchievementChip('🦎💬', 'First Lizzy', 'Your comment got lizzied', true,
-            progress: 'Total lizzies: $totalLizzies'));
-        unlockedAchievements.add(_buildAchievementChip('🦎🐉', 'Dragon Lizzy', 'Your comment got 10+ lizzies', false,
-            progress: 'Progress: $maxLizzies/10 lizzies'));
-      } else {
-        // Show first tier only
-        unlockedAchievements.add(_buildAchievementChip('🦎💬', 'First Lizzy', 'Your comment got lizzied', false,
-            progress: 'Get your first lizzy on a comment'));
-      }
-      
-      // Popcorn Time achievement (question received 5+ comments)
-      final popcornTimeUnlocked = prefs.getBool('achievement_popcorn_time') ?? false;
-      final hasPopcornTime = questionsWithComments > 0;
-      
-      if (popcornTimeUnlocked || hasPopcornTime) {
-        if (!popcornTimeUnlocked && hasPopcornTime) {
-          prefs.setBool('achievement_popcorn_time', true);
-        }
-        unlockedAchievements.add(_buildAchievementChip('🍿', 'Popcorn Time!', 'Your question received 5+ comments', true,
-            progress: 'Achievement unlocked!'));
-      } else {
-        lockedAchievements.add(_buildAchievementChip('🍿', 'Popcorn Time!', 'Your question received 5+ comments', false,
-            progress: 'Get 5+ comments on a question'));
-      }
-      
-    } catch (e) {
-      print('Error loading social achievements: $e');
-      // Fallback to locked achievements if database check fails
-      lockedAchievements.add(_buildAchievementChip('🦎💬', 'First Lizzy', 'Your comment got lizzied', false));
-      lockedAchievements.add(_buildAchievementChip('🦎🐉', 'Dragon Lizzy', 'Your comment got 10+ lizzies', false));
-      lockedAchievements.add(_buildAchievementChip('🦎🦕', 'Dino Lizzy', 'Your comment got 50+ lizzies', false));
-      lockedAchievements.add(_buildAchievementChip('🍿', 'Popcorn Time!', 'Your question received 5+ comments', false));
-    }
-    
-    // Combine lists: unlocked first, then locked
-    final List<Widget> achievements = [];
-    achievements.addAll(unlockedAchievements);
-    achievements.addAll(lockedAchievements);
-    
-    return achievements;
-  }
-
-  // Get local community achievements based on city/country targeting data from database
-  Future<List<Widget>> _getLocalCommunityAchievementsAsync({bool forceRefresh = false}) async {
-    final userService = Provider.of<UserService>(context, listen: false);
-    final List<Widget> unlockedAchievements = [];
-    final List<Widget> lockedAchievements = [];
-    
-    // Get local community achievement data from database
-    final localData = await _getLocalCommunityAchievementData(forceRefresh: forceRefresh);
-    
-    final cityQuestions = localData['city_questions'] ?? 0;
-    final countryQuestions = localData['country_questions'] ?? 0;
-    final uniqueCities = localData['unique_cities'] ?? 0;
-    final uniqueCountries = localData['unique_countries'] ?? 0;
-    
-    // Planting the Seed: Posted first city-targeted question
-    final plantingSeedUnlocked = await _isAchievementUnlocked('planting_seed') || cityQuestions > 0;
-    if (plantingSeedUnlocked) {
-      await _setAchievementUnlocked('planting_seed');
-    }
-    if (plantingSeedUnlocked) {
-      unlockedAchievements.add(_buildAchievementChip('🏠', 'Asking My Neighbours', 'Posted your first city-targeted question', true,
-          progress: 'Achievement unlocked!'));
-    } else {
-      lockedAchievements.add(_buildAchievementChip('🏠', 'Asking My Neighbours', 'Posted your first city-targeted question', false,
-          progress: 'Post a city-targeted question'));
-    }
-    
-    // Community Building: Posted 5+ city-targeted questions
-    final communityBuildingUnlocked = await _isAchievementUnlocked('community_building') || cityQuestions >= 5;
-    if (communityBuildingUnlocked) {
-      await _setAchievementUnlocked('community_building');
-    }
-    if (plantingSeedUnlocked) {
-      if (communityBuildingUnlocked) {
-        unlockedAchievements.add(_buildAchievementChip('🏘️', 'Community Building', 'Posted 5+ city-targeted questions', true,
-            progress: 'Achievement unlocked!'));
-      } else {
-        lockedAchievements.add(_buildAchievementChip('🏘️', 'Community Building', 'Posted 5+ city-targeted questions', false,
-            progress: 'Post 5+ city-targeted questions'));
-      }
-    }
-    
-    // Local Legend: Posted questions in 3+ different cities
-    final localLegendUnlocked = await _isAchievementUnlocked('local_legend') || uniqueCities >= 3;
-    if (localLegendUnlocked) {
-      await _setAchievementUnlocked('local_legend');
-    }
-    if (communityBuildingUnlocked) {
-      if (localLegendUnlocked) {
-        unlockedAchievements.add(_buildAchievementChip('🏆', 'Local Legend', 'Posted questions in 3+ different cities', true,
-            progress: 'Achievement unlocked!'));
-      } else {
-        lockedAchievements.add(_buildAchievementChip('🏆', 'Local Legend', 'Posted questions in 3+ different cities', false,
-            progress: 'Post questions in 3+ different cities'));
-      }
-    }
-    
-    // Country-targeted achievements (equivalent to city-targeted ones)
-    
-    // Global Seed: Posted first country-targeted question
-    final globalSeedUnlocked = await _isAchievementUnlocked('global_seed') || countryQuestions > 0;
-    if (globalSeedUnlocked) {
-      await _setAchievementUnlocked('global_seed');
-    }
-    if (globalSeedUnlocked) {
-      unlockedAchievements.add(_buildAchievementChip('🗺️', 'Global Seed', 'Posted your first country-targeted question', true,
-          progress: 'Achievement unlocked!'));
-    } else {
-      lockedAchievements.add(_buildAchievementChip('🗺️', 'Global Seed', 'Posted your first country-targeted question', false,
-          progress: 'Post a country-targeted question'));
-    }
-    
-    // Global Community: Posted 5+ country-targeted questions
-    final globalCommunityUnlocked = await _isAchievementUnlocked('global_community') || countryQuestions >= 5;
-    if (globalCommunityUnlocked) {
-      await _setAchievementUnlocked('global_community');
-    }
-    if (globalSeedUnlocked) {
-      if (globalCommunityUnlocked) {
-        unlockedAchievements.add(_buildAchievementChip('🇺🇳', 'Global Community', 'Posted 5+ country-targeted questions', true,
-            progress: 'Achievement unlocked!'));
-      } else {
-        lockedAchievements.add(_buildAchievementChip('🇺🇳', 'Global Community', 'Posted 5+ country-targeted questions', false,
-            progress: 'Post 5+ country-targeted questions'));
-      }
-    }
-    
-    // Combine lists: unlocked first, then locked
-    final List<Widget> achievements = [];
-    achievements.addAll(unlockedAchievements);
-    achievements.addAll(lockedAchievements);
-    
-    return achievements;
-  }
-
-  // Helper method to get social achievement data from database with daily caching
-  Future<Map<String, dynamic>> _getSocialAchievementData({bool forceRefresh = false}) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final cacheKey = 'social_achievement_data';
-      final cacheTimeKey = 'social_achievement_data_last_checked';
-      
-      // Check cache first (unless force refresh)
-      if (!forceRefresh) {
-        final cachedData = prefs.getString(cacheKey);
-        final lastChecked = prefs.getString(cacheTimeKey);
-        
-        if (cachedData != null && lastChecked != null) {
-          final lastCheckedDate = DateTime.parse(lastChecked);
-          final now = DateTime.now();
-          
-          // Use cache if checked today (same day)
-          if (lastCheckedDate.year == now.year && 
-              lastCheckedDate.month == now.month && 
-              lastCheckedDate.day == now.day) {
-            print('Using cached social achievement data');
-            final Map<String, dynamic> cached = Map<String, dynamic>.from(
-              Uri.splitQueryString(cachedData).map((k, v) => MapEntry(k, int.tryParse(v) ?? 0))
-            );
-            return cached;
-          }
-        }
-      }
-      
-      print('Fetching social achievement data from database');
-      final userId = Supabase.instance.client.auth.currentUser?.id;
-      if (userId == null) return {};
-      
-      // Query comments table for user's comments and their lizzy counts
-      final commentsResponse = await Supabase.instance.client
-          .from('comments')
-          .select('id, upvote_lizard_count')
-          .eq('author_id', userId);
-      
-      int maxLizzies = 0;
-      int totalLizzies = 0;
-      int commentsWithLizzies = 0;
-      
-      for (var comment in commentsResponse) {
-        final lizzyCount = (comment['upvote_lizard_count'] ?? 0) as int;
-        if (lizzyCount > 0) {
-          commentsWithLizzies++;
-          totalLizzies += lizzyCount;
-          if (lizzyCount > maxLizzies) {
-            maxLizzies = lizzyCount;
-          }
-        }
-      }
-      
-      // Query for questions with 5+ comments
-      int questionsWithComments = 0;
-      for (var question in Provider.of<UserService>(context, listen: false).postedQuestions) {
-        final questionId = question['id'];
-        if (questionId != null) {
-          final commentCountResponse = await Supabase.instance.client
-              .from('comments')
-              .select('id')
-              .eq('question_id', questionId)
-              .count(CountOption.exact);
-          
-          final commentCount = commentCountResponse.count ?? 0;
-          if (commentCount >= 5) {
-            questionsWithComments++;
-          }
-        }
-      }
-      
-      final data = {
-        'max_lizzies': maxLizzies,
-        'total_lizzies': totalLizzies,
-        'comments_with_lizzies': commentsWithLizzies,
-        'questions_with_comments': questionsWithComments,
-      };
-      
-      // Cache the results
-      final cacheData = data.map((k, v) => MapEntry(k, v.toString()));
-      await prefs.setString(cacheKey, Uri(queryParameters: cacheData).query);
-      await prefs.setString(cacheTimeKey, DateTime.now().toIso8601String());
-      
-      return data;
-    } catch (e) {
-      print('Error fetching social achievement data: $e');
-      return {};
-    }
-  }
-
-  // Helper method to get local community achievement data from database with daily caching
-  Future<Map<String, dynamic>> _getLocalCommunityAchievementData({bool forceRefresh = false}) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final cacheKey = 'local_community_achievement_data';
-      final cacheTimeKey = 'local_community_achievement_data_last_checked';
-      
-      // Check cache first (unless force refresh)
-      if (!forceRefresh) {
-        final cachedData = prefs.getString(cacheKey);
-        final lastChecked = prefs.getString(cacheTimeKey);
-        
-        if (cachedData != null && lastChecked != null) {
-          final lastCheckedDate = DateTime.parse(lastChecked);
-          final now = DateTime.now();
-          
-          // Use cache if checked today (same day)
-          if (lastCheckedDate.year == now.year && 
-              lastCheckedDate.month == now.month && 
-              lastCheckedDate.day == now.day) {
-            print('Using cached local community achievement data');
-            final parsedData = Uri.splitQueryString(cachedData);
-            return parsedData.map((k, v) => MapEntry(k, int.tryParse(v) ?? 0));
-          }
-        }
-      }
-      
-      print('Fetching local community achievement data from database');
-      final userId = Supabase.instance.client.auth.currentUser?.id;
-      if (userId == null) return {};
-      
-      // Query user's posted questions for city/country targeting data
-      final questionsResponse = await Supabase.instance.client
-          .from('questions')
-          .select('id, city_id, country_code, targeting_type')
-          .eq('author_id', userId);
-      
-      final questions = questionsResponse as List<dynamic>? ?? [];
-      
-      int cityQuestions = 0;
-      int countryQuestions = 0;
-      Set<String> uniqueCities = {};
-      Set<String> uniqueCountries = {};
-      
-      for (var question in questions) {
-        final cityId = question['city_id'];
-        final countryCode = question['country_code'];
-        final targetingType = question['targeting_type'];
-        
-        if (targetingType == 'city' && cityId != null) {
-          cityQuestions++;
-          uniqueCities.add(cityId.toString());
-        } else if (targetingType == 'country' && countryCode != null) {
-          countryQuestions++;
-          uniqueCountries.add(countryCode.toString());
-        }
-      }
-      
-      final data = {
-        'city_questions': cityQuestions,
-        'country_questions': countryQuestions,
-        'unique_cities': uniqueCities.length,
-        'unique_countries': uniqueCountries.length,
-      };
-      
-      // Cache the results
-      final cacheData = data.map((k, v) => MapEntry(k, v.toString()));
-      await prefs.setString(cacheKey, Uri(queryParameters: cacheData).query);
-      await prefs.setString(cacheTimeKey, DateTime.now().toIso8601String());
-      
-      return data;
-    } catch (e) {
-      print('Error fetching local community achievement data: $e');
-      return {};
-    }
-  }
 
   // Helper method to get user creation date from database with daily caching
   Future<Map<String, dynamic>> _getUserCreationDate({bool forceRefresh = false}) async {
@@ -3069,225 +2227,6 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
       print('Error fetching user creation date: $e');
     }
     return {};
-  }
-
-  Future<int> _getUnlockedAchievementsCountAsync() async {
-    final userService = Provider.of<UserService>(context, listen: false);
-    int count = 0;
-    List<String> unlockedAchievements = []; // Debug list
-    
-    // Count only achievements we can actually verify
-    
-    // Question achievements
-    if (userService.postedQuestions.isNotEmpty) {
-      count++; // Not a lurker!
-      unlockedAchievements.add('Not a lurker!');
-    }
-    
-    // Answer achievements (progressive - only count highest achieved)
-    // Use the same filtered count that appears in My Questions "Answered" section
-    try {
-      final questionService = Provider.of<QuestionService>(context, listen: false);
-      final filteredAnsweredQuestions = await userService.getFilteredAnsweredQuestions(questionService);
-      final answeredCount = filteredAnsweredQuestions.length;
-      
-      if (answeredCount >= 1000) {
-        count++; // Answer Champion (1000+)
-        unlockedAchievements.add('Answer Champion (1000+)');
-      } else if (answeredCount >= 100) {
-        count++; // Century Club (100+) 
-        unlockedAchievements.add('Century Club (100+)');
-      } else if (answeredCount >= 10) {
-        count++; // Getting Started (10+)
-        unlockedAchievements.add('Getting Started (10+)');
-      }
-    } catch (e) {
-      // Fallback to raw count if filtering fails
-      final answeredCount = userService.answeredQuestions.length;
-      if (answeredCount >= 1000) {
-        count++; // Answer Champion (1000+)
-        unlockedAchievements.add('Answer Champion (1000+)');
-      } else if (answeredCount >= 100) {
-        count++; // Century Club (100+) 
-        unlockedAchievements.add('Century Club (100+)');
-      } else if (answeredCount >= 10) {
-        count++; // Getting Started (10+)
-        unlockedAchievements.add('Getting Started (10+)');
-      }
-    }
-    
-    // Question Hunter achievements - count each achievement by frequency
-    int popularQuestionCount = 0;
-    int viralQuestionCount = 0;
-    
-    for (var question in userService.postedQuestions) {
-      final votes = question['votes'] ?? 0;
-      if (votes >= 500) {
-        viralQuestionCount++;
-      } else if (votes >= 100) {
-        popularQuestionCount++;
-      }
-    }
-    
-    count += popularQuestionCount; // Add each Popular Question achievement
-    count += viralQuestionCount;   // Add each Viral Question achievement
-    if (popularQuestionCount > 0) unlockedAchievements.add('Popular Question x$popularQuestionCount');
-    if (viralQuestionCount > 0) unlockedAchievements.add('Viral Question x$viralQuestionCount');
-    
-    // Birthday Buddy (check if any question posted in November or permanently unlocked)
-    if (await _isAchievementUnlocked('birthday_buddy') || _checkBirthdayBuddy(userService)) {
-      count++; // Birthday Buddy
-      unlockedAchievements.add('Birthday Buddy');
-    }
-    
-    // Room achievements (check SharedPreferences for permanently unlocked ones)
-    // Use the actual SharedPreferences keys with 'achievement_' prefix
-    if (await _isAchievementUnlocked('youre_invited')) {
-      count++;
-    }
-    if (await _isAchievementUnlocked('room_founder')) {
-      count++;
-    }
-    if (await _isAchievementUnlocked('turned_the_key')) {
-      count++;
-    }
-    if (await _isAchievementUnlocked('networker')) {
-      count++;
-    }
-    
-    // Room ranking achievements
-    try {
-      final roomRankings = await _checkRoomRankings();
-      if (roomRankings['hasRank1Room'] == true) count++;
-      if (roomRankings['hasRank2Room'] == true) count++;
-      if (roomRankings['hasRank3Room'] == true) count++;
-      if (roomRankings['hasTop10Room'] == true) count++;
-    } catch (e) {
-      // Skip room ranking if check fails
-    }
-    
-    // Community achievements (Alpha, Beta, Hatchling always unlocked if authenticated)
-    final userId = Supabase.instance.client.auth.currentUser?.id;
-    if (userId != null) {
-      count++; // Hatchling (always unlocked)
-      
-      // Check cached Alpha/Beta status
-      if (await _isAchievementUnlocked('alpha_tester')) {
-        count++;
-      }
-      if (await _isAchievementUnlocked('beta_tester')) {
-        count++;
-      }
-    }
-    
-    // Local Community achievements
-    final localAchievements = ['planting_seed', 'community_building', 'local_legend', 'global_seed', 'global_community', 'international_legend'];
-    for (var achievement in localAchievements) {
-      if (await _isAchievementUnlocked(achievement)) {
-        count++;
-      }
-    }
-    
-    // Social achievements (progressive - only count highest lizzy tier)
-    if (await _isAchievementUnlocked('dino_lizzy')) {
-      count++; // Dino Lizzy (highest tier)
-    } else if (await _isAchievementUnlocked('dragon_lizzy')) {
-      count++; // Dragon Lizzy (middle tier)
-    } else if (await _isAchievementUnlocked('first_lizzy')) {
-      count++; // First Lizzy (lowest tier)
-    }
-    
-    // Popcorn Time (separate achievement)
-    if (await _isAchievementUnlocked('popcorn_time')) {
-      count++;
-    }
-    
-    // QOTD Star achievement - count each QOTD
-    if (await _isAchievementUnlocked('qotd_star')) {
-      try {
-        final qotdCount = await _getQotdCount();
-        count += qotdCount; // Add each QOTD achievement
-        unlockedAchievements.add('QOTD Star x$qotdCount');
-      } catch (e) {
-        count++; // Fallback to 1 if count fails
-        unlockedAchievements.add('QOTD Star (fallback)');
-      }
-    }
-    
-    // Notification badge ("Call me, beep me")
-    if (userService.notifyResponses) {
-      count++;
-    }
-    
-    // Debug logging: Print all counted achievements
-    // print('DEBUG: Badge count calculation:');  // Commented out excessive logging
-    // print('Total count: $count');  // Commented out excessive logging
-    // print('Unlocked achievements: ${unlockedAchievements.join(', ')}');  // Commented out excessive logging
-    
-    return count;
-  }
-
-  // Helper method to check if an achievement is unlocked in SharedPreferences
-  Future<bool> _isAchievementUnlocked(String achievementKey) async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getBool('achievement_$achievementKey') ?? false;
-  }
-
-  // Helper method to set an achievement as unlocked in SharedPreferences
-  Future<void> _setAchievementUnlocked(String achievementKey) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('achievement_$achievementKey', true);
-  }
-
-  // Helper method to check if user has had a question as Question of the Day
-  Future<bool> _hasQuestionBeenQotd({bool forceRefresh = false}) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final cacheKey = 'qotd_achievement_check';
-      final cacheTimeKey = 'qotd_achievement_check_last_checked';
-      
-      // Check cache first (unless force refresh)
-      if (!forceRefresh) {
-        final cachedResult = prefs.getBool(cacheKey);
-        final lastChecked = prefs.getString(cacheTimeKey);
-        
-        if (cachedResult != null && lastChecked != null) {
-          final lastCheckedDate = DateTime.parse(lastChecked);
-          final now = DateTime.now();
-          
-          // Use cache if checked today (same day)
-          if (lastCheckedDate.year == now.year && 
-              lastCheckedDate.month == now.month && 
-              lastCheckedDate.day == now.day) {
-            print('Using cached QOTD achievement check: $cachedResult');
-            return cachedResult;
-          }
-        }
-      }
-      
-      print('Checking database for user QOTD history');
-      final userId = Supabase.instance.client.auth.currentUser?.id;
-      if (userId == null) return false;
-      
-      // Query question_of_the_day_history table to see if any of user's questions were featured
-      final qotdResponse = await Supabase.instance.client
-          .from('question_of_the_day_history')
-          .select('question_id, questions!inner(author_id)')
-          .eq('questions.author_id', userId)
-          .limit(1);
-      
-      final hasBeenQotd = qotdResponse.isNotEmpty;
-      
-      // Cache the result with daily expiration
-      await prefs.setBool(cacheKey, hasBeenQotd);
-      await prefs.setString(cacheTimeKey, DateTime.now().toIso8601String());
-      
-      print('QOTD achievement check result: $hasBeenQotd');
-      return hasBeenQotd;
-    } catch (e) {
-      print('Error checking QOTD achievement: $e');
-      return false; // Default to locked if there's an error
-    }
   }
 
   Future<Map<String, dynamic>> _getQotdData({bool forceRefresh = false}) async {
@@ -3357,11 +2296,6 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
       print('Error checking QOTD data: $e');
       return {'count': 0, 'qotds': []}; // Default to empty if there's an error
     }
-  }
-
-  Future<int> _getQotdCount({bool forceRefresh = false}) async {
-    final qotdData = await _getQotdData(forceRefresh: forceRefresh);
-    return qotdData['count'] as int;
   }
 
   Widget _buildAchievementChip(String emoji, String title, String description, bool isUnlocked, {String? progress, VoidCallback? customOnTap, int? count}) {
@@ -3660,263 +2594,21 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _showAnswerStreakDialog(UserService userService) async {
+    // The same dialog the top bar's streak pill opens (answer_streak_dialog.dart).
     final currentStreak = _calculateCurrentStreak(userService.answeredQuestions);
-    final longestStreak = await _getLongestAnswerStreak();
-    final hasExtendedStreakToday = _hasExtendedStreakToday(userService.answeredQuestions);
-    final streakRank = userService.streakRank;
-    final isTopTen = userService.isTopTenStreak;
-
-    // Update longest streak if current is longer
-    if (currentStreak > longestStreak) {
-      await _saveLongestAnswerStreak(currentStreak);
-    }
-
-    final isRecord = currentStreak > 0 && currentStreak >= longestStreak;
-    final showRainbow = isTopTen || currentStreak > 100;
-
-    // Check if we should show urgent message
+    final hasExtendedStreakToday =
+        _hasExtendedStreakToday(userService.answeredQuestions);
     final streakColor = _getStreakCardColor(context, hasExtendedStreakToday);
-    final shouldShowUrgent = _shouldStreakCardPulse(hasExtendedStreakToday) ||
-                            streakColor == Color(0xffea6d32); // Red or orange
-
-    final dialogBorder = _getStreakDialogBorderDecoration(currentStreak, isTopTen: isTopTen);
-
-    showDialog(
-      context: context,
-      builder: (context) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        child: Container(
-          decoration: dialogBorder,
-          padding: showRainbow ? EdgeInsets.all(3) : EdgeInsets.zero,
-          child: Container(
-            decoration: BoxDecoration(
-              color: Theme.of(context).dialogBackgroundColor,
-              borderRadius: BorderRadius.circular(showRainbow ? 9 : 12),
-            ),
-            padding: EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Title section
-                Text(
-                  'Answer Streak',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                SizedBox(height: 12),
-                // Streak number with optional medal
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      '$currentStreak',
-                      style: Theme.of(context).textTheme.displayLarge?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        color: Theme.of(context).primaryColor,
-                      ),
-                    ),
-                    if (streakRank >= 1 && streakRank <= 3) ...[
-                      SizedBox(width: 8),
-                      Text(
-                        streakRank == 1 ? '🥇' : streakRank == 2 ? '🥈' : '🥉',
-                        style: TextStyle(fontSize: 32),
-                      ),
-                    ],
-                  ],
-                ),
-                // Leaderboard rank section
-                if (streakRank > 0 && currentStreak > 0) ...[
-                  SizedBox(height: 8),
-                  Container(
-                    padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: isTopTen
-                          ? Theme.of(context).primaryColor.withOpacity(0.1)
-                          : Theme.of(context).cardColor,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: isTopTen
-                            ? Theme.of(context).primaryColor.withOpacity(0.3)
-                            : Theme.of(context).dividerColor,
-                      ),
-                    ),
-                    child: Text(
-                      isTopTen
-                          ? '🔥 #$streakRank among all active streaks!'
-                          : 'Ranked #$streakRank among all active streaks',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        fontWeight: isTopTen ? FontWeight.w600 : null,
-                        color: isTopTen ? Theme.of(context).primaryColor : null,
-                      ),
-                    ),
-                  ),
-                ],
-                SizedBox(height: 12),
-                // Longest streak info
-                Text(
-                  isRecord && currentStreak > 0
-                      ? 'This is your longest streak ever, keep it up!'
-                      : 'Your all-time longest streak was $longestStreak day${longestStreak == 1 ? '' : 's'}.',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: isRecord ? Theme.of(context).primaryColor : null,
-                    fontWeight: isRecord ? FontWeight.w600 : null,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                if (shouldShowUrgent) ...[
-                  SizedBox(height: 16),
-                  Text(
-                    'You\'re running out of time today! Answer any question to extend your streak.',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: streakColor,
-                      fontWeight: FontWeight.w600,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-                // Only show streak reminders toggle if not already enabled
-                Consumer<UserService>(
-                  builder: (context, userService, child) {
-                    if (userService.notifyStreakReminders) {
-                      // Don't show toggle if reminders are already on
-                      return SizedBox.shrink();
-                    }
-
-                    return Column(
-                      children: [
-                        SizedBox(height: 16),
-                        // Streak reminders toggle
-                        Container(
-                          padding: EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Theme.of(context).cardColor,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                              color: Theme.of(context).dividerColor,
-                              width: 1,
-                            ),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.local_fire_department_outlined,
-                                color: Colors.grey,
-                                size: 20,
-                              ),
-                              SizedBox(width: 8),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      'Streak reminders',
-                                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                        fontWeight: FontWeight.w500,
-                                      ),
-                                    ),
-                                    Text(
-                                      'Get reminded if you haven\'t answered today. Reminder time can be customized in Settings.',
-                                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                        color: Colors.grey[600],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              Switch(
-                                value: false,
-                                onChanged: (value) {
-                                  userService.setNotifyStreakReminders(value);
-
-                                  // Show brief feedback
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text('Streak reminders enabled! 🔥 Adjust reminder times in Settings.'),
-                                      backgroundColor: Theme.of(context).primaryColor,
-                                      duration: Duration(seconds: 3),
-                                    ),
-                                  );
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-                SizedBox(height: 16),
-                // Explanation text at bottom
-                Text(
-                  'A streak is the number of consecutive days that you\'ve answered at least one question.',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Colors.grey[600],
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                SizedBox(height: 16),
-                // Widget suggestion
-                GestureDetector(
-                  onTap: () async {
-                    final uri = Uri.parse('https://readtheroom.site/widgets/');
-                    if (await canLaunchUrl(uri)) {
-                      await launchUrl(uri, mode: LaunchMode.externalApplication);
-                    }
-                  },
-                  child: Container(
-                    padding: EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).primaryColor.withOpacity(0.08),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: Theme.of(context).primaryColor.withOpacity(0.2),
-                        width: 1,
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.widgets_outlined,
-                          color: Theme.of(context).primaryColor,
-                          size: 20,
-                        ),
-                        SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            'Did you know? You can add the Curio widget to your home screen to quietly support the platform.',
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Theme.of(context).primaryColor,
-                            ),
-                          ),
-                        ),
-                        Icon(
-                          Icons.open_in_new,
-                          color: Theme.of(context).primaryColor,
-                          size: 14,
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                SizedBox(height: 16),
-                // Action button
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    child: Text('Got it'),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
+    await showAnswerStreakDialog(
+      context,
+      currentStreak: currentStreak,
+      streakRank: userService.streakRank,
+      streakColor: streakColor,
+      shouldShowUrgent: _shouldStreakCardPulse(hasExtendedStreakToday) ||
+          streakColor == const Color(0xffea6d32),
     );
   }
+
 
   Future<void> _showPostStreakDialog(UserService userService) async {
     final currentStreak = _calculateCurrentStreak(userService.postedQuestions);
@@ -4045,7 +2737,7 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
                 SizedBox(height: 20),
                 // Content
                 Text(
-                  'This is the average rating chameleons give your questions.',
+                  'This is the average number of answers your questions get.',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
                 SizedBox(height: 16),
@@ -4125,9 +2817,12 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
                   ),
                 ],
                 SizedBox(height: 16),
-                if (hasCqi && camoQuality > 0.5) ...[
+                // camo_quality = average responses per question asked
+                // (DBarchitecture.md, user_engagement_rankings) — a count, not
+                // the old -1..1 rating, so the praise tiers are counts too.
+                if (hasCqi && camoQuality >= 10) ...[
                   Text(
-                    'Your questions are highly rated!',
+                    'Your questions draw a crowd!',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: Theme.of(context).primaryColor,
                       fontWeight: FontWeight.w600,
@@ -4137,7 +2832,7 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
                   SizedBox(height: 16),
                 ] else if (hasCqi && camoQuality > 0.0) ...[
                   Text(
-                    'Your questions are well-received!',
+                    'Chameleons are answering your questions!',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: Theme.of(context).primaryColor,
                       fontWeight: FontWeight.w600,
@@ -4147,7 +2842,7 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
                   SizedBox(height: 16),
                 ],
                 Text(
-                  'The CQI measures how chameleons rate your questions on average, from -1 (negative) to 1 (positive).',
+                  'The CQI is the average number of answers across the questions you\'ve asked. The more chameleons answer, the higher it goes.',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: Colors.grey[600],
                   ),
@@ -4253,30 +2948,6 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
     }
     // Default: primary color if streak extended, grey if streak is 0
     return Theme.of(context).primaryColor;
-  }
-
-  // Get special dialog border decoration for top 10 or 100+ day streaks
-  BoxDecoration? _getStreakDialogBorderDecoration(int currentStreak, {bool isTopTen = false}) {
-    // Rainbow border for top 10 leaderboard OR 100+ day streaks
-    if (isTopTen || currentStreak > 100) {
-      return BoxDecoration(
-        borderRadius: BorderRadius.circular(12),
-        gradient: LinearGradient(
-          colors: [
-            Colors.red,
-            Colors.orange,
-            Colors.yellow,
-            Colors.green,
-            Colors.blue,
-            Colors.indigo,
-            Colors.purple,
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-      );
-    }
-    return null;
   }
 
   Future<String> _getAnswerStreakSubtitle(UserService userService) async {
@@ -5647,7 +4318,6 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
       // Add questions from different user sections
       allQuestions.addAll(userService.answeredQuestions);
       allQuestions.addAll(userService.postedQuestions);
-      allQuestions.addAll(userService.savedQuestions);
       
       final questionsToEnrich = allQuestions
           .where((q) => batch.contains(q['id']?.toString()))
@@ -5776,7 +4446,6 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
       final allUserQuestions = <Map<String, dynamic>>[];
       allUserQuestions.addAll(userService.postedQuestions);
       allUserQuestions.addAll(userService.answeredQuestions);
-      allUserQuestions.addAll(userService.savedQuestions);
       
       if (allUserQuestions.isEmpty) return;
       
@@ -5859,4 +4528,43 @@ class _UserScreenState extends State<UserScreen> with WidgetsBindingObserver {
     }
   }
 
+}
+
+/// Server-side badge stats for the Camo Collection, from the last load.
+class _BadgeData {
+  _BadgeData({
+    required this.answeredCount,
+    required this.qotdCount,
+    required this.accountCreatedAt,
+    required this.commentCount,
+    required this.maxLizzies,
+    required this.popcornCount,
+    required this.reactionsGiven,
+    required this.reactionsReceived,
+    required this.legacyCityQuestions,
+    required this.legacyCountryQuestions,
+    required this.legacyUniqueCities,
+    required this.userId,
+    required this.friendHwm,
+    required this.flags,
+  });
+
+  final int answeredCount;
+  final int qotdCount;
+  final DateTime? accountCreatedAt;
+  final int commentCount;
+  final int maxLizzies;
+  final int popcornCount;
+  final int reactionsGiven;
+  final int reactionsReceived;
+  final int legacyCityQuestions;
+  final int legacyCountryQuestions;
+  final int legacyUniqueCities;
+
+  /// The account this snapshot was loaded for (null for guests).
+  final String? userId;
+
+  /// Most friends ever seen; bumped from build() as the live count grows.
+  int friendHwm;
+  final Set<String> flags;
 }

@@ -93,3 +93,14 @@ DBarchitecture.md
 README_CI_CD.md
 README_RELEASE.md
 feature-documentation/
+
+# Backend migration / security scripts (internal; deploy-order and pending
+# fixes). Seed data is the only part that ships publicly.
+scripts/*
+!scripts/seed_questions.json
+!scripts/seed_questions.sql
+!scripts/seed_questions_batch2.json
+!scripts/seed_questions_batch2.sql
+!scripts/seed_qotd_bank.py
+!scripts/gen_chameleon_avatars.py
+!scripts/check_seed_collisions.sql

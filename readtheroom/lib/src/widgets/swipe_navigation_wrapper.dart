@@ -6,7 +6,9 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../utils/haptic_utils.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../models/question_results.dart';
 import '../services/question_service.dart';
+import '../services/results_service.dart';
 import '../services/user_service.dart';
 import '../services/question_cache_service.dart';
 import '../screens/answer_approval_screen.dart';
@@ -131,14 +133,15 @@ class SwipeNavigationWrapperState extends State<SwipeNavigationWrapper> {
             print('⚠️ Database fetch failed, using original question data');
           }
           
-                     // Navigate to results screen with complete question data and preloaded responses
-           final preloadedResponses = completeQuestion['preloaded_responses'] as List<Map<String, dynamic>>? ?? [];
-           print('🎯 Using ${preloadedResponses.length} preloaded responses for ${questionType} question');
-           
+                                          // Navigate to results screen with complete question data and preloaded results
+           final preloadedResults =
+               completeQuestion['preloaded_results'] as QuestionResults?;
+           print('🎯 Using preloaded results (${preloadedResults?.total ?? 0} answers) for $questionType question');
+
            if (questionType == 'approval_rating' || questionType == 'approval') {
              return ApprovalResultsScreen(
                question: completeQuestion,
-               responses: preloadedResponses, // Use preloaded responses for instant display
+               results: preloadedResults, // Instant display when already warmed
                feedContext: updatedFeedContext,
                fromSearch: widget.fromSearch,
                fromUserScreen: widget.fromUserScreen,
@@ -146,22 +149,15 @@ class SwipeNavigationWrapperState extends State<SwipeNavigationWrapper> {
            } else if (questionType == 'multiple_choice') {
              return MultipleChoiceResultsScreen(
                question: completeQuestion,
-               responses: preloadedResponses, // Use preloaded responses for instant display
+               results: preloadedResults, // Instant display when already warmed
                feedContext: updatedFeedContext,
                fromSearch: widget.fromSearch,
                fromUserScreen: widget.fromUserScreen,
              );
            } else {
-             // For text results, we need to handle the special case where responses are stored differently
-             // Remove preloaded_responses from question and pass separately since TextResultsScreen loads its own
-             final questionForTextResults = Map<String, dynamic>.from(completeQuestion);
-             if (preloadedResponses.isNotEmpty) {
-               questionForTextResults['preloaded_text_responses'] = preloadedResponses;
-             }
-             questionForTextResults.remove('preloaded_responses'); // Clean up
-             
-             return TextResultsScreen(
-               question: questionForTextResults,
+             // Discussion questions: always use AnswerTextScreen (comments-first UX)
+             return AnswerTextScreen(
+               question: completeQuestion,
                feedContext: updatedFeedContext,
                fromSearch: widget.fromSearch,
                fromUserScreen: widget.fromUserScreen,
@@ -177,6 +173,7 @@ class SwipeNavigationWrapperState extends State<SwipeNavigationWrapper> {
           feedContext: updatedFeedContext,
           fromSearch: widget.fromSearch,
           fromUserScreen: widget.fromUserScreen,
+          entrySource: 'swipe',
         );
       } else if (questionType == 'multiple_choice') {
         return AnswerMultipleChoiceScreen(
@@ -184,6 +181,7 @@ class SwipeNavigationWrapperState extends State<SwipeNavigationWrapper> {
           feedContext: updatedFeedContext,
           fromSearch: widget.fromSearch,
           fromUserScreen: widget.fromUserScreen,
+          entrySource: 'swipe',
         );
       } else {
         return AnswerTextScreen(
@@ -191,6 +189,7 @@ class SwipeNavigationWrapperState extends State<SwipeNavigationWrapper> {
           feedContext: updatedFeedContext,
           fromSearch: widget.fromSearch,
           fromUserScreen: widget.fromUserScreen,
+          entrySource: 'swipe',
         );
       }
     }
@@ -229,11 +228,14 @@ class SwipeNavigationWrapperState extends State<SwipeNavigationWrapper> {
         // Pre-fetch responses for answered questions to avoid loading delay
         final userService = Provider.of<UserService>(context, listen: false);
         if (userService.hasAnsweredQuestion(completeQuestion['id'])) {
-          print('🚀 Pre-fetching responses for answered question...');
-          final responses = await _fetchResponsesForQuestion(completeQuestion);
-          if (responses != null) {
-            completeQuestion['preloaded_responses'] = responses;
-            print('✅ Pre-loaded ${responses.length} responses');
+          print('🚀 Pre-fetching results for answered question...');
+          final prefetched = await _prefetchResultsForQuestion(completeQuestion);
+          if (prefetched is QuestionResults) {
+            completeQuestion['preloaded_results'] = prefetched;
+            print('✅ Pre-loaded results (${prefetched.total} answers)');
+          } else if (prefetched is List<Map<String, dynamic>>) {
+            completeQuestion['preloaded_text_responses'] = prefetched;
+            print('✅ Pre-loaded ${prefetched.length} text answers');
           }
         }
         
@@ -263,64 +265,28 @@ class SwipeNavigationWrapperState extends State<SwipeNavigationWrapper> {
     }
   }
 
-  // Helper method to fetch responses based on question type
-  Future<List<Map<String, dynamic>>?> _fetchResponsesForQuestion(Map<String, dynamic> question) async {
+    // Warm the results for a question the user is about to swipe to.
+  //
+  // Since the answers read lockdown (2026-09-22) this fetches RESULTS, not
+  // answers: `preloaded_results` for approval and multiple choice (a
+  // [QuestionResults]) and the public text answers for discussion questions.
+  Future<Object?> _prefetchResultsForQuestion(Map<String, dynamic> question) async {
     try {
       final questionId = question['id'].toString();
       final questionType = question['type']?.toString().toLowerCase() ?? 'text';
-      final supabase = Supabase.instance.client;
-      
+
       switch (questionType) {
         case 'multiple_choice':
-          // Use the existing method from QuestionService
-          final questionService = Provider.of<QuestionService>(context, listen: false);
-          return await questionService.getMultipleChoiceIndividualResponses(questionId);
-          
         case 'approval_rating':
         case 'approval':
-          // Fetch approval responses (same query as ApprovalResultsScreen)
-          final response = await supabase
-              .from('responses')
-              .select('''
-                score,
-                created_at,
-                countries!responses_country_code_fkey(country_name_en)
-              ''')
-              .eq('question_id', questionId)
-              .not('score', 'is', null)
-              .order('created_at', ascending: false);
-          
-          if (response != null && response.isNotEmpty) {
-            return response.map((r) => {
-              'country': r['countries']?['country_name_en'] ?? 'Unknown',
-              'answer': (r['score'] as int).toDouble() / 100.0, // Convert to -1 to 1 range
-              'created_at': r['created_at'],
-            }).toList();
-          }
-          return [];
-          
+          return await ResultsService()
+              .fetchResults(questionId, questionType: questionType);
+
         case 'text':
         default:
-          // Fetch text responses (same query as TextResultsScreen)
-          final response = await supabase
-              .from('responses')
-              .select('''
-                text_response, 
-                created_at,
-                countries!responses_country_code_fkey(country_name_en)
-              ''')
-              .eq('question_id', questionId)
-              .not('text_response', 'is', null)
-              .order('created_at', ascending: false);
-          
-          if (response != null && response.isNotEmpty) {
-            return response.map((r) => {
-              'text_response': r['text_response'],
-              'country': r['countries']?['country_name_en'] ?? 'Unknown',
-              'created_at': r['created_at'],
-            }).toList();
-          }
-          return [];
+          final questionService =
+              Provider.of<QuestionService>(context, listen: false);
+          return await questionService.getTextResponses(questionId);
       }
     } catch (e) {
       print('Error fetching responses for question: $e');

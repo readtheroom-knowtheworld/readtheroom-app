@@ -19,6 +19,7 @@ class CommentWidget extends StatefulWidget {
   final bool showActions;
   final EdgeInsetsGeometry? margin;
   final Map<String, dynamic>? questionContext; // To check if question is NSFW
+  final String? currentUserUsername; // Current user's randomized username for @ highlight
 
   const CommentWidget({
     Key? key,
@@ -31,6 +32,7 @@ class CommentWidget extends StatefulWidget {
     this.showActions = true,
     this.margin,
     this.questionContext,
+    this.currentUserUsername,
   }) : super(key: key);
 
   @override
@@ -333,87 +335,112 @@ class _CommentWidgetState extends State<CommentWidget> with SingleTickerProvider
   }
 
   Widget _buildContentWithInlineLinks() {
-    if (_linkedQuestionIds.isEmpty) {
-      // No linked questions, just show regular text
-      return Text(
-        _previewContent,
-        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-          fontSize: 14,
-          height: 1.4,
-        ),
-      );
+    final String content = _previewContent;
+    final baseStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
+      fontSize: 14,
+      height: 1.4,
+    );
+
+    // Combined pattern: @username mentions, ?: question refs, legacy @UUID refs
+    // We match all special tokens, then build spans
+    final RegExp uuidPattern = RegExp(r'(?:\?:|@)([a-f0-9-]{36})', caseSensitive: false);
+    final RegExp mentionPattern = RegExp(r'@(\S+)');
+
+    final hasUuids = uuidPattern.hasMatch(content);
+    final hasMentions = mentionPattern.hasMatch(content) && !hasUuids;
+
+    // Simple case: no special content
+    if (_linkedQuestionIds.isEmpty && !hasMentions && !hasUuids) {
+      return Text(content, style: baseStyle);
     }
 
-    // Build rich text with inline link icons
+    // Build rich text with both UUID links and @mentions
     final List<InlineSpan> spans = [];
-    final String content = _previewContent;
-    
-    // Create a mapping of UUID to number for this comment (limit to 2)
-    final Map<String, int> uuidToNumber = {};
-    int numberCounter = 1;
-    
-    // First pass: identify all UUIDs and assign numbers
-    final RegExp uuidPattern = RegExp(r'@([a-f0-9-]{36})', caseSensitive: false);
-    final Iterable<RegExpMatch> uuidMatches = uuidPattern.allMatches(content);
-    
-    for (final match in uuidMatches) {
-      final String questionId = match.group(1)!;
-      if (!uuidToNumber.containsKey(questionId) && numberCounter <= 2) {
-        uuidToNumber[questionId] = numberCounter++;
+
+    if (hasUuids) {
+      // Create UUID-to-number mapping (limit to 2)
+      final Map<String, int> uuidToNumber = {};
+      int numberCounter = 1;
+      final uuidMatches = uuidPattern.allMatches(content).toList();
+      for (final match in uuidMatches) {
+        final String questionId = match.group(1)!;
+        if (!uuidToNumber.containsKey(questionId) && numberCounter <= 2) {
+          uuidToNumber[questionId] = numberCounter++;
+        }
       }
-    }
-    
-    // Second pass: build spans with numbered references
-    int lastMatchEnd = 0;
-    
-    for (final match in uuidMatches) {
-      final String questionId = match.group(1)!;
-      final int? questionNumber = uuidToNumber[questionId];
-      
-      if (questionNumber == null) continue; // Skip if beyond limit of 2
-      
-      // Add text before this match
-      if (match.start > lastMatchEnd) {
-        spans.add(TextSpan(
-          text: content.substring(lastMatchEnd, match.start),
-        ));
-      }
-      
-      // Add numbered reference as clickable text
-      spans.add(WidgetSpan(
-        child: GestureDetector(
-          onTap: () => _navigateToLinkedQuestion(questionId),
-          child: Text(
-            '[$questionNumber]',
-            style: TextStyle(
-              color: Theme.of(context).primaryColor,
-              fontSize: 14,
-              height: 1.4,
+
+      int lastMatchEnd = 0;
+      for (final match in uuidMatches) {
+        final String questionId = match.group(1)!;
+        final int? questionNumber = uuidToNumber[questionId];
+        if (questionNumber == null) continue;
+
+        if (match.start > lastMatchEnd) {
+          spans.add(TextSpan(text: content.substring(lastMatchEnd, match.start)));
+        }
+
+        spans.add(WidgetSpan(
+          child: GestureDetector(
+            onTap: () => _navigateToLinkedQuestion(questionId),
+            child: Text(
+              '[$questionNumber]',
+              style: TextStyle(
+                color: Theme.of(context).primaryColor,
+                fontSize: 14,
+                height: 1.4,
+              ),
             ),
           ),
-        ),
-        alignment: PlaceholderAlignment.middle,
-      ));
-      
-      lastMatchEnd = match.end;
+          alignment: PlaceholderAlignment.middle,
+        ));
+
+        lastMatchEnd = match.end;
+      }
+
+      if (lastMatchEnd < content.length) {
+        spans.add(TextSpan(text: content.substring(lastMatchEnd)));
+      }
+    } else {
+      // Process @username mentions
+      final mentionMatches = mentionPattern.allMatches(content).toList();
+      int lastEnd = 0;
+
+      for (final match in mentionMatches) {
+        final mentionedName = match.group(1)!;
+        // Skip UUID-like strings
+        if (RegExp(r'^[a-f0-9-]{36}$', caseSensitive: false).hasMatch(mentionedName)) {
+          continue;
+        }
+
+        if (match.start > lastEnd) {
+          spans.add(TextSpan(text: content.substring(lastEnd, match.start)));
+        }
+
+        // Highlight in primary color if this is the current user
+        final isCurrentUser = widget.currentUserUsername != null &&
+            mentionedName.toLowerCase() == widget.currentUserUsername!.toLowerCase();
+
+        final mentionColor = isCurrentUser
+            ? Theme.of(context).primaryColor
+            : Colors.grey[600];
+
+        spans.add(TextSpan(
+          text: match.group(0),
+          style: baseStyle?.copyWith(
+            fontWeight: FontWeight.bold,
+            color: mentionColor,
+          ),
+        ));
+        lastEnd = match.end;
+      }
+
+      if (lastEnd < content.length) {
+        spans.add(TextSpan(text: content.substring(lastEnd)));
+      }
     }
-    
-    // Add remaining text after last match
-    if (lastMatchEnd < content.length) {
-      spans.add(TextSpan(
-        text: content.substring(lastMatchEnd),
-      ));
-    }
-    
-    return RichText(
-      text: TextSpan(
-        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-          fontSize: 14,
-          height: 1.4,
-        ),
-        children: spans,
-      ),
-    );
+
+    if (spans.isEmpty) return Text(content, style: baseStyle);
+    return RichText(text: TextSpan(style: baseStyle, children: spans));
   }
 
   Widget _buildLinkedQuestions() {

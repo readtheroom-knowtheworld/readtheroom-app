@@ -83,8 +83,6 @@ class AnalyticsNavigationObserver extends NavigatorObserver {
         return 'Report Question Screen';
       case 'QuestionPreviewScreen':
         return 'Question Preview Screen';
-      case 'SuggestionDetailScreen':
-        return 'Suggestion Detail Screen';
       case 'UserScreen':
         return 'User Profile Screen';
       case 'AuthenticationScreen':
@@ -99,8 +97,8 @@ class AnalyticsNavigationObserver extends NavigatorObserver {
         return 'Guide Screen';
       case 'SettingsScreen':
         return 'Settings Screen';
-      case 'FeedbackScreen':
-        return 'Feedback Screen';
+      case 'JoinBetaScreen':
+        return 'Join the Beta Screen';
       case 'AboutScreen':
         return 'About Screen';
       case 'PlatformStatsScreen':

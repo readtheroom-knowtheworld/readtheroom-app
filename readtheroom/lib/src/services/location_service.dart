@@ -225,10 +225,13 @@ class LocationService extends ChangeNotifier {
     // Track as part of onboarding if this is during initial setup
     final supabase = Supabase.instance.client;
     if (supabase.auth.currentUser != null) {
-      analytics.trackOnboardingStep('location_city', 6, {
-        'city': cityName,
-        'country': city['country_name_en'],
-      });
+      // P1-4: canonical, and without the place names — a city and country
+      // name on an identified person's onboarding step is the same class of
+      // property the email and the location mirror were removed for.
+      analytics.trackOnboardingStepCanonical(
+        OnboardingStep.locationCompleted,
+        properties: const {'granularity': 'city'},
+      );
     }
     
     notifyListeners();
@@ -339,9 +342,10 @@ class LocationService extends ChangeNotifier {
     // Track as part of onboarding if this is during initial setup
     final supabase = Supabase.instance.client;
     if (supabase.auth.currentUser != null) {
-      analytics.trackOnboardingStep('location_country', 5, {
-        'country': country,
-      });
+      analytics.trackOnboardingStepCanonical(
+        OnboardingStep.locationCompleted,
+        properties: const {'granularity': 'country'},
+      );
     }
     
     notifyListeners();

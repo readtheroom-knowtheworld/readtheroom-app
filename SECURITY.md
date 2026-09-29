@@ -5,7 +5,13 @@
 If you discover a security vulnerability in Read the Room, please report it
 responsibly. **Do not open a public GitHub issue.**
 
-Email **dev@readtheroom.site** with:
+Use either private channel:
+
+- **GitHub private vulnerability reporting** —
+  [open a draft advisory](https://github.com/readtheroom-knowtheworld/readtheroom-app/security/advisories/new)
+- **Email** — dev@readtheroom.site
+
+Include:
 
 - A description of the vulnerability
 - Steps to reproduce

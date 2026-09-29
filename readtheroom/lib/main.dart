@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // lib/main.dart
+import 'dart:ui' show PlatformDispatcher;
+
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -13,7 +15,7 @@ import 'src/screens/about_screen.dart';
 import 'src/screens/authentication_screen.dart';
 import 'src/screens/settings_screen.dart';
 import 'src/screens/new_question_screen.dart';
-import 'src/screens/feedback_screen.dart';
+import 'src/screens/join_beta_screen.dart';
 import 'src/screens/guide_screen.dart';
 import 'src/screens/platform_stats_screen.dart';
 import 'src/screens/onboarding_screen.dart';
@@ -21,24 +23,34 @@ import 'src/services/user_service.dart';
 import 'src/services/location_service.dart';
 import 'src/services/question_service.dart';
 import 'src/services/notification_service.dart';
-import 'src/services/streak_reminder_service.dart';
-import 'src/services/qotd_reminder_service.dart';
+import 'src/services/qotd_legacy_reminder_cleanup.dart';
+import 'src/services/streak_legacy_reminder_cleanup.dart';
 import 'src/services/deep_link_service.dart';
 import 'src/services/watchlist_service.dart';
-import 'src/services/suggestion_watchlist_service.dart';
 import 'src/services/theme_service.dart';
-import 'src/services/temporary_category_filter_notifier.dart';
-import 'src/services/temporary_review_filter_notifier.dart';
 import 'src/services/navigation_visibility_notifier.dart';
 import 'src/services/question_cache_service.dart';
 import 'src/services/guest_user_tracking_service.dart';
 import 'src/services/boost_service.dart';
+import 'src/services/friend_chat_service.dart';
+import 'src/services/friend_nickname_service.dart';
+import 'src/services/friend_service.dart';
+import 'src/services/demo/demo_friend_chat_service.dart';
+import 'src/services/demo/demo_friend_service.dart';
+import 'src/utils/demo_friends_mode.dart';
+import 'src/services/pending_answer_service.dart';
+import 'src/services/profile_service.dart';
 import 'src/services/initialization_coordinator.dart';
 import 'src/services/analytics_service.dart';
 import 'src/services/analytics_navigation_observer.dart';
 import 'src/services/home_widget_service.dart';
+import 'src/services/results_service.dart';
 import 'src/services/qotd_background_service.dart';
 import 'src/utils/haptic_utils.dart';
+import 'src/utils/qotd_push_payload.dart';
+import 'src/utils/app_navigator.dart';
+import 'src/utils/release_logging.dart';
+import 'src/utils/supabase_config.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -48,15 +60,96 @@ import 'package:flutter_timezone/flutter_timezone.dart';
 
 // Background message handler - must be at top level
 @pragma('vm:entry-point')
-Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) =>
+    runWithReleaseLogging(() => _handleBackgroundMessage(message));
+
+Future<void> _handleBackgroundMessage(RemoteMessage message) async {
   // Ensure Firebase is initialized
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   
   print('🦎 FCM: Received background message - type: ${message.data['type']}');
-  
+
+  // QOTD (the Drop). Nothing is scheduled any more: the server's random minute
+  // is the moment, so the notification has to appear now.
+  //
+  // A drop-mode push carries its own `notification` block, which the OS has
+  // already rendered by the time this isolate runs — showing another would
+  // double up. A legacy data-only push has nothing on screen, so we render it
+  // here. Either way the widget refresh is left to the foreground paths: this
+  // isolate has no Supabase session, and the real vote/comment counts are what
+  // the widget needs (see `_updateQOTDWidgetWithFreshData`).
+  final qotdPush = QotdPushPayload.parse(
+    message.data,
+    notificationTitle: message.notification?.title,
+    notificationBody: message.notification?.body,
+  );
+  if (qotdPush != null) {
+    // Review 2026-09-22 A1. This isolate cannot call PostHog — it has its own
+    // memory and never runs `AnalyticsService().initialize()` — so the receipt
+    // is stashed and drained on the next foreground launch. Without it
+    // `notification_opened` has no denominator and a Drop that was delivered
+    // and ignored looks exactly like a Drop that never arrived.
+    await _stashPushReceipt(qotdPush);
+
+    final localNotifications = await _backgroundLocalNotifications();
+
+    // Close the last double-notification path: an upgraded device that has
+    // never been *opened* still holds the retired 7:30 PM reminders (on iOS
+    // they survive the update; nothing has run to cancel them). The first drop
+    // push is the earliest moment we can reach it.
+    await QotdLegacyReminderCleanup.run(
+      cancel: (id) => localNotifications.cancel(id),
+    );
+    // Same story for the retired streak reminders (ids 1001-1007): the feature
+    // is gone, but an un-opened device still holds up to a week of them.
+    await StreakLegacyReminderCleanup.run(
+      cancel: (id) => localNotifications.cancel(id),
+    );
+
+    if (!qotdPush.hasOsNotificationBlock) {
+      await _showQotdNotificationInBackground(localNotifications, qotdPush);
+    }
+    return;
+  }
+
   if (message.data['type'] == 'q_subscribed_activity') {
     // Handle subscribed activity ping when app is in background
     await _processSubscribedActivityInBackground(message);
+  }
+}
+
+/// Records that a Drop push reached this device, for `AnalyticsService`'s
+/// `drainPendingPushReceipts()` to report on the next launch (A1).
+///
+/// Deliberately NOT the question id and NOT the history id: a per-day
+/// `drop_date` joins a receipt to the day's Drop and carries no per-person
+/// link, which is the same rule the answer events now follow. Capped so a
+/// device that was offline for a week reports the last few Drops rather than
+/// replaying a month of them.
+@pragma('vm:entry-point')
+Future<void> _stashPushReceipt(QotdPushPayload push) async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final existing = prefs.getString(AnalyticsService.pendingPushReceiptsKey);
+    final receipts = <dynamic>[];
+    if (existing != null && existing.isNotEmpty) {
+      final decoded = json.decode(existing);
+      if (decoded is List) receipts.addAll(decoded);
+    }
+    final capped = appendPushReceipt(
+      receipts,
+      buildPushReceiptEntry(
+        kind: push.kind.name,
+        isDrop: push.isDrop,
+        receivedAt: DateTime.now(),
+        publishedAt: push.publishedAt,
+      ),
+    );
+    await prefs.setString(
+        AnalyticsService.pendingPushReceiptsKey, json.encode(capped));
+  } catch (e) {
+    // A lost receipt is a lost data point, never a lost notification.
+    print('🦎 FCM: Failed to stash push receipt: $e');
   }
 }
 
@@ -216,6 +309,76 @@ Future<void> _processVoteCountsFromEdgeFunction(String voteCountData) async {
   }
 }
 
+// A plugin instance usable from the background isolate. Each isolate needs its
+// own `initialize()` call before it can show or cancel anything.
+Future<FlutterLocalNotificationsPlugin> _backgroundLocalNotifications() async {
+  const initializationSettingsAndroid =
+      AndroidInitializationSettings('@mipmap/ic_launcher');
+  const initializationSettingsIOS = DarwinInitializationSettings(
+    requestAlertPermission: false,
+    requestBadgePermission: false,
+    requestSoundPermission: false,
+  );
+  const initializationSettings = InitializationSettings(
+    android: initializationSettingsAndroid,
+    iOS: initializationSettingsIOS,
+  );
+
+  final plugin = FlutterLocalNotificationsPlugin();
+  await plugin.initialize(
+    initializationSettings,
+    onDidReceiveNotificationResponse: _onBackgroundNotificationTap,
+  );
+  return plugin;
+}
+
+// Show the QOTD notification from the background isolate, for the legacy
+// data-only payload (drop-mode pushes are rendered by the OS itself).
+//
+// Deliberately not routed through `_showLocalNotificationInBackground`: that one
+// is the silent question-activity channel.
+Future<void> _showQotdNotificationInBackground(
+  FlutterLocalNotificationsPlugin localNotifications,
+  QotdPushPayload push,
+) async {
+  try {
+    final androidDetails = AndroidNotificationDetails(
+      push.androidChannelId,
+      push.isDrop ? 'The Daily Drop' : 'Question of the Day',
+      channelDescription: push.isDrop
+          ? 'The moment the day\'s question drops — one a day, at a different time each day'
+          : 'Notifications for new Question of the Day',
+      importance: push.isDrop ? Importance.max : Importance.high,
+      priority: Priority.high,
+      icon: 'ic_stat_rtr_logo_aug2025',
+      playSound: true,
+      enableVibration: true,
+      tag: push.isDrop ? 'qotd_drop' : null,
+    );
+
+    final iosDetails = DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: true,
+      presentSound: true,
+      // Only the drop claims time-sensitive (and only once the entitlement is
+      // filed — O-4; until then iOS ignores the level rather than failing).
+      interruptionLevel:
+          push.isDrop ? InterruptionLevel.timeSensitive : InterruptionLevel.active,
+    );
+
+    await localNotifications.show(
+      2100, // NotificationService._qotdNotificationId — one slot for the day.
+      push.title,
+      push.body,
+      NotificationDetails(android: androidDetails, iOS: iosDetails),
+      payload: push.navigationPayload,
+    );
+    print('📆 QOTD notification shown from background (${push.kind.name})');
+  } catch (e) {
+    print('📆 Error showing QOTD notification in background: $e');
+  }
+}
+
 // Show local notification in background context
 Future<void> _showLocalNotificationInBackground({
   required String title,
@@ -291,9 +454,14 @@ void _onBackgroundNotificationTap(NotificationResponse response) {
   // Handle notification tap
   if (response.payload != null) {
     print('🦎 Q-activity: Background notification tapped with payload: ${response.payload}');
-    
+
+    // QOTD (the Drop): the tap opens home, never the question (owner decision
+    // 2026-09-22). Drained by _checkPendingHomeNavigation.
+    if (QotdPushPayload.isQotdNavigationPayload(response.payload!)) {
+      _storePendingHomeNavigation();
+    }
     // Check if it's a question notification
-    if (response.payload!.startsWith('question_')) {
+    else if (response.payload!.startsWith('question_')) {
       final questionId = response.payload!.substring('question_'.length);
       print('🦎 Q-activity: Opening question from background notification: $questionId');
       
@@ -301,6 +469,17 @@ void _onBackgroundNotificationTap(NotificationResponse response) {
       // This will be handled by the main app's _checkPendingNotificationNavigation method
       _storePendingQuestionNavigation(questionId);
     }
+  }
+}
+
+// Store pending home navigation (a tapped QOTD push) for background notifications
+void _storePendingHomeNavigation() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('pending_home_navigation', true);
+    print('🦎 Q-activity: Stored pending home navigation (QOTD)');
+  } catch (e) {
+    print('🦎 Q-activity: Error storing pending home navigation: $e');
   }
 }
 
@@ -316,8 +495,40 @@ void _storePendingQuestionNavigation(String questionId) async {
 }
 
 
-void main() async {
+void main() => runWithReleaseLogging(_main);
+
+Future<void> _main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // ------------------------------------------------------------------ F1
+  // Global error capture (review 2026-09-22 F1 / 2026-09-19 P0-4). Until now
+  // the app had no crash, exception or API-failure capture of any kind, so
+  // "the app is broken for a cohort" and "that cohort stopped using the app"
+  // were the same shape in PostHog.
+  //
+  // TYPES AND LIBRARY NAMES ONLY. Never `error.toString()` and never a stack
+  // frame: an assertion message, a PostgREST message or an HTTP body can quote
+  // a question prompt, a comment or a handle, and an error event is not a
+  // place to leak user content.
+  //
+  // Registered before `AnalyticsService().initialize()` on purpose: `trackEvent`
+  // short-circuits while `!_isInitialized`, so a pre-init error is dropped
+  // rather than crashing the handler, and a post-init one is captured.
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    AnalyticsService().trackAppError(
+      errorType: analyticsErrorType(details.exception),
+      library: details.library ?? 'unknown',
+      fatal: false,
+    );
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    AnalyticsService().trackAppError(
+      errorType: analyticsErrorType(error),
+      fatal: true,
+    );
+    return false; // Keep the default handler's logging.
+  };
   
   // Initialize timezone data for local notifications  
   tz.initializeTimeZones();
@@ -352,9 +563,10 @@ void main() async {
   }
   
   // Initialize Supabase
+  SupabaseConfig.ensureConfigured();
   await Supabase.initialize(
-    url: const String.fromEnvironment('SUPABASE_URL'),
-    anonKey: const String.fromEnvironment('SUPABASE_ANON_KEY'),
+    url: SupabaseConfig.url,
+    anonKey: SupabaseConfig.anonKey,
   );
   
   // Initialize Firebase with generated options
@@ -368,6 +580,10 @@ void main() async {
   // Initialize analytics
   final analyticsService = AnalyticsService();
   await analyticsService.initialize();
+  // A1: report any Drop pushes the background isolate stashed while the app
+  // was not running. Must follow `initialize()` — `trackEvent` short-circuits
+  // before it.
+  await analyticsService.drainPendingPushReceipts();
 
   // Initialize home widget service
   final homeWidgetService = HomeWidgetService();
@@ -383,12 +599,8 @@ void main() async {
   // Create services (but don't initialize them yet)
   final notificationService = NotificationService();
   print('🦎 MAIN: Created NotificationService instance ${identityHashCode(notificationService)}');
-  final streakReminderService = StreakReminderService();
-  final qotdReminderService = QOTDReminderService();
-  print('🦎 MAIN: Created StreakReminderService and QOTDReminderService instances');
   final questionService = QuestionService();
   final watchlistService = WatchlistService();
-  final suggestionWatchlistService = SuggestionWatchlistService();
   final userService = UserService();
   final themeService = ThemeService();
   final cacheService = QuestionCacheService();
@@ -410,12 +622,14 @@ void main() async {
     },
     initializeWatchlistService: () async {
       await watchlistService.initialize();
-      await suggestionWatchlistService.initialize();
     },
     initializeNotificationService: () async {
       await notificationService.initialize();
-      await streakReminderService.initialize();
-      await qotdReminderService.initialize();
+      // One-shot upgrade chores: unschedule the retired 7:30 PM local QOTD
+      // reminders so an upgrading device does not get them *and* the drop push,
+      // and the retired streak reminders, whose feature no longer exists.
+      await QotdLegacyReminderCleanup.run();
+      await StreakLegacyReminderCleanup.run();
     },
     initializeDeepLinkService: () async {
       // DeepLinkService is initialized in the widget tree
@@ -427,10 +641,13 @@ void main() async {
   print('🦎 MAIN: locationService null? ${locationService == null}');
   print('🦎 MAIN: locationService type: ${locationService.runtimeType}');
   
+  // Debug-only "Demo friends" gate (forced false in release builds). Read
+  // before runApp because it decides which friend services get registered.
+  await DemoFriendsMode.instance.load();
+
   runApp(ReadTheRoomApp(
     questionService: questionService,
     watchlistService: watchlistService,
-    suggestionWatchlistService: suggestionWatchlistService,
     userService: userService,
     themeService: themeService,
     locationService: locationService,
@@ -440,7 +657,6 @@ void main() async {
 class ReadTheRoomApp extends StatefulWidget {
   final QuestionService questionService;
   final WatchlistService watchlistService;
-  final SuggestionWatchlistService suggestionWatchlistService;
   final UserService userService;
   final ThemeService themeService;
   final LocationService? locationService; // Make nullable temporarily to debug
@@ -449,7 +665,6 @@ class ReadTheRoomApp extends StatefulWidget {
     Key? key, 
     required this.questionService,
     required this.watchlistService,
-    required this.suggestionWatchlistService,
     required this.userService,
     required this.themeService,
     this.locationService, // Make optional temporarily
@@ -460,7 +675,10 @@ class ReadTheRoomApp extends StatefulWidget {
 }
 
 class _ReadTheRoomAppState extends State<ReadTheRoomApp> with WidgetsBindingObserver {
-  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+  // Shared with context-less services (e.g. AppReviewService, which must not
+  // put the OS review sheet up over a dialog). Declared in
+  // src/utils/app_navigator.dart; every call site below is unchanged.
+  final GlobalKey<NavigatorState> _navigatorKey = appNavigatorKey;
   late DeepLinkService _deepLinkService;
   
   // BUG FIX: Cache onboarding status to prevent users being sent back to onboarding inappropriately
@@ -555,12 +773,9 @@ class _ReadTheRoomAppState extends State<ReadTheRoomApp> with WidgetsBindingObse
         final questionId = question['id']?.toString();
 
         if (question['is_hidden'] != true && questionId != null) {
-          // Fetch vote count from responses table
-          final voteCountQuery = await supabase
-              .from('responses')
-              .select('id')
-              .eq('question_id', questionId);
-          final voteCount = voteCountQuery.length;
+                    // Answer count from the results RPC — `responses` is write-only for
+          // clients since the answers read lockdown (2026-09-22).
+          final voteCount = await ResultsService().fetchTotalCount(questionId);
 
           // Fetch comment count from comments table
           final commentCountQuery = await supabase
@@ -570,17 +785,9 @@ class _ReadTheRoomAppState extends State<ReadTheRoomApp> with WidgetsBindingObse
           final commentCount = commentCountQuery.length;
 
           // Check if user has answered this question
-          bool hasAnswered = false;
-          final userId = supabase.auth.currentUser?.id;
-          if (userId != null) {
-            final responseCheck = await supabase
-                .from('responses')
-                .select('id')
-                .eq('question_id', questionId)
-                .eq('user_id', userId)
-                .maybeSingle();
-            hasAnswered = responseCheck != null;
-          }
+          // Local state: `responses` is anonymous (no user column), so the
+          // server cannot say whether THIS user answered.
+          final hasAnswered = await UserService.hasAnsweredLocally(questionId);
 
           // Update widget with fresh data
           await HomeWidgetService().updateQOTDWidget(
@@ -606,9 +813,7 @@ class _ReadTheRoomAppState extends State<ReadTheRoomApp> with WidgetsBindingObse
     
     // Check for pending question navigation
     final pendingQuestionId = notificationService.getPendingQuestionNavigation();
-    // Check for pending suggestion navigation  
-    final pendingSuggestionId = notificationService.getPendingSuggestionNavigation();
-    
+
     if (pendingQuestionId != null) {
       final context = _navigatorKey.currentContext;
       if (context != null) {
@@ -647,49 +852,72 @@ class _ReadTheRoomAppState extends State<ReadTheRoomApp> with WidgetsBindingObse
         print('🦎 MAIN APP: ❌ No context available for navigation, question will be lost: $pendingQuestionId');
         print('🦎 MAIN APP: This should not happen - context should be available after app initialization');
       }
-    } else if (pendingSuggestionId != null) {
-      final context = _navigatorKey.currentContext;
-      if (context != null) {
-        print('🦎 MAIN APP: ✅ Handling pending notification navigation to suggestion: $pendingSuggestionId');
-        print('🦎 MAIN APP: Context available, proceeding with deep link navigation');
-        
-        // Use deep link service to navigate to the suggestion
-        final uri = Uri.parse('readtheroom://suggestion/$pendingSuggestionId');
-        print('🦎 MAIN APP: Created deep link URI: $uri');
-        
-        _deepLinkService.handleIncomingLink(context, uri).then((_) {
-          print('🦎 MAIN APP: ✅ Deep link navigation completed successfully');
-        }).catchError((e) {
-          print('🦎 MAIN APP: ❌ Error navigating from notification: $e');
-          print('🦎 MAIN APP: Error type: ${e.runtimeType}');
-          print('🦎 MAIN APP: Error details: ${e.toString()}');
-          
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Error opening suggestion from notification: ${e.toString()}'),
-                backgroundColor: Colors.red,
-                duration: Duration(seconds: 5),
-                action: SnackBarAction(
-                  label: 'Retry',
-                  onPressed: () {
-                    print('🦎 MAIN APP: User requested retry for suggestion: $pendingSuggestionId');
-                    _deepLinkService.handleIncomingLink(context, uri);
-                  },
-                ),
-              ),
-            );
-          }
-        });
-      } else {
-        print('🦎 MAIN APP: ❌ No context available for navigation, suggestion will be lost: $pendingSuggestionId');
-        print('🦎 MAIN APP: This should not happen - context should be available after app initialization');
-      }
     } else {
       print('🦎 MAIN APP: No pending foreground notification navigation');
-      // Check for background notification navigation
-      _checkBackgroundNotificationNavigation();
+      // QOTD (home) and friend chat (WP-F) are checked before the background
+      // drain because their own getters already cover both the warm tap and
+      // the cold start, and neither must fall through to an unrelated stale
+      // question.
+      _checkPendingHomeNavigation().then((handled) async {
+        if (handled) return;
+        if (!await _checkPendingFriendNavigation()) {
+          _checkBackgroundNotificationNavigation();
+        }
+      });
     }
+  }
+
+  /// Lands on home after a tapped QOTD push (owner decision 2026-09-22: the
+  /// Drop opens the app, and the day's question already sits at the top of
+  /// home — the tap never opens the question screen). `readtheroom://home`
+  /// clears the stack and asks MainScreen for the home tab.
+  ///
+  /// Returns whether it handled a pending navigation.
+  Future<bool> _checkPendingHomeNavigation() async {
+    final pending = await NotificationService().getPendingHomeNavigation();
+    if (!pending) return false;
+
+    final context = _navigatorKey.currentContext;
+    if (context == null) {
+      print('🦎 MAIN APP: ❌ No context for home navigation');
+      return false;
+    }
+
+    try {
+      await _deepLinkService.handleIncomingLink(
+        context,
+        Uri.parse('readtheroom://home?src=qotd_push'),
+      );
+    } catch (e) {
+      print('🦎 MAIN APP: ❌ Error landing on home from QOTD notification: $e');
+    }
+    return true;
+  }
+
+  /// Opens a friend's chat overlay after a tapped lick / forward / reaction
+  /// push (WP-F). `readtheroom://friend/{userId}` lands on the Community tab
+  /// and opens the overlay if the sender is still an accepted friend.
+  ///
+  /// Returns whether it handled a pending navigation.
+  Future<bool> _checkPendingFriendNavigation() async {
+    final friendId = await NotificationService().getPendingFriendNavigation();
+    if (friendId == null || friendId.isEmpty) return false;
+
+    final context = _navigatorKey.currentContext;
+    if (context == null) {
+      print('🦎 MAIN APP: ❌ No context for friend navigation: $friendId');
+      return false;
+    }
+
+    try {
+      await _deepLinkService.handleIncomingLink(
+        context,
+        Uri.parse('readtheroom://friend/$friendId'),
+      );
+    } catch (e) {
+      print('🦎 MAIN APP: ❌ Error opening friend chat from notification: $e');
+    }
+    return true;
   }
   
   // Mark onboarding as completed (called from onboarding screen)
@@ -751,7 +979,9 @@ class _ReadTheRoomAppState extends State<ReadTheRoomApp> with WidgetsBindingObse
     try {
       final prefs = await SharedPreferences.getInstance();
       final pendingQuestionId = prefs.getString('pending_question_navigation');
-      final pendingSuggestionId = prefs.getString('pending_suggestion_navigation');
+      // Public suggestions are gone: drop any stale suggestion payload a build
+      // from before the removal may have left behind, without navigating.
+      await prefs.remove('pending_suggestion_navigation');
 
       if (pendingQuestionId != null) {
         print('🦎 MAIN APP: ✅ Found background question navigation: $pendingQuestionId');
@@ -779,32 +1009,6 @@ class _ReadTheRoomAppState extends State<ReadTheRoomApp> with WidgetsBindingObse
             }
           });
         }
-      } else if (pendingSuggestionId != null) {
-        print('🦎 MAIN APP: ✅ Found background suggestion navigation: $pendingSuggestionId');
-        await prefs.remove('pending_suggestion_navigation');
-
-        final context = _navigatorKey.currentContext;
-        if (context != null) {
-          final uri = Uri.parse('readtheroom://suggestion/$pendingSuggestionId');
-          _deepLinkService.handleIncomingLink(context, uri).then((_) {
-            print('🦎 MAIN APP: ✅ Background suggestion navigation completed');
-          }).catchError((e) {
-            print('🦎 MAIN APP: ❌ Error navigating from background suggestion: $e');
-            if (context.mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('Error opening suggestion. Please try again.'),
-                  backgroundColor: Colors.red,
-                  duration: Duration(seconds: 5),
-                  action: SnackBarAction(
-                    label: 'Retry',
-                    onPressed: () => _deepLinkService.handleIncomingLink(context, uri),
-                  ),
-                ),
-              );
-            }
-          });
-        }
       } else {
         print('🦎 MAIN APP: No background notification navigation found');
       }
@@ -820,19 +1024,47 @@ class _ReadTheRoomAppState extends State<ReadTheRoomApp> with WidgetsBindingObse
     print('🦎 MAIN: widget.locationService null? ${widget.locationService == null}');
     print('🦎 MAIN: widget.locationService type: ${widget.locationService?.runtimeType}');
     
+    // Debug-only: swap in the seeded demo friend services. Always false in a
+    // release build (DemoFriendsMode.enabled is clamped by kDebugMode).
+    final demoFriends = DemoFriendsMode.instance.enabled;
+
     return MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: widget.userService),
         ChangeNotifierProvider.value(value: widget.locationService ?? LocationService()),
         ChangeNotifierProvider.value(value: widget.questionService),
         ChangeNotifierProvider.value(value: widget.watchlistService),
-        ChangeNotifierProvider.value(value: widget.suggestionWatchlistService),
         ChangeNotifierProvider.value(value: widget.themeService),
-        ChangeNotifierProvider(create: (_) => TemporaryCategoryFilterNotifier()),
-        ChangeNotifierProvider(create: (_) => TemporaryReviewFilterNotifier()),
         ChangeNotifierProvider(create: (_) => NavigationVisibilityNotifier()),
         ChangeNotifierProvider(create: (_) => GuestUserTrackingService()),
-        ChangeNotifierProvider(create: (_) => BoostService()),
+        ChangeNotifierProvider(create: (_) => BoostService()..checkAdminStatus()),
+        // Chameleon identity (handle + avatar). Loads lazily; degrades to
+        // "no profile" for guests and if user_profiles.sql is not deployed yet.
+        ChangeNotifierProvider<ProfileService>(
+            create: (_) => demoFriends
+                ? DemoProfileService()
+                : (ProfileService()..load())),
+        // Guest QOTD answer captured during onboarding, replayed once an
+        // account and a city exist (WP-C3).
+        ChangeNotifierProvider(create: (_) => PendingAnswerService()..load()),
+        // Friend graph (WP-E). Degrades to "no friends" for guests and if
+        // friendships.sql is not deployed yet. In debug-only demo mode a seeded
+        // in-memory graph stands in, so the tab works with no backend at all.
+        ChangeNotifierProvider<FriendService>(
+            create: (_) => demoFriends
+                ? (DemoFriendService()..load())
+                : (FriendService()..load())),
+        // Friend chat: licks, forwards, reactions (WP-F). Opens the app's only
+        // Realtime channel once signed in; falls back to a 15 s unread poll,
+        // and to nothing at all if friend_events.sql is not deployed yet.
+        ChangeNotifierProvider<FriendChatService>(
+            create: (_) => demoFriends
+                ? DemoFriendChatService()
+                : (FriendChatService()..start())),
+        // Private friend nicknames: on-device only, per account. Shown on the
+        // friend list and chat overlay, never on graphs or answer reveals.
+        ChangeNotifierProvider(
+            create: (_) => FriendNicknameService()..load()),
       ],
       child: Consumer<ThemeService>(
         builder: (context, themeService, child) {
@@ -853,6 +1085,20 @@ class _ReadTheRoomAppState extends State<ReadTheRoomApp> with WidgetsBindingObse
             secondary: Colors.teal[600]!,
             surface: Colors.white, // Clean white for cards and surfaces
             background: Color(0xFFF2F0EB), // Warm neutral paper tone
+          ),
+          // Top bar = the page's own paper tone, not Material 3's white surface
+          // with a teal tint. At rest it is indistinguishable from the page;
+          // once content scrolls under it, it steps one shade darker so the bar
+          // separates from what is passing beneath — no tint, no drop shadow.
+          appBarTheme: AppBarTheme(
+            backgroundColor: MaterialStateColor.resolveWith((states) =>
+                states.contains(MaterialState.scrolledUnder)
+                    ? Color(0xFFE8E5DE) // paper, one step darker
+                    : Color(0xFFF2F0EB)), // paper
+            surfaceTintColor: Colors.transparent,
+            foregroundColor: Colors.black87,
+            elevation: 0,
+            scrolledUnderElevation: 0,
           ),
           switchTheme: SwitchThemeData(
             thumbColor: MaterialStateProperty.resolveWith<Color>((Set<MaterialState> states) {
@@ -981,7 +1227,7 @@ class _ReadTheRoomAppState extends State<ReadTheRoomApp> with WidgetsBindingObse
               screenName = 'Onboarding Screen';
               break;
             case '/new_question':
-              screen = NewQuestionScreen();
+              screen = NewQuestionScreen(entryPoint: 'route');
               screenName = 'New Question Screen';
               break;
             case '/user':
@@ -992,9 +1238,12 @@ class _ReadTheRoomAppState extends State<ReadTheRoomApp> with WidgetsBindingObse
               screen = SettingsScreen();
               screenName = 'Settings Screen';
               break;
+            case '/join_beta':
+            // Legacy alias: the drawer entry and the screen are now "Join the
+            // beta", but anything still holding the old route name lands here.
             case '/feedback':
-              screen = FeedbackScreen();
-              screenName = 'Feedback Screen';
+              screen = JoinBetaScreen();
+              screenName = 'Join the Beta Screen';
               break;
             case '/guide':
               screen = GuideScreen();

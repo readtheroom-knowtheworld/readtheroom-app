@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import 'package:flutter/material.dart';
-import '../services/room_service.dart';
-import '../models/room.dart';
-import 'package:provider/provider.dart';
-import '../services/user_service.dart';
+import '../models/question_results.dart';
 import '../utils/generation_utils.dart';
+import '../utils/network_breakdown.dart';
+import '../utils/results_colors.dart';
 
 class CountryComparisonDialog extends StatefulWidget {
   final Map<String, Map<String, dynamic>> countryResponses;
@@ -15,13 +14,16 @@ class CountryComparisonDialog extends StatefulWidget {
   final String questionId;
   final String questionType;
   final Map<String, double>? countryAverages;
-  final List<Map<String, dynamic>>? allResponses; // All responses for room counting
-  final Map<String, int>? roomResponseCounts;
-  final int? myNetworkResponseCount;
-  final Map<String, String>? roomNames;
   final Map<String, Map<String, dynamic>>? generationResponses;
   final Map<String, double>? generationAverages;
   final Map<String, String?>? generationMostPopular;
+
+  /// The viewer's own network as a slice, or null when there is none to offer.
+  /// Only when it is non-null can "My Network" be either side of a comparison.
+  final ResultsBreakdown? networkBreakdown;
+
+  /// The remainder the server withheld, which makes the row's count "N+".
+  final int networkHidden;
 
   const CountryComparisonDialog({
     Key? key,
@@ -31,13 +33,11 @@ class CountryComparisonDialog extends StatefulWidget {
     required this.questionId,
     required this.questionType,
     this.countryAverages,
-    this.allResponses,
-    this.roomResponseCounts,
-    this.myNetworkResponseCount,
-    this.roomNames,
     this.generationResponses,
     this.generationAverages,
     this.generationMostPopular,
+    this.networkBreakdown,
+    this.networkHidden = 0,
   }) : super(key: key);
 
   static Future<List<String>?> show({
@@ -47,13 +47,11 @@ class CountryComparisonDialog extends StatefulWidget {
     required String questionId,
     required String questionType,
     Map<String, double>? countryAverages,
-    List<Map<String, dynamic>>? allResponses,
-    Map<String, int>? roomResponseCounts,
-    int? myNetworkResponseCount,
-    Map<String, String>? roomNames,
     Map<String, Map<String, dynamic>>? generationResponses,
     Map<String, double>? generationAverages,
     Map<String, String?>? generationMostPopular,
+    ResultsBreakdown? networkBreakdown,
+    int networkHidden = 0,
   }) {
     return showDialog<List<String>?>(
       context: context,
@@ -63,13 +61,11 @@ class CountryComparisonDialog extends StatefulWidget {
         questionId: questionId,
         questionType: questionType,
         countryAverages: countryAverages,
-        allResponses: allResponses,
-        roomResponseCounts: roomResponseCounts,
-        myNetworkResponseCount: myNetworkResponseCount,
-        roomNames: roomNames,
         generationResponses: generationResponses,
         generationAverages: generationAverages,
         generationMostPopular: generationMostPopular,
+        networkBreakdown: networkBreakdown,
+        networkHidden: networkHidden,
         onCompare: (country1, country2) {
           Navigator.of(context).pop([country1, country2]);
         },
@@ -86,10 +82,6 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
   String? _selectedCountry2;
   String _searchQuery = '';
   late List<String> _sortedCountries;
-  List<Room> _userRooms = [];
-  bool _isLoadingRooms = true;
-  Map<String, int> _roomResponseCounts = {};
-  int _myNetworkResponseCount = 0;
 
   @override
   void initState() {
@@ -102,107 +94,16 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
         final bTotal = widget.countryResponses[b]?['total'] as int? ?? 0;
         return bTotal.compareTo(aTotal);
       });
-    
+
     // Add "World" as an option for comparison
     _sortedCountries.insert(0, 'World');
-    _loadUserRooms();
   }
 
-  Future<void> _loadUserRooms() async {
-    try {
-      // Use passed data if available, otherwise fetch from service
-      if (widget.roomResponseCounts != null && widget.roomNames != null) {
-        // Use pre-loaded data for instant display
-        final roomCounts = widget.roomResponseCounts!;
-        final networkTotal = widget.myNetworkResponseCount ?? 0;
-        
-        // Create Room objects from passed data
-        final rooms = roomCounts.entries.map((entry) {
-          final roomId = entry.key;
-          final roomName = widget.roomNames![roomId] ?? 'Room';
-          return Room(
-            id: roomId,
-            name: roomName,
-            description: '',
-            avatarUrl: null,
-            inviteCode: roomId, // Placeholder
-            inviteCodeActive: true,
-            memberCount: 5, // Assume unlocked since it has responses
-            nsfwEnabled: false,
-            rqiScore: null,
-            globalRank: null,
-            createdBy: null,
-            createdAt: DateTime.now(),
-            updatedAt: DateTime.now(),
-          );
-        }).toList();
-        
-        if (mounted) {
-          setState(() {
-            _userRooms = rooms;
-            _roomResponseCounts = roomCounts;
-            _myNetworkResponseCount = networkTotal;
-            _isLoadingRooms = false;
-          });
-        }
-      } else {
-        // Fallback to fetching rooms if data not provided
-        final roomService = RoomService();
-        final rooms = await roomService.getUserRooms();
-        
-        if (mounted) {
-          setState(() {
-            _userRooms = rooms;
-            _roomResponseCounts = {};
-            _myNetworkResponseCount = 0;
-            _isLoadingRooms = false;
-          });
-        }
-      }
-    } catch (e) {
-      print('Error loading user rooms: $e');
-      if (mounted) {
-        setState(() {
-          _isLoadingRooms = false;
-        });
-      }
-    }
-  }
-
-  bool get _hasActiveUnlockedRoom {
-    return _userRooms.any((room) => room.isUnlocked);
-  }
-
-  bool get _hasEnoughNetworkResponses {
-    return _myNetworkResponseCount >= 5;
-  }
-
-  bool get _shouldShowMyNetwork {
-    return _hasActiveUnlockedRoom && _hasEnoughNetworkResponses;
-  }
-
-  bool get _shouldShowMyNetworkGreyed {
-    return _hasActiveUnlockedRoom && !_hasEnoughNetworkResponses;
-  }
-
-  String get _myNetworkSnackbarMessage {
-    if (!_hasActiveUnlockedRoom) {
-      return 'Create or join a room to build your network!';
-    } else if (!_hasEnoughNetworkResponses) {
-      return 'Not enough responses from your network';
-    }
-    return '';
-  }
-
-  // Get display name for selected country/room/network/generation
+  // Get display name for selected country/generation
   String _getDisplayName(String? selection) {
     if (selection == null) return 'Select';
-    if (selection == 'My Network') return 'My Network';
     if (selection == 'World') return 'World';
-    if (selection.startsWith('Room:')) {
-      final roomId = selection.substring(5);
-      return widget.roomNames?[roomId] ?? 'Room';
-    }
+    if (isNetworkFilter(selection)) return kNetworkFilterLabel;
     if (selection.startsWith('Gen:')) {
       final genId = selection.substring(4);
       return getGenerationLabel(genId);
@@ -210,24 +111,21 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
     return selection; // Regular country name
   }
 
-
-  Color _getColorForValue(double value) {
-    final normalizedValue = (value + 1) / 2;
-    
-    if (normalizedValue < 0.2) {
-      return Colors.red;
-    } else if (normalizedValue < 0.4) {
-      return Colors.red[300]!;
-    } else if (normalizedValue < 0.6) {
-      return Colors.grey.shade300;
-    } else if (normalizedValue < 0.8) {
-      return Colors.lightGreen;
-    } else {
-      return Colors.green;
-    }
-  }
+  Color _getColorForValue(double value) =>
+      ResultsColors.forApprovalValue(context, value);
 
   Color _getCountryColor(String countryName) {
+    // My Network — coloured by what the network said, like any other side.
+    if (isNetworkFilter(countryName)) {
+      final network = widget.networkBreakdown;
+      if (network != null &&
+          widget.questionType == 'approval' &&
+          network.average != null) {
+        return _getColorForValue(network.average!);
+      }
+      return Theme.of(context).primaryColor;
+    }
+
     // Handle Generation filter - match country color behavior
     if (countryName.startsWith('Gen:')) {
       final genId = countryName.substring(4);
@@ -239,7 +137,7 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
         final mostPopular = widget.generationMostPopular![genId];
         if (mostPopular != null) {
           // Use same color logic as countries - find option index
-          final colors = [Colors.blue, Colors.red, Colors.green, Colors.orange, Colors.purple, Colors.teal, Colors.pink, Colors.indigo];
+          final colors = ResultsColors.multipleChoiceColors(context);
           return colors[mostPopular.hashCode % colors.length];
         }
       }
@@ -248,40 +146,40 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
 
     // Handle World option specially
     if (countryName == 'World') {
-      final totalResponsesGlobal = widget.countryResponses.values.fold<int>(0, 
+      final totalResponsesGlobal = widget.countryResponses.values.fold<int>(0,
         (sum, data) => sum + (data['total'] as int? ?? 0));
-      
+
       if (widget.questionType == 'approval' && widget.countryAverages != null) {
         // Calculate weighted global average from country averages
         double totalWeightedValue = 0;
         int totalResponsesFromAverages = 0;
-        
+
         widget.countryAverages!.forEach((country, average) {
           final countryResponseCount = widget.countryResponses[country]?['total'] as int? ?? 0;
           totalWeightedValue += average * countryResponseCount;
           totalResponsesFromAverages += countryResponseCount;
         });
-        
+
         if (totalResponsesFromAverages > 0) {
           final globalAverage = totalWeightedValue / totalResponsesFromAverages;
           return _getColorForValue(globalAverage);
         }
       }
-      
-      return totalResponsesGlobal > 3 
+
+      return totalResponsesGlobal > 3
           ? Theme.of(context).primaryColor
           : Colors.grey[400]!;
     }
-    
+
     if (widget.questionType == 'approval' && widget.countryAverages != null) {
       final average = widget.countryAverages![countryName];
       if (average != null) {
         return _getColorForValue(average);
       }
     }
-    
+
     final responseCount = widget.countryResponses[countryName]?['total'] as int? ?? 0;
-    return responseCount > 3 
+    return responseCount > 3
         ? Theme.of(context).primaryColor
         : Colors.grey[400]!;
   }
@@ -290,8 +188,8 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
   Color _getComparisonColor(bool isCountry1) {
     if (isCountry1) {
       // Country 1 color based on theme (matches approval_results_screen logic)
-      return Theme.of(context).brightness == Brightness.light 
-          ? Theme.of(context).primaryColor 
+      return Theme.of(context).brightness == Brightness.light
+          ? Theme.of(context).primaryColor
           : Color(0xFF55C5B4);
     } else {
       // Country 2 color
@@ -301,7 +199,7 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final totalResponsesGlobal = widget.countryResponses.values.fold<int>(0, 
+    final totalResponsesGlobal = widget.countryResponses.values.fold<int>(0,
       (sum, data) => sum + (data['total'] as int? ?? 0));
 
     return AlertDialog(
@@ -311,7 +209,7 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
           Text('Compare'),
           SizedBox(height: 4),
           Text(
-            widget.questionTitle.length > 50 
+            widget.questionTitle.length > 50
                 ? '${widget.questionTitle.substring(0, 50)}...'
                 : widget.questionTitle,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -328,7 +226,7 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Selected countries display
+            // Selected options display
             Container(
               padding: EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -344,7 +242,7 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
                     child: Column(
                       children: [
                         Text(
-                          'Room 1',
+                          'Selection 1',
                           style: TextStyle(
                             fontSize: 12,
                             color: Colors.grey[600],
@@ -355,7 +253,7 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
                           _getDisplayName(_selectedCountry1),
                           style: TextStyle(
                             fontWeight: _selectedCountry1 != null ? FontWeight.bold : null,
-                            color: _selectedCountry1 != null 
+                            color: _selectedCountry1 != null
                                 ? _getComparisonColor(true)
                                 : Colors.grey[400],
                           ),
@@ -371,7 +269,7 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
                     child: Column(
                       children: [
                         Text(
-                          'Room 2',
+                          'Selection 2',
                           style: TextStyle(
                             fontSize: 12,
                             color: Colors.grey[600],
@@ -382,7 +280,7 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
                           _getDisplayName(_selectedCountry2),
                           style: TextStyle(
                             fontWeight: _selectedCountry2 != null ? FontWeight.bold : null,
-                            color: _selectedCountry2 != null 
+                            color: _selectedCountry2 != null
                                 ? _getComparisonColor(false)
                                 : Colors.grey[400],
                           ),
@@ -393,9 +291,9 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
                 ],
               ),
             ),
-            
+
             SizedBox(height: 16),
-            
+
             // World option (always visible at top)
             _buildCountryOption(
               countryName: 'World',
@@ -403,19 +301,14 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
               percentage: 100,
               subtitle: 'All responses ($totalResponsesGlobal)',
             ),
-            
-            // My Network option
-            if (!_isLoadingRooms) ...[
-              _buildMyNetworkOption(),
-            ],
 
             // Divider between fixed options and searchable content
             Divider(),
 
             SizedBox(height: 8),
 
-            // Search bar for rooms and countries
-            if (_sortedCountries.isNotEmpty || _userRooms.isNotEmpty) ...[
+            // Search bar for countries
+            if (_sortedCountries.isNotEmpty) ...[
               Padding(
                 padding: EdgeInsets.symmetric(horizontal: 8),
                 child: TextField(
@@ -437,16 +330,29 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
               SizedBox(height: 12),
             ],
 
-            // Scrollable list: Generations + Rooms + Countries
+            // Scrollable list: Generations + Countries
             Flexible(
               child: ListView(
                 shrinkWrap: true,
                 children: [
+                  // My Network, first in the list and directly under World —
+                  // only when the server gave us a slice. It lives inside the
+                  // scroll area rather than next to World because everything
+                  // above the list here is fixed height, and a short screen has
+                  // no room left for another fixed row.
+                  if (widget.networkBreakdown != null)
+                    _buildCountryOption(
+                      countryName: kNetworkFilter,
+                      displayName: kNetworkFilterLabel,
+                      leading: Icons.hub_rounded,
+                      responseCount: widget.networkBreakdown!.count,
+                      percentage: 0,
+                      subtitle:
+                          '${networkCountLabel(widget.networkBreakdown!.count, widget.networkHidden)} answers · $kNetworkFilterSubtitle',
+                    ),
+
                   // Generations section
                   ..._buildGenerationsSection(totalResponsesGlobal),
-
-                  // Top 3 rooms with >5 responses
-                  ..._buildTopRoomsList(),
 
                   // Countries heading
                   if (_sortedCountries.where((c) => c != 'World').isNotEmpty)
@@ -467,9 +373,9 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
                 ],
               ),
             ),
-            
+
             SizedBox(height: 16),
-            
+
             // Compare button
             Center(
               child: ElevatedButton(
@@ -514,12 +420,13 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
     required String subtitle,
     bool isEnabled = true,
     String? displayName,
+    IconData? leading,
     VoidCallback? onTapOverride,
   }) {
     final isSelected = _selectedCountry1 == countryName || _selectedCountry2 == countryName;
     final isCountry1 = _selectedCountry1 == countryName;
     final effectiveDisplayName = displayName ?? countryName;
-    
+
     return InkWell(
       onTap: onTapOverride ?? (isEnabled ? () {
         setState(() {
@@ -552,11 +459,14 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
               width: 20,
               height: 20,
               decoration: BoxDecoration(
-                color: isEnabled 
+                color: isEnabled
                   ? _getCountryColor(countryName)
                   : Colors.grey[400]!,
                 shape: BoxShape.circle,
               ),
+              child: leading == null
+                  ? null
+                  : Icon(leading, size: 12, color: Colors.white),
             ),
             SizedBox(width: 12),
             Expanded(
@@ -567,8 +477,8 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
                     effectiveDisplayName,
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
                       color: isEnabled
-                        ? (isSelected 
-                            ? Theme.of(context).primaryColor 
+                        ? (isSelected
+                            ? Theme.of(context).primaryColor
                             : null)
                         : Colors.grey[500],
                       fontWeight: isSelected && isEnabled ? FontWeight.bold : null,
@@ -603,37 +513,6 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
           ],
         ),
       ),
-    );
-  }
-
-  Widget _buildMyNetworkOption() {
-    final isEnabled = _shouldShowMyNetwork;
-    final isGreyed = _shouldShowMyNetworkGreyed;
-    final isVisible = isEnabled || isGreyed;
-    
-    if (!isVisible) return SizedBox.shrink();
-    
-    return _buildCountryOption(
-      countryName: 'My Network',
-      responseCount: _myNetworkResponseCount,
-      percentage: 0, // Not used for My Network
-      subtitle: 'Your room network',
-      isEnabled: isEnabled,
-      onTapOverride: isEnabled ? null : () {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(_myNetworkSnackbarMessage),
-            backgroundColor: Colors.orange,
-            duration: Duration(seconds: 3),
-            behavior: SnackBarBehavior.floating,
-            margin: EdgeInsets.only(
-              bottom: MediaQuery.of(context).size.height * 0.8,
-              left: 16,
-              right: 16,
-            ),
-          ),
-        );
-      },
     );
   }
 
@@ -691,62 +570,25 @@ class _CountryComparisonDialogState extends State<CountryComparisonDialog> {
     ];
   }
 
-  List<Widget> _buildTopRoomsList() {
-    // Get top 3 rooms with >5 responses, filtered by search
-    final roomsWithEnoughResponses = _userRooms.where((room) {
-      final responseCount = _roomResponseCounts[room.id] ?? 0;
-      return responseCount >= 5;
-    }).toList();
-    
-    // Sort by response count (highest first)
-    roomsWithEnoughResponses.sort((a, b) {
-      final aCount = _roomResponseCounts[a.id] ?? 0;
-      final bCount = _roomResponseCounts[b.id] ?? 0;
-      return bCount.compareTo(aCount);
-    });
-    
-    // Filter by search query
-    final filteredRooms = _searchQuery.isEmpty 
-        ? roomsWithEnoughResponses
-        : roomsWithEnoughResponses.where((room) {
-            return room.name.toLowerCase().contains(_searchQuery.toLowerCase());
-          }).toList();
-    
-    // Take top 3
-    final topRooms = filteredRooms.take(3).toList();
-    
-    return topRooms.map((room) {
-      final responseCount = _roomResponseCounts[room.id] ?? 0;
-      return _buildCountryOption(
-        countryName: 'Room:${room.id}',
-        responseCount: responseCount,
-        percentage: 0, // Not used for rooms
-        subtitle: '${room.name} ($responseCount responses)',
-        isEnabled: true, // All rooms shown are enabled (>=5 responses)
-        displayName: room.name,
-      );
-    }).toList();
-  }
-
   List<Widget> _buildTopCountriesList(int totalResponsesGlobal) {
     // Get countries excluding World
     final countriesWithoutWorld = _sortedCountries.where((country) => country != 'World').toList();
-    
+
     // Filter countries by search query
-    final filteredCountries = _searchQuery.isEmpty 
+    final filteredCountries = _searchQuery.isEmpty
         ? countriesWithoutWorld
         : countriesWithoutWorld.where((country) {
             return country.toLowerCase().contains(_searchQuery.toLowerCase());
           }).toList();
-    
+
     // Take top 5 countries
     final topCountries = filteredCountries.take(5).toList();
-    
+
     return topCountries.map((country) {
       final data = widget.countryResponses[country];
       final total = data?['total'] as int? ?? 0;
       final percentage = totalResponsesGlobal > 0 ? (total / totalResponsesGlobal * 100).round() : 0;
-      
+
       return _buildCountryOption(
         countryName: country,
         responseCount: total,

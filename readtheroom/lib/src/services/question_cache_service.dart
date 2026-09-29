@@ -3,8 +3,9 @@
 
 import 'dart:async';
 import 'package:flutter/foundation.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import '../models/question_results.dart';
 import 'question_service.dart';
+import 'results_service.dart';
 
 class QuestionCacheService extends ChangeNotifier {
   static final QuestionCacheService _instance = QuestionCacheService._internal();
@@ -12,8 +13,11 @@ class QuestionCacheService extends ChangeNotifier {
   QuestionCacheService._internal();
 
   // Cache storage
-  final Map<String, Map<String, dynamic>> _questionCache = {};
+    final Map<String, Map<String, dynamic>> _questionCache = {};
+  /// Text answers only — the public per-answer content.
   final Map<String, List<Map<String, dynamic>>> _responseCache = {};
+  /// Server-computed results for approval and multiple-choice questions.
+  final Map<String, QuestionResults> _resultsCache = {};
   final Map<String, DateTime> _cacheTimestamps = {};
   
   // Prefetch queue
@@ -39,12 +43,16 @@ class QuestionCacheService extends ChangeNotifier {
     final question = _questionCache[questionId];
     if (question == null) return null;
     
-    // Add cached responses if available
+        // Add cached results / text answers if available
+    final results = _resultsCache[questionId];
+    if (results != null) {
+      question['preloaded_results'] = results;
+    }
     final responses = _responseCache[questionId];
     if (responses != null) {
-      question['preloaded_responses'] = responses;
+      question['preloaded_text_responses'] = responses;
     }
-    
+
     return Map<String, dynamic>.from(question);
   }
 
@@ -127,68 +135,36 @@ class QuestionCacheService extends ChangeNotifier {
     }
   }
 
-  // Fetch and cache responses
+    // Fetch and cache what a results screen will need.
+  //
+  // Approval and multiple choice get RESULTS (counts, averages, histograms);
+  // discussion questions get their public text answers. Nothing here reads an
+  // answer row — `responses` has been write-only for clients since the answers
+  // read lockdown (2026-09-22).
   Future<void> _fetchAndCacheResponses(String questionId, Map<String, dynamic> question) async {
     try {
       final questionType = question['type']?.toString().toLowerCase() ?? 'text';
-      final supabase = Supabase.instance.client;
-      List<Map<String, dynamic>>? responses;
-      
+
       switch (questionType) {
         case 'multiple_choice':
-          responses = await _questionService!.getMultipleChoiceIndividualResponses(questionId);
-          break;
-          
         case 'approval_rating':
         case 'approval':
-          final response = await supabase
-              .from('responses')
-              .select('''
-                score,
-                created_at,
-                countries!responses_country_code_fkey(country_name_en)
-              ''')
-              .eq('question_id', questionId)
-              .not('score', 'is', null)
-              .order('created_at', ascending: false);
-          
-          if (response != null && response.isNotEmpty) {
-            responses = response.map((r) => {
-              'country': r['countries']?['country_name_en'] ?? 'Unknown',
-              'answer': (r['score'] as int).toDouble() / 100.0,
-              'created_at': r['created_at'],
-            }).toList();
-          }
+          final results = await ResultsService()
+              .fetchResults(questionId, questionType: questionType);
+          _resultsCache[questionId] = results;
+          print('✅ Cached results (${results.total} answers) for ${questionId.substring(0, 8)}...');
           break;
-          
+
         case 'text':
         default:
-          final response = await supabase
-              .from('responses')
-              .select('''
-                text_response, 
-                created_at,
-                countries!responses_country_code_fkey(country_name_en)
-              ''')
-              .eq('question_id', questionId)
-              .not('text_response', 'is', null)
-              .order('created_at', ascending: false);
-          
-          if (response != null && response.isNotEmpty) {
-            responses = response.map((r) => {
-              'text_response': r['text_response'],
-              'country': r['countries']?['country_name_en'] ?? 'Unknown',
-              'created_at': r['created_at'],
-            }).toList();
+          final responses =
+              await _questionService!.getTextResponses(questionId);
+          if (responses.isNotEmpty) {
+            _responseCache[questionId] = responses;
+            print('✅ Cached ${responses.length} text answers for ${questionId.substring(0, 8)}...');
           }
           break;
       }
-      
-      if (responses != null) {
-        _responseCache[questionId] = responses;
-        print('✅ Cached ${responses.length} responses for ${questionId.substring(0, 8)}...');
-      }
-      
     } catch (e) {
       print('❌ Failed to cache responses for $questionId: $e');
     }

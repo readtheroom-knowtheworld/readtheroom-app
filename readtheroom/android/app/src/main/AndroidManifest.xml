@@ -7,14 +7,19 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <!-- Required by mobile_scanner for the in-app friend-QR scanner (WP-E).
+         The camera is optional hardware: a device without one still installs
+         and simply cannot open the scanner screen. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
     <application
         android:name="${applicationName}"
         android:label="Read the Room"
         android:icon="@mipmap/ic_launcher"
         android:theme="@style/LaunchTheme"
-        android:hardwareAccelerated="true"
-        android:usesCleartextTraffic="true">
+        android:hardwareAccelerated="true">
 
         <!-- 🔔 Set default notification channel (used only if none is provided) -->
         <meta-data
@@ -85,6 +90,20 @@
                     android:pathPrefix="/room/" />
             </intent-filter>
 
+            <!-- App Link: /friend/{qr_token} — scanned friend QR codes and
+                 shared friend links (WP-E). iOS needs no change: the
+                 associated-domains entry is `applinks:readtheroom.site`,
+                 which already covers every path on the domain. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="readtheroom.site"
+                    android:pathPrefix="/friend/" />
+            </intent-filter>
+
             <!-- App Link: /suggestion/... -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
@@ -120,7 +139,10 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
-                <action android:name="com.readtheroom.app.WIDGET_SCHEDULED_UPDATE"/>
+                <!-- WIDGET_SCHEDULED_UPDATE is deliberately NOT listed: the
+                     alarm sends it as an explicit intent to this class, so it
+                     needs no filter, and listing it would let any installed
+                     app trigger it. -->
                 <action android:name="android.intent.action.BOOT_COMPLETED"/>
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
             </intent-filter>

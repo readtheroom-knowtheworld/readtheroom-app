@@ -5,17 +5,18 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/user_service.dart';
 import '../services/guest_user_tracking_service.dart';
+import '../utils/approval_labels.dart';
 import '../utils/time_utils.dart';
+import '../utils/results_colors.dart';
 import 'report_question_screen.dart';
 import 'package:share_plus/share_plus.dart';
 import 'base_results_screen.dart';
+import '../widgets/network_results_section.dart';
 import '../widgets/country_approval_map.dart';
 import '../services/question_service.dart';
 import '../services/country_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/location_service.dart';
-import '../services/room_service.dart';
-import '../services/room_sharing_service.dart';
 import 'dart:math' as math;
 import 'dart:math' show Random;
 import '../models/category.dart';
@@ -25,23 +26,32 @@ import '../widgets/swipe_navigation_wrapper.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/category_navigation.dart';
 import '../widgets/comments_section.dart';
-import '../widgets/add_comment_dialog.dart';
+import '../widgets/comments_overlay.dart';
 import '../widgets/question_reactions_widget.dart';
 import '../widgets/linked_questions_section.dart';
 import '../widgets/country_filter_dialog.dart';
 import '../widgets/country_comparison_dialog.dart';
 import '../widgets/question_rating_section.dart';
 import '../utils/generation_utils.dart';
+import '../utils/network_breakdown.dart';
+import '../models/network_results.dart';
+import '../services/network_service.dart';
 import '../services/analytics_service.dart';
+import '../widgets/approval_dot_plot.dart';
+import '../widgets/mc_dot_row.dart';
+import '../utils/dot_plot_threshold.dart';
 import 'main_screen.dart';
+import '../widgets/send_to_friend_sheet.dart';
+import '../models/question_results.dart';
+import '../services/results_service.dart';
 
 class ApprovalResultsScreen extends BaseResultsScreen {
   final FeedContext? feedContext;
-  
+
   const ApprovalResultsScreen({
     Key? key,
     required super.question,
-    required super.responses,
+    super.results,
     this.feedContext,
     super.fromSearch = false,
     super.fromUserScreen = false,
@@ -53,12 +63,13 @@ class ApprovalResultsScreen extends BaseResultsScreen {
 }
 
 class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResultsScreen> {
-  String? selectedCountry;
-  List<Map<String, dynamic>> _responsesByCountry = [];
-  List<Map<String, dynamic>> _myNetworkResponses = [];
-  Map<String, int> _roomResponseCounts = {};
-  Map<String, List<Map<String, dynamic>>> _roomResponses = {};
-  Map<String, String> _roomNames = {}; // Map room IDs to room names
+    String? selectedCountry;
+
+  /// The server-computed results for this question. Since the answers read
+  /// lockdown (2026-09-22) this screen never holds answer rows — every number
+  /// below is a slice of this object.
+  late QuestionResults _results = initialResults;
+  final ResultsService _resultsService = ResultsService();
   QuestionService? _questionService;
   bool _isLoadingMap = true;
   String? _countrySearchQuery;
@@ -83,6 +94,43 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
   String? _comparisonCountry1;
   String? _comparisonCountry2;
 
+  /// "My Network": the viewer's friends and friends-of-friends as one slice,
+  /// from `get_network_results`. Null until it lands, and gated or unavailable
+  /// for most viewers — [networkBreakdown] is the only thing the screen reads.
+  NetworkResults? _network;
+
+  /// The network as a results slice, or null when there is nothing to show.
+  /// Null is the signal everywhere: no dialog row, no compare side, and a
+  /// silent fall back to World if a `Network` token is somehow still selected.
+  ResultsBreakdown? get networkBreakdown => networkBreakdownFrom(_network);
+
+  bool get _hasNetworkSlice => networkBreakdown != null;
+
+  // Tracks the last-reported results visualization mode (dots vs histogram) so
+  // results_viz_mode fires once per mode change rather than on every build.
+  String? _lastVizMode;
+
+  /// The small-sample beeswarm needs per-answer scores, and a network slice has
+  /// none by design — it draws the histogram at any size.
+  bool get _useDotPlot =>
+      !_isComparisonMode &&
+      !isNetworkFilter(selectedCountry) &&
+      totalResponses < kDotPlotThreshold;
+
+  // Fire results_viz_mode when the dot/histogram mode changes (e.g. as filters
+  // move the response count across kDotPlotThreshold).
+  void _maybeTrackVizMode() {
+    final count = totalResponses;
+    final mode = _useDotPlot ? 'dots' : 'histogram';
+    if (mode != _lastVizMode) {
+      _lastVizMode = mode;
+      AnalyticsService().trackEvent('results_viz_mode', {
+        'mode': mode,
+        'respondent_count': count,
+      });
+    }
+  }
+
   // Get Country 1 color based on theme
   Color get _country1Color {
     return Theme.of(context).brightness == Brightness.light 
@@ -90,18 +138,15 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
         : Color(0xFF55C5B4);
   }
 
-  // Get display name for a filter (country/room/network/generation)
+  // Get display name for a filter (country/city/generation/network)
   String _getDisplayName(String filter) {
-    if (filter == 'My Network') return 'My Network';
     if (filter == 'World') return 'World';
-    if (filter.startsWith('Room:')) {
-      final roomId = filter.substring(5);
-      return _roomNames[roomId] ?? 'Room';
-    }
+    if (isNetworkFilter(filter)) return kNetworkFilterLabel;
     if (filter.startsWith('Gen:')) {
       final genId = filter.substring(4);
       return getGenerationLabel(genId);
     }
+    if (filter.startsWith('City:')) return filter.substring(5);
     return filter; // Regular country name
   }
 
@@ -121,83 +166,29 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
   }
 
   bool _shouldShowFilterButton() {
-    return !isPrivateQuestion && 
-           !isCityTargeted && 
-           _responsesByCountry.isNotEmpty &&
-           _getUniqueCountriesWithResponses().length > 1;
+        return !isPrivateQuestion &&
+           !isCityTargeted &&
+           _results.total > 0 &&
+           (_getUniqueCountriesWithResponses().length > 1 || _hasNetworkSlice);
   }
 
-  List<String> _getUniqueCountriesWithResponses() {
-    final countries = <String>{};
-    for (var response in _responsesByCountry) {
-      final country = response['country']?.toString();
-      if (country != null && country.isNotEmpty && country != 'Unknown') {
-        countries.add(country);
-      }
-    }
-    return countries.toList();
-  }
+  List<String> _getUniqueCountriesWithResponses() =>
+      _results.countriesWithResponses;
 
-  Map<String, Map<String, dynamic>> _getCountryResponseData() {
-    final countryTotalResponses = <String, int>{};
-    
-    // Count total responses per country
-    for (var response in _responsesByCountry) {
-      final country = response['country']?.toString() ?? 'Unknown';
-      if (country != 'Unknown') {
-        countryTotalResponses[country] = (countryTotalResponses[country] ?? 0) + 1;
-      }
-    }
+  Map<String, Map<String, dynamic>> _getCountryResponseData() =>
+      _results.countryResponseData;
 
-    // Convert to the format expected by the dialog
-    final result = <String, Map<String, dynamic>>{};
-    countryTotalResponses.forEach((country, total) {
-      if (total > 0) {
-        result[country] = {
-          'total': total,
-        };
-      }
-    });
-    return result;
-  }
+  /// Generation totals for the filter dialog. The server has already dropped
+  /// every generation group with fewer than five respondents, so a group that
+  /// would identify someone never reaches this screen at all.
+  Map<String, Map<String, dynamic>> _getGenerationResponseData() =>
+      _results.generationResponseData;
 
-  Map<String, Map<String, dynamic>> _getGenerationResponseData() {
-    final genTotals = <String, int>{};
-    for (var response in _responsesByCountry) {
-      final gen = response['generation']?.toString();
-      if (gen != null && gen.isNotEmpty) {
-        genTotals[gen] = (genTotals[gen] ?? 0) + 1;
-      }
-    }
-    final result = <String, Map<String, dynamic>>{};
-    genTotals.forEach((gen, total) {
-      if (total > 0) {
-        result[gen] = {'total': total};
-      }
-    });
-    return result;
-  }
-
-  Map<String, double> _getGenerationAverages() {
-    final genVotes = <String, List<double>>{};
-    for (var response in _responsesByCountry) {
-      final gen = response['generation']?.toString();
-      final value = response['answer'] as double?;
-      if (gen != null && gen.isNotEmpty && value != null) {
-        genVotes.putIfAbsent(gen, () => []);
-        genVotes[gen]!.add(value);
-      }
-    }
-    final result = <String, double>{};
-    genVotes.forEach((gen, votes) {
-      result[gen] = votes.reduce((a, b) => a + b) / votes.length;
-    });
-    return result;
-  }
+  Map<String, double> _getGenerationAverages() => _results.generationAverages;
 
   Future<void> _showCountryFilterDialog() async {
     final countryData = _getCountryResponseData();
-    if (countryData.isEmpty) return;
+    if (countryData.isEmpty && !_hasNetworkSlice) return;
 
     final questionTitle = widget.question['prompt'] ?? widget.question['title'] ?? 'Question';
     
@@ -211,12 +202,10 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
       questionId: widget.question['id'].toString(),
       questionType: 'approval',
       countryAverages: _countryAverages,
-      allResponses: _responsesByCountry,
-      myNetworkResponseCount: _myNetworkResponses.length,
-      roomResponseCounts: _roomResponseCounts,
-      roomNames: _roomNames,
       generationResponses: generationData.isNotEmpty ? generationData : null,
       generationAverages: generationData.isNotEmpty ? _getGenerationAverages() : null,
+      networkBreakdown: networkBreakdown,
+      networkHidden: _network?.hidden ?? 0,
     );
 
     if (selectedCountryResult != null || selectedCountryResult == null) {
@@ -237,13 +226,46 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
     
     _loadMapData();
     _loadCityNameIfNeeded();
-    _loadMyNetworkData();
+    _loadNetwork();
     // Record this question view with current vote count
     _recordQuestionView();
-    
-    // Auto-set comparison mode for room feed questions
-    _autoSetComparisonModeIfFromRoom();
     // Polling is now started conditionally in _loadMapData()
+  }
+
+  /// The "My Network" slice, for the filter and the compare sides.
+  ///
+  /// One call, shared with `NetworkResultsSection` further down the page
+  /// through `NetworkService`'s 45-second per-question cache. Guests never ask:
+  /// the network surface needs a session, and the service would only answer
+  /// "unavailable".
+  Future<void> _loadNetwork() async {
+    if (widget.isGuestMode) return;
+    final questionId = widget.question['id']?.toString() ?? '';
+    if (questionId.isEmpty) return;
+    final results = await NetworkService.shared().getNetworkResults(
+      questionId,
+      questionType: widget.question['type']?.toString() ?? 'approval_rating',
+    );
+    if (!mounted) return;
+    setState(() {
+      _network = results;
+      // A network that turned out to be gated or unavailable cannot back a
+      // selection: drop it silently rather than label World "My Network".
+      _dropUnbackedNetworkSelection();
+    });
+  }
+
+  /// Clear any `Network` filter or compare side that no longer has a slice.
+  /// Silent by design — the viewer never asked for an explanation of a gate.
+  void _dropUnbackedNetworkSelection() {
+    if (_hasNetworkSlice) return;
+    selectedCountry = clearedNetworkFilter(selectedCountry, null);
+    if (isNetworkFilter(_comparisonCountry1) ||
+        isNetworkFilter(_comparisonCountry2)) {
+      _isComparisonMode = false;
+      _comparisonCountry1 = null;
+      _comparisonCountry2 = null;
+    }
   }
 
   @override
@@ -264,21 +286,21 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
       _errorMessage = null;
     });
 
-    try {
-      // Check if we have preloaded responses first
-      if (widget.responses.isNotEmpty) {
-        print('⚡ Using ${widget.responses.length} preloaded approval responses');
-        _responsesByCountry = widget.responses;
-        
+        try {
+      // Check if we were handed results already
+      if (initialResults.total > 0) {
+        print('⚡ Using preloaded approval results (${initialResults.total} answers)');
+        _results = initialResults;
+
         if (mounted) {
           setState(() {
             _isLoadingMap = false;
-            _lastResponseCount = _responsesByCountry.length;
+            _lastResponseCount = _results.total;
             _lastUpdated = DateTime.now();
             // Don't override vote count - it should already be set correctly by navigateToResultsScreen
           });
-          
-          print('📊 Approval results loaded: ${_responsesByCountry.length} responses, setting baseline for polling');
+
+          print('📊 Approval results loaded: ${_results.total} answers, setting baseline for polling');
           // Start polling only after initial data is displayed
           _startPolling();
           
@@ -323,8 +345,9 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
     } catch (e) {
       print('Error loading approval responses: $e');
       if (mounted) {
-        setState(() {
-          _responsesByCountry = [];
+                setState(() {
+          _results = QuestionResults.emptyFor(
+              widget.question['id']?.toString() ?? '', 'approval_rating');
           _isLoadingMap = false;
           _errorMessage = 'Error loading responses. Please try again.';
           // Don't override vote count - keep the value set by navigateToResultsScreen
@@ -335,46 +358,32 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
     }
   }
 
-  Future<void> _loadFreshApprovalDataFromDatabase() async {
-    // Fetch real approval responses from the database with country names
-    final response = await _supabase
-        .from('responses')
-        .select('''
-          score,
-          created_at,
-          generation,
-          countries!responses_country_code_fkey(country_name_en)
-        ''')
-        .eq('question_id', widget.question['id'])
-        .not('score', 'is', null)
-        .order('created_at', ascending: false);
-    
-    if (response != null && response.isNotEmpty) {
-      // Convert to the format expected by the rest of the code
-      // Convert score from -100 to 100 range to -1 to 1 range for display
-      _responsesByCountry = response.map((r) => {
-        'country': r['countries']?['country_name_en'] ?? 'Unknown',
-        'answer': (r['score'] as int).toDouble() / 100.0, // Convert to -1 to 1 range
-        'created_at': r['created_at'],
-        'generation': r['generation'],
-      }).toList();
-      
-      print('Found ${_responsesByCountry.length} real approval responses from database');
+    Future<void> _loadFreshApprovalDataFromDatabase() async {
+    // Ask the server for the results. The client has no read access to the
+    // answers themselves since the lockdown — only to what they add up to.
+    final results = await _resultsService.fetchResults(
+      widget.question['id'].toString(),
+      questionType: 'approval_rating',
+      forceRefresh: true,
+    );
+
+    _results = results;
+    if (results.total > 0) {
+      print('Found ${results.total} approval answers for this question');
     } else {
       print('No approval responses found in database for this question');
-      _responsesByCountry = [];
       _errorMessage = 'No responses yet for this question';
     }
-    
+
     if (mounted) {
       setState(() {
         _isLoadingMap = false;
-        _lastResponseCount = _responsesByCountry.length;
+        _lastResponseCount = _results.total;
         _lastUpdated = DateTime.now();
         // Don't override vote count - it should already be set correctly by navigateToResultsScreen
       });
-      
-      print('📊 Fresh approval data loaded from DB: ${_responsesByCountry.length} responses, setting baseline for polling');
+
+      print('📊 Fresh approval results loaded: ${_results.total} answers, setting baseline for polling');
       // Start polling only after data is loaded
       _startPolling();
       
@@ -401,109 +410,6 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
     }
   }
 
-  Future<void> _loadMyNetworkData() async {
-    try {
-      _questionService ??= Provider.of<QuestionService>(context, listen: false);
-      final networkResponses = await _questionService!.getMyNetworkResponses(
-        widget.question['id'].toString(), 
-        'approval_rating'
-      );
-      
-      // Also load room response counts for filtering
-      await _loadRoomResponseCounts();
-      
-      if (mounted) {
-        setState(() {
-          _myNetworkResponses = networkResponses;
-        });
-        print('🎪 Loaded ${networkResponses.length} My Network responses for approval question');
-        print('🔍 DEBUG: My Network responses received: $networkResponses');
-      }
-    } catch (e) {
-      print('Error loading My Network responses: $e');
-      if (mounted) {
-        setState(() {
-          _myNetworkResponses = [];
-        });
-      }
-    }
-  }
-
-  Future<void> _loadRoomResponseCounts() async {
-    try {
-      // Import RoomService to get user's rooms
-      final roomService = RoomService();
-      final userRooms = await roomService.getUserRooms();
-      
-      final Map<String, int> roomCounts = {};
-      final Map<String, List<Map<String, dynamic>>> roomResponses = {};
-      final Map<String, String> roomNames = {};
-      
-      for (final room in userRooms) {
-        // Store room name for display
-        roomNames[room.id] = room.name;
-        // Get room response count
-        final count = await _questionService!.getRoomResponseCount(
-          room.id, 
-          widget.question['id'].toString()
-        );
-        roomCounts[room.id] = count;
-        print('🔍 DEBUG: Room ${room.name} (${room.id}) has $count responses');
-        
-        // Get actual room responses for filtering if count > 0
-        if (count > 0) {
-          try {
-            print('🔍 DEBUG: Loading approval responses for room ${room.name} (${room.id}) with $count responses');
-            final responses = await Supabase.instance.client
-                .from('room_shared_responses')
-                .select('''
-                  response_id,
-                  responses!inner(
-                    score,
-                    created_at,
-                    countries!inner(country_name_en)
-                  )
-                ''')
-                .eq('room_id', room.id)
-                .eq('question_id', widget.question['id'].toString());
-            
-            print('🔍 DEBUG: Raw approval room responses: $responses');
-            
-            // Convert to expected format
-            final roomResponsesList = responses.map((shared) {
-              final response = shared['responses'];
-              if (response == null) return null;
-              return {
-                'answer': (response['score'] as int).toDouble() / 100.0, // Convert to -1 to 1 range
-                'country': response['countries']?['country_name_en'] ?? 'Unknown',
-                'created_at': response['created_at'],
-              };
-            }).where((r) => r != null).cast<Map<String, dynamic>>().toList();
-            
-            roomResponses[room.id] = roomResponsesList;
-            print('🎪 Room ${room.name} has $count responses for this question');
-            print('🔍 DEBUG: Room ${room.id} response data: ${roomResponsesList.take(2).toList()}');
-          } catch (e) {
-            print('Error loading responses for room ${room.name}: $e');
-            roomResponses[room.id] = [];
-          }
-        } else {
-          roomResponses[room.id] = [];
-        }
-      }
-      
-      if (mounted) {
-        setState(() {
-          _roomResponseCounts = roomCounts;
-          _roomResponses = roomResponses;
-          _roomNames = roomNames;
-        });
-      }
-    } catch (e) {
-      print('Error loading room response counts: $e');
-    }
-  }
-
   void _startPolling() {
     // Cancel existing timer if any
     _pollTimer?.cancel();
@@ -520,15 +426,10 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
 
   Future<void> _checkForUpdates() async {
     try {
-      // Get current response count from database
-      final response = await _supabase
-          .from('responses')
-          .select('id')
-          .eq('question_id', widget.question['id'])
-          .not('score', 'is', null);
-      
-      final currentCount = response?.length ?? 0;
-      final actualDisplayedCount = _responsesByCountry.length;
+            // Ask the server for the current answer count
+      final currentCount = await _resultsService
+          .fetchAnsweredCount(widget.question['id'].toString());
+      final actualDisplayedCount = _results.total;
       
       print('🗕 Polling check - DB: $currentCount, Last tracked: $_lastResponseCount, Currently displayed: $actualDisplayedCount');
       
@@ -604,39 +505,23 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
     try {
       print('Auto-refreshing approval responses for question ID: ${widget.question['id']}');
       
-      // Fetch fresh approval responses from the database with country names
-      final response = await _supabase
-          .from('responses')
-          .select('''
-            score,
-            created_at,
-            generation,
-            countries!responses_country_code_fkey(country_name_en)
-          ''')
-          .eq('question_id', widget.question['id'])
-          .not('score', 'is', null)
-          .order('created_at', ascending: false);
+            // Fetch fresh results from the server
+      final fresh = await _resultsService.fetchResults(
+        widget.question['id'].toString(),
+        questionType: 'approval_rating',
+        forceRefresh: true,
+      );
 
-      if (response != null && response.isNotEmpty) {
-        // Convert to the format expected by the rest of the code
-        final freshResponses = response.map((r) => {
-          'country': r['countries']?['country_name_en'] ?? 'Unknown',
-          'answer': (r['score'] as int).toDouble() / 100.0, // Convert to -1 to 1 range
-          'created_at': r['created_at'],
-          'generation': r['generation'],
-        }).toList();
-        
-        if (mounted) {
-          setState(() {
-            _responsesByCountry = freshResponses;
-            _lastResponseCount = freshResponses.length;
-            // Update vote count to match the actual responses
-            widget.question['votes'] = freshResponses.length;
-            _lastUpdated = DateTime.now();
-          });
-          
-          print('Auto-refreshed with ${freshResponses.length} approval responses');
-        }
+      if (fresh.total > 0 && mounted) {
+        setState(() {
+          _results = fresh;
+          _lastResponseCount = fresh.total;
+          // Update vote count to match the actual responses
+          widget.question['votes'] = fresh.total;
+          _lastUpdated = DateTime.now();
+        });
+
+        print('Auto-refreshed with ${fresh.total} approval answers');
       }
     } catch (e) {
       print('Error auto-refreshing map data: $e');
@@ -780,138 +665,58 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
     }
   }
 
-  // Get filtered responses based on selected country
-  List<Map<String, dynamic>> get filteredResponses {
-    // For private questions, never filter by country - always show all responses
-    if (isPrivateQuestion || selectedCountry == null) {
-      return _responsesByCountry;
-    }
-
-    // Handle My Network filtering
-    if (selectedCountry == 'My Network') {
-      // Return My Network responses (loaded separately via _loadMyNetworkData)
-      return _myNetworkResponses;
-    }
-
-    // Handle Room filtering
-    if (selectedCountry?.startsWith('Room:') == true) {
-      final roomId = selectedCountry!.substring(5); // Remove 'Room:' prefix
-      return _roomResponses[roomId] ?? [];
-    }
-
-    // Handle Generation filtering
-    if (selectedCountry?.startsWith('Gen:') == true) {
-      final genId = selectedCountry!.substring(4);
-      return _responsesByCountry.where((r) => r['generation'] == genId).toList();
-    }
-
-    // Handle regular country filtering
-    return _responsesByCountry.where((r) => r['country'] == selectedCountry).toList();
-  }
+    /// The slice of the results the current filter selects.
+  ///
+  /// Private questions are never filtered by country, so they always read the
+  /// whole-question slice. A filter for a group the server has since suppressed
+  /// resolves to an empty slice, not to everybody.
+  ResultsBreakdown get filteredBreakdown => resolveResultsFilter(
+        results: _results,
+        filter: selectedCountry,
+        network: networkBreakdown,
+        isPrivate: isPrivateQuestion,
+      );
 
   // Calculate statistics
-  double get average {
-    final values = filteredResponses.map((r) => r['answer'] as double).toList();
-    return values.isEmpty ? 0 : values.reduce((a, b) => a + b) / values.length;
-  }
-  
-  int get totalResponses => filteredResponses.length;
-  
+  double get average => filteredBreakdown.averageOrZero;
+
+  int get totalResponses => filteredBreakdown.count;
+
   // Group responses into bins for histogram
-  Map<String, int> get _binnedResponses {
-    final bins = {
-      'Strongly Approve': 0,
-      'Approve': 0,
-      'Neutral': 0,
-      'Disapprove': 0,
-      'Strongly Disapprove': 0,
-    };
+  Map<String, int> get _binnedResponses => filteredBreakdown.binsByLabel;
 
-    for (var response in filteredResponses) {
-      final value = response['answer'] as double;
-      if (value <= -0.8) {
-        bins['Strongly Disapprove'] = (bins['Strongly Disapprove'] ?? 0) + 1;
-      } else if (value <= -0.3) {
-        bins['Disapprove'] = (bins['Disapprove'] ?? 0) + 1;
-      } else if (value <= 0.3) {
-        bins['Neutral'] = (bins['Neutral'] ?? 0) + 1;
-      } else if (value <= 0.8) {
-        bins['Approve'] = (bins['Approve'] ?? 0) + 1;
-      } else {
-        bins['Strongly Approve'] = (bins['Strongly Approve'] ?? 0) + 1;
-      }
-    }
-
-    return bins;
-  }
-
-  // Get responses for a specific country in comparison mode
-  List<Map<String, dynamic>> _getCountryResponses(String country) {
-    if (country == 'World') {
-      // Return all responses for world comparison
-      return _responsesByCountry;
-    }
-    
-    // Handle My Network filtering
-    if (country == 'My Network') {
-      // Return My Network responses (loaded separately via _loadMyNetworkData)
-      return _myNetworkResponses;
-    }
-    
-    // Handle Room filtering
-    if (country.startsWith('Room:')) {
-      final roomId = country.substring(5); // Remove 'Room:' prefix
-      return _roomResponses[roomId] ?? [];
-    }
-
-    // Handle Generation filtering
-    if (country.startsWith('Gen:')) {
-      final genId = country.substring(4);
-      return _responsesByCountry.where((r) => r['generation'] == genId).toList();
-    }
-
-    // Handle regular country filtering
-    return _responsesByCountry.where((r) => r['country'] == country).toList();
-  }
+  // Get the results slice for one comparison side: a country, a generation, a
+  // city, World, or 'Network' (My Network).
+  ResultsBreakdown _getCountryBreakdown(String country) => resolveResultsFilter(
+        results: _results,
+        filter: country,
+        network: networkBreakdown,
+      );
 
   // Get binned responses for a specific country
-  Map<String, int> _getBinnedResponsesForCountry(String country) {
-    final countryResponses = _getCountryResponses(country);
-    final bins = {
-      'Strongly Approve': 0,
-      'Approve': 0,
-      'Neutral': 0,
-      'Disapprove': 0,
-      'Strongly Disapprove': 0,
-    };
-
-    for (var response in countryResponses) {
-      final value = response['answer'] as double;
-      if (value <= -0.8) {
-        bins['Strongly Disapprove'] = (bins['Strongly Disapprove'] ?? 0) + 1;
-      } else if (value <= -0.3) {
-        bins['Disapprove'] = (bins['Disapprove'] ?? 0) + 1;
-      } else if (value <= 0.3) {
-        bins['Neutral'] = (bins['Neutral'] ?? 0) + 1;
-      } else if (value <= 0.8) {
-        bins['Approve'] = (bins['Approve'] ?? 0) + 1;
-      } else {
-        bins['Strongly Approve'] = (bins['Strongly Approve'] ?? 0) + 1;
-      }
-    }
-
-    return bins;
-  }
-
-  // Get average for a specific country
-  double _getCountryAverage(String country) {
-    final countryResponses = _getCountryResponses(country);
-    final values = countryResponses.map((r) => r['answer'] as double).toList();
-    return values.isEmpty ? 0 : values.reduce((a, b) => a + b) / values.length;
-  }
+  Map<String, int> _getBinnedResponsesForCountry(String country) =>
+      _getCountryBreakdown(country).binsByLabel;
 
   // Build chart bars for comparison or single view
   List<Widget> _buildChartBars() {
+    // Nothing to chart yet: hold a fixed-height placeholder instead of letting
+    // the empty small-sample dot plot (axis + average marker) flash for a frame
+    // before the histogram replaces it. Same height as five histogram rows so
+    // the card doesn't jump when the data lands.
+    if (_isLoadingMap && _results.isEmpty) {
+      return [
+        SizedBox(
+          height: 5 * 28.0,
+          child: Center(
+            child: SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          ),
+        ),
+      ];
+    }
     if (_isComparisonMode && _comparisonCountry1 != null && _comparisonCountry2 != null) {
       // Comparison mode
       final country1Data = _getBinnedResponsesForCountry(_comparisonCountry1!);
@@ -946,21 +751,48 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
               SizedBox(width: 12),
               Expanded(
                 child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     // Country 1 bar
-                    LinearProgressIndicator(
-                      value: country1Total > 0 ? country1Count / country1Total : 0,
-                      backgroundColor: Theme.of(context).colorScheme.surface,
-                      valueColor: AlwaysStoppedAnimation<Color>(_country1Color),
-                      minHeight: 8,
+                    Container(
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surface,
+                      ),
+                      child: FractionallySizedBox(
+                        alignment: Alignment.centerLeft,
+                        widthFactor: country1Total > 0 ? country1Count / country1Total : 0,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: _country1Color,
+                            borderRadius: BorderRadius.only(
+                              topRight: Radius.circular(4),
+                              bottomRight: Radius.circular(4),
+                            ),
+                          ),
+                        ),
+                      ),
                     ),
                     SizedBox(height: 2),
                     // Country 2 bar
-                    LinearProgressIndicator(
-                      value: country2Total > 0 ? country2Count / country2Total : 0,
-                      backgroundColor: Theme.of(context).colorScheme.surface,
-                      valueColor: AlwaysStoppedAnimation<Color>(Color(0xFFFF6569)),
-                      minHeight: 8,
+                    Container(
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surface,
+                      ),
+                      child: FractionallySizedBox(
+                        alignment: Alignment.centerLeft,
+                        widthFactor: country2Total > 0 ? country2Count / country2Total : 0,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Color(0xFFFF6569),
+                            borderRadius: BorderRadius.only(
+                              topRight: Radius.circular(4),
+                              bottomRight: Radius.circular(4),
+                            ),
+                          ),
+                        ),
+                      ),
                     ),
                   ],
                 ),
@@ -969,14 +801,33 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
           ),
         );
       }).toList();
+    } else if (_useDotPlot) {
+      // Small sample: per-response beeswarm dot plot instead of a histogram.
+      return [
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: ApprovalDotPlot(
+            // The sorted score multiset the server sends for small slices —
+            // the same dots, with nothing attached to them.
+            values: filteredBreakdown.scoreValues,
+            average: average,
+            labels: approvalLabelsFrom(widget.question),
+          ),
+        ),
+      ];
     } else {
-      // Single view mode
+      // Single view mode — histogram bars (≥ kDotPlotThreshold responses),
+      // growing in a top-to-bottom cascade exactly like the MC results bars.
+      var delayMs = 0;
       return _binnedResponses.entries.map((entry) {
         final percentage = totalResponses > 0
             ? (entry.value / totalResponses * 100).round().toString()
             : '0';
-        
+        final barDelay = delayMs;
+        delayMs += (McResultBar.fillDurationMs * 0.6).round();
+
         return Padding(
+          key: ValueKey('approval_bar_${entry.key}'),
           padding: EdgeInsets.only(bottom: 20),
           child: Row(
             children: [
@@ -993,13 +844,17 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
                 margin: EdgeInsets.symmetric(horizontal: 12),
               ),
               Expanded(
-                child: LinearProgressIndicator(
-                  value: totalResponses > 0 ? entry.value / totalResponses : 0,
+                child: McResultBar(
+                  widthFactor:
+                      totalResponses > 0 ? entry.value / totalResponses : 0,
+                  color: _getColorForLabel(entry.key),
+                  delayMs: barDelay,
+                  height: 8,
                   backgroundColor: Theme.of(context).colorScheme.surface,
-                  valueColor: AlwaysStoppedAnimation<Color>(
-                    _getColorForLabel(entry.key),
+                  fillRadius: BorderRadius.only(
+                    topRight: Radius.circular(4),
+                    bottomRight: Radius.circular(4),
                   ),
-                  minHeight: 8,
                 ),
               ),
               SizedBox(width: 12),
@@ -1011,49 +866,8 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
     }
   }
 
-  // Get average sentiment for each country
-  Map<String, double> get _countryAverages {
-    final countryVotes = <String, List<double>>{};
-    
-    // Collect votes per country
-    for (var response in _responsesByCountry) {
-      final country = response['country'] as String;
-      final value = response['answer'] as double;
-      
-      if (!countryVotes.containsKey(country)) {
-        countryVotes[country] = [];
-      }
-      countryVotes[country]!.add(value);
-    }
-    
-    // Calculate averages
-    final result = <String, double>{};
-    countryVotes.forEach((country, votes) {
-      result[country] = votes.reduce((a, b) => a + b) / votes.length;
-    });
-    
-    return result;
-  }
-
-  // Get sorted list of countries by response count
-  List<MapEntry<String, double>> get _sortedCountryAverages {
-    final countryCounts = <String, int>{};
-    for (var response in _responsesByCountry) {
-      final country = response['country'] as String;
-      countryCounts[country] = (countryCounts[country] ?? 0) + 1;
-    }
-    
-    return _countryAverages.entries.toList()
-      ..sort((a, b) => countryCounts[b.key]!.compareTo(countryCounts[a.key]!));
-  }
-
-  String _getSentimentLabel(double value) {
-    if (value <= -0.8) return 'Strongly Disapprove';
-    if (value <= -0.3) return 'Disapprove';
-    if (value <= 0.3) return 'Neutral';
-    if (value <= 0.8) return 'Approve';
-    return 'Strongly Approve';
-  }
+    // Get average sentiment for each country
+  Map<String, double> get _countryAverages => _results.countryAverages;
 
   Widget _buildGuestModeBanner() {
     return Consumer<GuestUserTrackingService>(
@@ -1111,70 +925,11 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
     );
   }
 
-  Widget _getIconForLabel(String label) {
-    switch (label) {
-      case 'Strongly Disapprove':
-        return Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.thumb_down, color: Colors.red, size: 20),
-            SizedBox(width: 2),
-            Icon(Icons.thumb_down, color: Colors.red, size: 20),
-          ],
-        );
-      case 'Disapprove':
-        return Icon(Icons.thumb_down, color: Colors.red[200], size: 20);
-      case 'Neutral':
-        return Icon(Icons.sentiment_neutral, color: Colors.grey[600], size: 20);
-      case 'Approve':
-        return Icon(Icons.thumb_up, color: Colors.green[200], size: 20);
-      case 'Strongly Approve':
-        return Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.thumb_up, color: Colors.green, size: 20),
-            SizedBox(width: 2),
-            Icon(Icons.thumb_up, color: Colors.green, size: 20),
-          ],
-        );
-      default:
-        return Icon(Icons.sentiment_neutral, color: Colors.grey[300], size: 20);
-    }
-  }
+  Widget _getIconForLabel(String label) =>
+      ResultsColors.iconForApprovalLabel(context, label);
 
-  Color _getColorForValue(double value) {
-    // Normalize the value from -1 to 1 range to 0 to 1 range
-    final normalizedValue = (value + 1) / 2;
-    
-    if (normalizedValue < 0.2) {
-      return Colors.red;
-    } else if (normalizedValue < 0.4) {
-      return Colors.red[300]!;
-    } else if (normalizedValue < 0.6) {
-      return Colors.grey.shade300;
-    } else if (normalizedValue < 0.8) {
-      return Colors.lightGreen;
-    } else {
-      return Colors.green;
-    }
-  }
-
-  Color _getColorForLabel(String label) {
-    switch (label) {
-      case 'Strongly Disapprove':
-        return Colors.red;
-      case 'Disapprove':
-        return Colors.red[300]!;
-      case 'Neutral':
-        return Colors.grey[300]!; // Changed to light gray
-      case 'Approve':
-        return Colors.green[300]!;
-      case 'Strongly Approve':
-        return Colors.green;
-      default:
-        return Colors.grey[300]!;
-    }
-  }
+  Color _getColorForLabel(String label) =>
+      ResultsColors.forApprovalLabel(context, label);
 
   void _onCountrySelected(String? country) {
     // Dismiss any current snackbar before showing a new one
@@ -1206,75 +961,43 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
       return;
     }
     
-    // Handle My Network filtering
-    if (country == 'My Network') {
-      if (_myNetworkResponses.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('No responses from your network yet'),
-              backgroundColor: Colors.orange,
-              duration: Duration(seconds: 3),
-            ),
-          );
-        }
-        return; // Don't change the selection
-      }
-      
+    // My Network — friends and friends-of-friends, aggregated. When the slice
+    // is gone (a gate, or the RPC went away) fall back to World without a word.
+    if (isNetworkFilter(country)) {
+      final network = networkBreakdown;
       if (mounted) {
         setState(() {
-          selectedCountry = country;
+          selectedCountry = network == null ? null : kNetworkFilter;
         });
+      }
+      if (network == null) return;
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Showing ${_myNetworkResponses.length} responses from your network'),
+            content: Text(
+              'Showing your network',
+              style: TextStyle(color: Colors.white),
+            ),
             backgroundColor: Theme.of(context).primaryColor,
             duration: Duration(seconds: 2),
           ),
         );
       }
-      return;
-    }
-    
-    // Handle Room filtering
-    if (country.startsWith('Room:')) {
-      final roomId = country.substring(5); // Remove 'Room:' prefix
-      final roomResponses = _roomResponses[roomId] ?? [];
-
-      if (roomResponses.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('No responses from room:$roomId yet'),
-              backgroundColor: Colors.orange,
-              duration: Duration(seconds: 3),
-            ),
-          );
-        }
-        return; // Don't change the selection
-      }
-
-      if (mounted) {
-        setState(() {
-          selectedCountry = country;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Showing ${roomResponses.length} responses from room'),
-            backgroundColor: Theme.of(context).primaryColor,
-            duration: Duration(seconds: 2),
-          ),
-        );
-      }
+      // Aggregate only: no question id, no counts — the network↔question link
+      // must not reach PostHog (networks client doc, analytics rule).
+      AnalyticsService().trackEventAnonymous('results_filter_applied', {
+        'filter': 'network',
+        'question_type': 'approval',
+      });
       return;
     }
 
     // Handle Generation filtering
     if (country.startsWith('Gen:')) {
       final genId = country.substring(4);
-      final genResponses = _responsesByCountry.where((r) => r['generation'] == genId).toList();
+            final genCount = _results.forGeneration(genId)?.count ?? 0;
 
-      if (genResponses.isEmpty) {
+      if (genCount == 0) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -1291,9 +1014,9 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
         setState(() {
           selectedCountry = country;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
+                ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Showing ${genResponses.length} responses from ${getGenerationLabel(genId)}'),
+            content: Text('Showing $genCount responses from ${getGenerationLabel(genId)}'),
             backgroundColor: Theme.of(context).primaryColor,
             duration: Duration(seconds: 2),
           ),
@@ -1307,10 +1030,43 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
       return;
     }
 
+    // Handle city filtering (from the map's "Filter to here")
+    if (country.startsWith('City:')) {
+      final cityName = country.substring(5);
+            final cityCount = _results.forCity(cityName)?.count ?? 0;
+
+      if (cityCount == 0) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('No responses from $cityName yet'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+        return;
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Showing results from $cityName'),
+            backgroundColor: Theme.of(context).primaryColor,
+            duration: Duration(seconds: 2),
+          ),
+        );
+        setState(() {
+          selectedCountry = country;
+        });
+      }
+      return;
+    }
+
     // Handle regular country filtering
-    final countryResponses = _responsesByCountry.where((r) => r['country'] == country).toList();
-    
-    if (countryResponses.isEmpty) {
+        final countryCount = _results.forCountry(country)?.count ?? 0;
+
+    if (countryCount == 0) {
       // Reset to all countries if not already showing global
       if (mounted) {
         if (selectedCountry != null) {
@@ -1430,57 +1186,30 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
     return 'World';
   }
 
+  /// True when the map card is on screen (so the reactions live inside it).
+  bool get _hasMapCard =>
+      !isCityTargeted &&
+      !isPrivateQuestion &&
+      _shouldShowMap() &&
+      !_isLoadingMap &&
+      _errorMessage == null;
+
+  /// The compact reactions row (top emoji + the add chip, no "Reactions"
+  /// title) used inside the map card and, when there is no map, on its own.
+  Widget _buildReactions() => QuestionReactionsWidget(
+        questionId: widget.question['id']?.toString() ?? '',
+        useDummyData: false,
+        compact: true,
+        margin: EdgeInsets.zero,
+      );
+
   @override
   Widget buildResultsScreen(BuildContext context) {
+    _maybeTrackVizMode();
     return Scaffold(
       appBar: AppBar(
         title: Text(_appBarTitle),
         actions: [
-          Consumer<UserService>(
-            builder: (context, userService, child) {
-              final isSaved = userService.savedQuestions
-                  .any((q) => q['id'] == widget.question['id']);
-              return IconButton(
-                icon: Icon(
-                  isSaved ? Icons.bookmark : Icons.bookmark_border,
-                  color: isSaved ? Theme.of(context).primaryColor : null,
-                ),
-                onPressed: () {
-                  if (isSaved) {
-                    userService.removeSavedQuestion(widget.question['id']);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Row(
-                          children: [
-                            Icon(Icons.bookmark_border, color: Colors.white, size: 20),
-                            SizedBox(width: 8),
-                            Text('Question removed from saved'),
-                          ],
-                        ),
-                        backgroundColor: Theme.of(context).primaryColor,
-                      ),
-                    );
-                  } else {
-                    userService.addSavedQuestion(widget.question);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Row(
-                          children: [
-                            Icon(Icons.bookmark, color: Colors.white, size: 20),
-                            SizedBox(width: 8),
-                            Text('Question saved'),
-                          ],
-                        ),
-                        backgroundColor: Theme.of(context).primaryColor,
-                      ),
-                    );
-                    // Auto-subscribe to saved question
-                    AutoSubscriptionHelper.autoSubscribeToSavedQuestion(context, widget.question);
-                  }
-                },
-              );
-            },
-          ),
           // Notification bell for subscribing to question updates
           NotificationBell(question: widget.question),
           // Show delete icon only if current user is the author
@@ -1514,43 +1243,54 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Question title - always shown in full
-                      Text(
-                        widget.question['title'] ?? widget.question['prompt'] ?? 'No Title',
-                        style: Theme.of(context).textTheme.headlineSmall,
-                      ),
-                      if (widget.question['description'] != null) ...[
-                        SizedBox(height: 8),
-                        InkWell(
-                          onTap: _shouldShowExpandButton() ? () {
-                            setState(() {
-                              _isQuestionExpanded = !_isQuestionExpanded;
-                            });
-                          } : null,
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                widget.question['description'],
-                                style: Theme.of(context).textTheme.bodyMedium,
-                                maxLines: _isQuestionExpanded ? null : 1,
-                                overflow: _isQuestionExpanded ? TextOverflow.visible : TextOverflow.ellipsis,
-                              ),
-                              if (_shouldShowExpandButton()) ...[
-                                SizedBox(height: 4),
-                                Text(
-                                  _isQuestionExpanded ? '(show less)' : '(show more)',
-                                  style: TextStyle(
-                                    color: Theme.of(context).primaryColor,
-                                    fontWeight: FontWeight.w500,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              ],
-                            ],
+                      // Question prompt + description, centred as one block.
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          // Question title - always shown in full
+                          Text(
+                            widget.question['title'] ?? widget.question['prompt'] ?? 'No Title',
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
-                        ),
-                      ],
+                          if (widget.question['description'] != null) ...[
+                            SizedBox(height: 8),
+                            InkWell(
+                              onTap: _shouldShowExpandButton() ? () {
+                                setState(() {
+                                  _isQuestionExpanded = !_isQuestionExpanded;
+                                });
+                              } : null,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  Text(
+                                    widget.question['description'],
+                                    textAlign: TextAlign.center,
+                                    style: Theme.of(context).textTheme.bodyMedium,
+                                    maxLines: _isQuestionExpanded ? null : 1,
+                                    overflow: _isQuestionExpanded ? TextOverflow.visible : TextOverflow.ellipsis,
+                                  ),
+                                  if (_shouldShowExpandButton()) ...[
+                                    SizedBox(height: 4),
+                                    Text(
+                                      _isQuestionExpanded ? '(show less)' : '(show more)',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        color: Theme.of(context).primaryColor,
+                                        fontWeight: FontWeight.w500,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
                       SizedBox(height: 16),
                       
                       // Categories
@@ -1721,163 +1461,8 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
                 child: Padding(
                   padding: EdgeInsets.all(16.0),
                   child: Column(
-                    children: [
-                      // Question prompt in larger white text
-                      Center(
-                        child: Text(
-                          widget.question['prompt'] ?? widget.question['title'] ?? 'Question',
-                          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            color: Theme.of(context).brightness == Brightness.dark 
-                                ? Colors.white 
-                                : Colors.black,
-                            fontSize: 20,
-                            fontWeight: FontWeight.w600,
-                          ),
-                          textAlign: TextAlign.center,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      SizedBox(height: 16),
-                      _isComparisonMode 
-                        ? RichText(
-                            text: TextSpan(
-                              style: Theme.of(context).textTheme.titleMedium,
-                              children: [
-                                TextSpan(
-                                  text: _getDisplayName(_comparisonCountry1 ?? ''),
-                                  style: TextStyle(color: _country1Color),
-                                ),
-                                TextSpan(text: ' vs '),
-                                TextSpan(
-                                  text: _getDisplayName(_comparisonCountry2 ?? ''),
-                                  style: TextStyle(color: Color(0xFFFF6569)),
-                                ),
-                              ],
-                            ),
-                          )
-                        : SizedBox.shrink(), // Remove the title completely for single view
-                      SizedBox(height: 8),
-                      _isComparisonMode && _comparisonCountry1 != null && _comparisonCountry2 != null
-                        ? Column(
-                            children: [
-                              // Country 1 average
-                              Row(
-                                children: [
-                                  SizedBox(
-                                    width: 60,
-                                    child: Center(
-                                      child: Transform.scale(
-                                        scale: 1.5,
-                                        child: ColorFiltered(
-                                          colorFilter: ColorFilter.matrix([
-                                            0.2126, 0.7152, 0.0722, 0, 0,
-                                            0.2126, 0.7152, 0.0722, 0, 0,
-                                            0.2126, 0.7152, 0.0722, 0, 0,
-                                            0, 0, 0, 1, 0,
-                                          ]),
-                                          child: _getIconForLabel(_getSentimentLabel(_getCountryAverage(_comparisonCountry1!))),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  SizedBox(width: 12),
-                                  Expanded(
-                                    child: LinearProgressIndicator(
-                                      value: (_getCountryAverage(_comparisonCountry1!) + 1) / 2,
-                                      backgroundColor: Theme.of(context).colorScheme.surface,
-                                      valueColor: AlwaysStoppedAnimation<Color>(_country1Color),
-                                      minHeight: 8,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              SizedBox(height: 16),
-                              // Country 2 average
-                              Row(
-                                children: [
-                                  SizedBox(
-                                    width: 60,
-                                    child: Center(
-                                      child: Transform.scale(
-                                        scale: 1.5,
-                                        child: ColorFiltered(
-                                          colorFilter: ColorFilter.matrix([
-                                            0.2126, 0.7152, 0.0722, 0, 0,
-                                            0.2126, 0.7152, 0.0722, 0, 0,
-                                            0.2126, 0.7152, 0.0722, 0, 0,
-                                            0, 0, 0, 1, 0,
-                                          ]),
-                                          child: _getIconForLabel(_getSentimentLabel(_getCountryAverage(_comparisonCountry2!))),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  SizedBox(width: 12),
-                                  Expanded(
-                                    child: LinearProgressIndicator(
-                                      value: (_getCountryAverage(_comparisonCountry2!) + 1) / 2,
-                                      backgroundColor: Theme.of(context).colorScheme.surface,
-                                      valueColor: AlwaysStoppedAnimation<Color>(Color(0xFFFF6569)),
-                                      minHeight: 8,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          )
-                        : Column(
-                            children: [
-                              Transform.scale(
-                                scale: 2.0,
-                                child: _getIconForLabel(_getSentimentLabel(average)),
-                              ),
-                              SizedBox(height: 16),
-                              LinearProgressIndicator(
-                                value: (average + 1) / 2,
-                                backgroundColor: Theme.of(context).colorScheme.surface,
-                                valueColor: AlwaysStoppedAnimation<Color>(_getColorForValue(average)),
-                                minHeight: 10,
-                              ),
-                            ],
-                          ),
-                    ],
-                  ),
-                ),
-              ),
-              SizedBox(height: 12),
-              
-              // Question Reactions
-              QuestionReactionsWidget(
-                questionId: widget.question['id']?.toString() ?? '',
-                useDummyData: false,
-                margin: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              ),
-              
-              SizedBox(height: 24),
-              Card(
-                child: Padding(
-                  padding: EdgeInsets.all(16.0),
-                  child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Question prompt in larger white text
-                      Center(
-                        child: Text(
-                          widget.question['prompt'] ?? widget.question['title'] ?? 'Question',
-                          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            color: Theme.of(context).brightness == Brightness.dark 
-                                ? Colors.white 
-                                : Colors.black,
-                            fontSize: 20,
-                            fontWeight: FontWeight.w600,
-                          ),
-                          textAlign: TextAlign.center,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      SizedBox(height: 8),
                       Center(
                         child: _isComparisonMode 
                           ? RichText(
@@ -1902,7 +1487,7 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
                                 : isCityTargeted
                                   ? 'Responses ($cityName)'
                                   : isCountryTargeted && selectedCountry != null
-                                    ? 'Responses ($selectedCountry)'
+                                    ? 'Responses (${_getDisplayName(selectedCountry!)})'
                                     : 'Responses ${selectedCountry != null ? ' (${_getDisplayName(selectedCountry!)})' : ' (Global)'}',
                               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                                 color: Colors.grey[600],
@@ -1910,7 +1495,7 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
                               ),
                             ),
                       ),
-                      if (_shouldShowFilterButton() && _getUniqueCountriesWithResponses().length > 1) ...[
+                      if (_shouldShowFilterButton()) ...[
                         const SizedBox(height: 12),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
@@ -1941,7 +1526,7 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
                                 }
                                 
                                 final countryData = _getCountryResponseData();
-                                if (countryData.isEmpty) {
+                                if (countryData.isEmpty && !_hasNetworkSlice) {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     SnackBar(
                                       content: Text(
@@ -1962,21 +1547,27 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
                                   questionId: widget.question['id'].toString(),
                                   questionType: 'approval',
                                   countryAverages: _countryAverages,
-                                  allResponses: _responsesByCountry,
-                                  roomResponseCounts: _roomResponseCounts,
-                                  myNetworkResponseCount: _myNetworkResponses.length,
-                                  roomNames: _roomNames,
                                   generationResponses: _getGenerationResponseData(),
                                   generationAverages: _getGenerationAverages(),
+                                  networkBreakdown: networkBreakdown,
+                                  networkHidden: _network?.hidden ?? 0,
                                 );
-                                
+
                                 if (selectedCountries != null && selectedCountries.length == 2) {
                                   setState(() {
                                     _isComparisonMode = true;
                                     _comparisonCountry1 = selectedCountries[0];
                                     _comparisonCountry2 = selectedCountries[1];
                                     selectedCountry = null; // Clear single country filter
+                                    _dropUnbackedNetworkSelection();
                                   });
+                                  if (selectedCountries.any(isNetworkFilter)) {
+                                    AnalyticsService().trackEventAnonymous(
+                                        'results_comparison_applied', {
+                                      'filter': 'network',
+                                      'question_type': 'approval',
+                                    });
+                                  }
                                 }
                               },
                               icon: Icon(_isComparisonMode ? Icons.close : Icons.compare_arrows, size: 18),
@@ -1997,10 +1588,11 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
                   ),
                 ),
               ),
-              
+              SizedBox(height: 24),
+
               // Add world map visualization - only for non-city-targeted questions and non-private questions
               if (!isCityTargeted && !isPrivateQuestion) ...[
-                              // Only show map if there are 20+ responses from 5+ countries
+                              // Dot map shows once there are >= 3 responses
               if (_shouldShowMap()) ...[
                 if (_isLoadingMap) 
                   Card(
@@ -2043,24 +1635,50 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
                   )
                 else
                   CountryApprovalMap(
-                    key: ValueKey('approval_map_${_responsesByCountry.length}_${_lastUpdated.millisecondsSinceEpoch}'),
-                    responsesByCountry: _responsesByCountry,
+                                        key: ValueKey('approval_map_${_results.total}_${_lastUpdated.millisecondsSinceEpoch}'),
+                    responsesByCountry: const [],
                     questionTitle: widget.question['title'] ?? widget.question['prompt'] ?? 'No Title',
                     questionId: widget.question['id']?.toString() ?? '',
-                    onCountryTap: (String? countryCode) async {
-                      if (countryCode != null) {
-                        final countryName = await CountryService.getCountryNameFromIso(countryCode);
+                    labels: approvalLabelsFrom(widget.question),
+                    // Reactions live inside the map card, under the credit
+                    // line (owner, 2026-09-22): the compact row, no title.
+                    footer: _buildReactions(),
+                    onCountryTap: (String? filter) async {
+                      if (filter == null) {
+                        _onCountrySelected(null);
+                      } else if (filter.startsWith('City:')) {
+                        _onCountrySelected(filter);
+                      } else {
+                        final countryName = await CountryService.getCountryNameFromIso(filter);
                         if (countryName != null) {
                           _onCountrySelected(countryName);
                         }
-                      } else {
-                        _onCountrySelected(null);
                       }
                     },
                   ),
               ],
                 SizedBox(height: 24),
               ],
+
+              // Reactions sit inside the map card when there is one; a
+              // question with no map (city-targeted, private, or too few
+              // answers) keeps them here, below the numbers.
+              if (!_hasMapCard) ...[
+                _buildReactions(),
+                const SizedBox(height: 16),
+              ],
+
+              // "Your network" - the ego graph, the quantised aggregate and the
+              // close-friend row, or the nudge card when the viewer has not earned
+              // one yet. Renders nothing at all until the linkage RPCs are deployed.
+              NetworkResultsSection(
+                questionId: widget.question['id']?.toString() ?? '',
+                questionType: widget.question['type']?.toString() ?? '',
+                prompt: widget.question['prompt']?.toString(),
+                emoji: widget.question['emoji']?.toString(),
+                approvalLabels: approvalLabelsFrom(widget.question),
+                padding: EdgeInsets.zero,
+              ),
 
               const SizedBox(height: 16),
 
@@ -2090,6 +1708,11 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
                 useDummyData: false, // Use real data
                 questionContext: widget.question,
                 margin: EdgeInsets.zero, // Remove default margin to align with other widgets
+                questionTitle: widget.question['prompt']?.toString() ?? 'Question',
+                isAuthor: _questionService?.isCurrentUserAuthor(widget.question) ?? false,
+                onRatingSubmitted: () {
+                  if (mounted) setState(() => _ratingSectionRefreshKey++);
+                },
               ),
 
               const SizedBox(height: 16),
@@ -2129,16 +1752,22 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
+                // WP-F: forward this question inside the app. Hides itself
+                // when the viewer has no accepted friends.
+                SendToFriendButton(
+                  questionId: widget.question['id']?.toString() ?? '',
+                ),
                   TextButton.icon(
                     icon: Icon(Icons.share),
                     label: Text('Share'),
                     onPressed: () {
                       final questionTitle = widget.question['prompt'] ?? widget.question['title'] ?? 'Check out this question';
                       final questionId = widget.question['id']?.toString() ?? '';
-                      final shareText = questionId.isNotEmpty 
+                      AnalyticsService().trackShareInitiated('results', method: 'system', questionId: questionId.isNotEmpty ? questionId : null);
+                      final shareText = questionId.isNotEmpty
                           ? 'Check out this question on Read the Room:\n\n$questionTitle\n\nhttps://readtheroom.site/question/$questionId'
                           : 'Check out this question on Read the Room:\n\n$questionTitle';
-                      
+
                       final box = context.findRenderObject() as RenderBox?;
                       Share.share(
                         shareText,
@@ -2189,8 +1818,12 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
             // Home - clear stack and go to home
             Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
           } else if (index == 1) {
-            // Search - clear stack and go to home
-            Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
+            // Navigate to community tab
+            Navigator.pushAndRemoveUntil(
+              context,
+              MaterialPageRoute(builder: (context) => MainScreen(initialIndex: 1)),
+              (route) => false,
+            );
           } else if (index == 2) {
             // Navigate to activity tab
             Navigator.pushAndRemoveUntil(
@@ -2208,7 +1841,7 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
         type: BottomNavigationBarType.fixed,
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
-          BottomNavigationBarItem(icon: Icon(Icons.search), label: 'Search'),
+          BottomNavigationBarItem(icon: Icon(Icons.groups_outlined), label: 'Community'),
           BottomNavigationBarItem(icon: Icon(Icons.notifications_outlined), label: 'Activity'),
           BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Me'),
         ],
@@ -2274,28 +1907,10 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
 
 
   bool _shouldShowMap() {
-    // Check if we have enough responses and countries to show the map
-    final totalResponses = _responsesByCountry.length;
-    final uniqueCountries = _getUniqueCountriesWithResponses().length;
-    
-    return totalResponses >= 10 && uniqueCountries >= 3;
-  }
-
-  // Auto-set comparison mode if accessed from room feed
-  void _autoSetComparisonModeIfFromRoom() {
-    // Check if this question was accessed from a room feed
-    if (widget.feedContext?.feedType == 'room' && widget.feedContext?.roomId != null) {
-      // Delay setting comparison mode until after initial data loads
-      Future.delayed(Duration(milliseconds: 500), () {
-        if (mounted && !_isComparisonMode) {
-          setState(() {
-            _isComparisonMode = true;
-            _comparisonCountry1 = 'World';
-            _comparisonCountry2 = 'Room:${widget.feedContext!.roomId}';
-          });
-        }
-      });
-    }
+    // Dot maps degrade gracefully where choropleths looked empty, so the gate
+    // relaxes to >= 3 responses (city-targeted / private questions are already
+    // excluded by the caller).
+        return _results.total >= 3;
   }
 
   // Helper method to record question view for vote count and comment count delta tracking
@@ -2337,14 +1952,16 @@ class _ApprovalResultsScreenState extends BaseResultsScreenState<ApprovalResults
       return;
     }
 
-    await AddCommentDialog.show(
+    final isAuthor = _questionService?.isCurrentUserAuthor(widget.question) ?? false;
+
+    await CommentsOverlay.show(
       context: context,
       questionId: questionId,
       questionTitle: questionTitle,
       question: widget.question,
-      isAuthor: _questionService?.isCurrentUserAuthor(widget.question) ?? false,
+      isAuthor: isAuthor,
+      focusInput: true,
       onCommentAdded: (newComment) {
-        // Refresh the comments section immediately
         (_commentsSectionKey.currentState as dynamic)?.refreshComments();
       },
       onRatingSubmitted: () {

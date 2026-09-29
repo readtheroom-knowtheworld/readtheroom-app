@@ -4,23 +4,47 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import '../services/question_service.dart';
 import '../services/location_service.dart';
-import '../services/question_rating_service.dart';
 import '../utils/time_utils.dart';
 import '../utils/review_tag_navigation.dart';
+import '../utils/search_history.dart';
+import '../utils/archive_logic.dart';
+import '../utils/haptic_utils.dart';
 import '../services/user_service.dart';
-import '../services/boost_service.dart';
+import '../services/analytics_service.dart';
+import '../widgets/boost_dialog.dart';
 import '../widgets/question_type_badge.dart';
 
+/// Shared Hero tag so the Home search pill morphs into the real search field.
+const String kSearchHeroTag = 'home_search_bar';
+
 class SearchScreen extends StatefulWidget {
-  final bool isActive; // Track if this tab is currently active
-  
-  const SearchScreen({Key? key, this.isActive = false}) : super(key: key);
-  
+  final bool isActive; // Track if this screen is currently active/visible
+  final bool autofocus; // Autofocus the field (e.g. when opened from the Home pill)
+  final String source; // Analytics source: 'home_bar' | 'deeplink' | 'archive_icon' | 'topic_chip' | 'review_chip'
+
+  // Chip-driven entry (topic / review chips on answer & results screens push the
+  // Archive with a filter pre-applied — see [CategoryNavigation.onCategoryChipTap]
+  // and [ReviewTagNavigation.onReviewTagChipTap]).
+  final String? initialCategoryFilter; // Topic name to filter the default view by.
+  final String? initialReviewTagFilter; // Review tag key to filter by.
+  final List<String>? initialReviewQuestionIds; // Question ids qualifying for the review tag.
+
+  const SearchScreen({
+    Key? key,
+    this.isActive = true,
+    this.autofocus = true,
+    this.source = 'home_bar',
+    this.initialCategoryFilter,
+    this.initialReviewTagFilter,
+    this.initialReviewQuestionIds,
+  }) : super(key: key);
+
   @override
   SearchScreenState createState() => SearchScreenState();
 }
@@ -33,44 +57,186 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
   String _displayQuery = '';
   List<Map<String, dynamic>> _searchResults = [];
   List<Map<String, dynamic>> _originalSearchResults = []; // Store original results before filtering
-  List<Map<String, dynamic>> _popularQuestions = []; // Store popular questions
+  // "Unanswered — most answered first" archive queue (backs the default view),
+  // fetched from QuestionService.fetchArchiveQueue with client-side pagination.
+  List<Map<String, dynamic>> _archiveQueue = [];
   bool _isSearching = false;
   bool _hasSearched = false;
-  bool _isLoadingPopular = false;
-  bool _isLoadingMorePopular = false;
+  bool _isLoadingArchive = false;
+  bool _isLoadingMoreArchive = false;
+  bool _archiveExhausted = false; // Underlying source drained → stop paginating.
   bool _hideSearchBar = false;
-  int _popularQuestionsOffset = 0;
-  final int _popularQuestionsLimit = 20;
+  int _archiveOffset = 0;
+  final int _archiveLimit = 20;
   Timer? _debounceTimer;
   bool _wasDrawerOpen = false;
+
+  // Chip-driven filter (topic / review) applied client-side to the archive queue
+  // AND search results, with a dismissible header. Seeded from the constructor.
+  String? _activeCategoryFilter;
+  String? _activeReviewTagFilter;
+  Set<String> _activeReviewTagIds = {};
+  bool get _hasChipFilter =>
+      _activeCategoryFilter != null || _activeReviewTagFilter != null;
   
-  // Filter state
-  String _sortMode = 'popular'; // 'popular' or 'new'
+  // Filter state. The sort/location/reviews chip row was removed from the
+  // Archive UI; these remain (at their defaults) because the client-side
+  // filter pipeline still consults them.
+  final String _sortMode = 'popular';
   String? _selectedCountry;
   String? _selectedCity;
-  List<String> _selectedReviewTags = [];
-  Set<String> _reviewFilterQuestionIds = {};
-  
-  // Location autocomplete state
-  List<String> _countrySuggestions = [];
-  List<Map<String, dynamic>> _citySuggestions = [];
-  bool _showCountrySuggestions = false;
-  bool _showCitySuggestions = false;
-  
+  final List<String> _selectedReviewTags = [];
+  final Set<String> _reviewFilterQuestionIds = {};
+
   // Search configuration
   static const int _minQueryLength = 3;
   static const Duration _debounceDelay = Duration(milliseconds: 300);
+
+  // Search history (device-local, LRU of last 10 submitted-or-tapped queries)
+  static const String _historyPrefsKey = 'search_history';
+  static const int _historyMaxLength = 10;
+  List<String> _searchHistory = [];
+  // False until the async SharedPreferences read completes, so the empty state
+  // doesn't flash Top All Time before we know whether history exists.
+  bool _historyLoaded = false;
+
+  // Archive Answered/Unanswered toggle. Screen-state only (never persisted) —
+  // always defaults to Unanswered on open. 'unanswered' shows the queue of
+  // questions the user hasn't answered; 'answered' shows the ones they have.
+  String _archiveView = kArchiveUnansweredSection;
+
+  // Per-section sort, flipped by tapping the already-selected toggle chip and
+  // persisted in SharedPreferences (see [_loadArchiveSorts]). Unanswered opens
+  // on Popular (most answered first), Your answers on New (newest first).
+  static const String _unansweredSortPrefsKey = 'archive_sort_unanswered';
+  static const String _answeredSortPrefsKey = 'archive_sort_answered';
+  ArchiveSort _unansweredSort = defaultArchiveSort(kArchiveUnansweredSection);
+  ArchiveSort _answeredSort = defaultArchiveSort(kArchiveAnsweredSection);
+
+  // Monotonic id for archive-queue fetches, so the response of a request that a
+  // sort flip has superseded is discarded instead of repopulating the list in
+  // the old order.
+  int _archiveRequestId = 0;
+
+  // Fresh vote counts for the user's answered questions, fetched lazily the
+  // first time the Answered view is shown (keyed by question id). Merged over
+  // the stored answer-time votes so the Answered view ranks by current
+  // popularity; on fetch failure the stored value is used as a fallback.
+  Map<String, int> _answeredFreshCounts = {};
+  bool _answeredCountsLoaded = false;
+  bool _isLoadingAnsweredCounts = false;
 
   @override
   void initState() {
     super.initState();
     // Add this widget as an observer for app lifecycle changes
     WidgetsBinding.instance.addObserver(this);
+    // Seed the chip-driven filter (topic / review) from the constructor.
+    _activeCategoryFilter = widget.initialCategoryFilter;
+    _activeReviewTagFilter = widget.initialReviewTagFilter;
+    _activeReviewTagIds = (widget.initialReviewQuestionIds ?? const <String>[]).toSet();
+    // Track that the search surface was opened (never records query text).
+    AnalyticsService().trackEvent('search_opened', {'source': widget.source});
+    // Dedicated Archive open event for the non-search entry points.
+    if (widget.source == 'archive_icon' ||
+        widget.source == 'topic_chip' ||
+        widget.source == 'review_chip') {
+      AnalyticsService().trackEvent('archive_opened', {'source': widget.source});
+    }
+    // Load device-local search history for the empty state
+    _loadSearchHistory();
     // Schedule the loading of questions after the first frame
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadQuestions();
-      _loadPopularQuestions();
+      // Restore the persisted per-section sorts first, so the queue is fetched
+      // once — in the user's chosen order — rather than fetched then re-fetched.
+      _loadArchiveSorts().then((_) => _loadArchiveQueue());
     });
+  }
+
+  // ---- Search history (SharedPreferences, LRU with dedup) -------------------
+
+  Future<void> _loadSearchHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_historyPrefsKey);
+      final history = SearchHistory.decode(raw, max: _historyMaxLength);
+      if (mounted) {
+        setState(() {
+          _searchHistory = history;
+          _historyLoaded = true;
+        });
+      }
+    } catch (e) {
+      print('Error loading search history: $e');
+      if (mounted) {
+        setState(() {
+          _historyLoaded = true;
+        });
+      }
+    }
+  }
+
+  Future<void> _addToHistory(String rawQuery) async {
+    // LRU with case-insensitive dedup, newest first, capped at the max length.
+    final trimmed = SearchHistory.add(
+      _searchHistory,
+      rawQuery,
+      max: _historyMaxLength,
+      minLength: _minQueryLength,
+    );
+
+    // add() returns the input unchanged for blank/too-short queries.
+    if (trimmed.length == _searchHistory.length &&
+        (rawQuery.trim().isEmpty || rawQuery.trim().length < _minQueryLength)) {
+      return;
+    }
+
+    setState(() {
+      _searchHistory = trimmed;
+    });
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_historyPrefsKey, SearchHistory.encode(trimmed));
+    } catch (e) {
+      print('Error saving search history: $e');
+    }
+  }
+
+  Future<void> _removeHistoryItem(String query) async {
+    final updated = SearchHistory.remove(_searchHistory, query);
+    setState(() {
+      _searchHistory = updated;
+    });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_historyPrefsKey, SearchHistory.encode(updated));
+    } catch (e) {
+      print('Error saving search history: $e');
+    }
+  }
+
+  Future<void> _clearHistory() async {
+    setState(() {
+      _searchHistory = [];
+    });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_historyPrefsKey);
+    } catch (e) {
+      print('Error clearing search history: $e');
+    }
+  }
+
+  /// Re-run a search from a tapped recent-search entry.
+  void _runHistoryQuery(String query) {
+    _searchController.text = query;
+    _searchController.selection = TextSelection.fromPosition(
+      TextPosition(offset: query.length),
+    );
+    _onSearchChanged(query);
+    _addToHistory(query);
   }
 
   @override
@@ -161,133 +327,252 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
 
   Future<void> _loadQuestions() async {
     if (!mounted) return;
-    
-    setState(() {
-      _isSearching = true;
-    });
-    
+
+    // NOTE: this only warms the QuestionService provider — it is NOT a text
+    // search, so it must not toggle `_isSearching`. Doing so would mask the
+    // empty state (recent searches / Top All Time) behind the "Searching…"
+    // spinner every time the screen is opened.
     try {
       await Provider.of<QuestionService>(context, listen: false).fetchQuestions();
     } catch (e) {
       print('Error loading questions: $e');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isSearching = false;
-        });
-      }
     }
   }
 
-  Future<void> _loadPopularQuestions({bool loadMore = false}) async {
+  // ---- Archive per-section sort (SharedPreferences) -------------------------
+
+  /// Restores the persisted Unanswered / Answered sorts. A missing or
+  /// unrecognised stored value falls back to the section default, so a first run
+  /// (and a read failure) behaves exactly as before the flip existed.
+  Future<void> _loadArchiveSorts() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final unanswered = ArchiveSort.fromWireName(
+        prefs.getString(_unansweredSortPrefsKey),
+        fallback: defaultArchiveSort(kArchiveUnansweredSection),
+      );
+      final answered = ArchiveSort.fromWireName(
+        prefs.getString(_answeredSortPrefsKey),
+        fallback: defaultArchiveSort(kArchiveAnsweredSection),
+      );
+      if (!mounted) return;
+      setState(() {
+        _unansweredSort = unanswered;
+        _answeredSort = answered;
+      });
+    } catch (e) {
+      print('Error loading archive sort preferences: $e');
+    }
+  }
+
+  Future<void> _saveArchiveSort(String section, ArchiveSort sort) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        section == kArchiveAnsweredSection
+            ? _answeredSortPrefsKey
+            : _unansweredSortPrefsKey,
+        sort.wireName,
+      );
+    } catch (e) {
+      print('Error saving archive sort preference: $e');
+    }
+  }
+
+  /// The sort currently applied to [section].
+  ArchiveSort _archiveSortFor(String section) =>
+      section == kArchiveAnsweredSection ? _answeredSort : _unansweredSort;
+
+  /// Loads the Unanswered archive queue via the shared
+  /// [QuestionService.fetchArchiveQueue] (question_feed_scores by vote_count or
+  /// created_at desc — see [_unansweredSort] — with client-side
+  /// answered/reported/NSFW subtraction). Paginates with the same offset pattern
+  /// the old Top All Time list used.
+  ///
+  /// [force] bypasses the concurrency guard for a sort flip: the in-flight
+  /// request is superseded (its response is dropped by the [_archiveRequestId]
+  /// check) rather than leaving the list in the previous order.
+  Future<void> _loadArchiveQueue({bool loadMore = false, bool force = false}) async {
     if (!mounted) return;
-    
-    // Prevent multiple concurrent requests
-    if (_isLoadingPopular || _isLoadingMorePopular) return;
-    
+
+    // Prevent concurrent requests; stop paginating once the source is drained.
+    if (!force && (_isLoadingArchive || _isLoadingMoreArchive)) return;
+    if (loadMore && _archiveExhausted) return;
+
+    final int requestId = ++_archiveRequestId;
+    final ArchiveSort sort = _unansweredSort;
+
     setState(() {
       if (loadMore) {
-        _isLoadingMorePopular = true;
+        _isLoadingMoreArchive = true;
       } else {
-        _isLoadingPopular = true;
-        _popularQuestionsOffset = 0; // Reset offset for initial load
+        _isLoadingArchive = true;
+        // A superseded load-more response is discarded, so clear its spinner.
+        _isLoadingMoreArchive = false;
+        _archiveOffset = 0;
+        _archiveExhausted = false;
       }
     });
-    
+
     try {
-      // Fetch all-time popular questions directly from database
-      final popularQuestions = await _fetchAllTimePopularQuestions(
-        limit: _popularQuestionsLimit,
-        offset: _popularQuestionsOffset,
+      final questionService = Provider.of<QuestionService>(context, listen: false);
+      final userService = Provider.of<UserService>(context, listen: false);
+
+      final page = await questionService.fetchArchiveQueue(
+        userService: userService,
+        limit: _archiveLimit,
+        offset: _archiveOffset,
+        showNSFW: userService.showNSFWContent,
+        sort: sort,
       );
-      
-      if (mounted) {
+
+      if (mounted && requestId == _archiveRequestId) {
         setState(() {
           if (loadMore) {
-            _popularQuestions.addAll(popularQuestions);
-            _isLoadingMorePopular = false;
+            // Dedup against what we already have (the service over-fetches, so
+            // pages can overlap at the offset boundary).
+            final existing = _archiveQueue
+                .map((q) => q['id']?.toString())
+                .whereType<String>()
+                .toSet();
+            _archiveQueue.addAll(
+              page.where((q) => !existing.contains(q['id']?.toString())),
+            );
+            _isLoadingMoreArchive = false;
           } else {
-            _popularQuestions = popularQuestions;
-            _isLoadingPopular = false;
+            _archiveQueue = page;
+            _isLoadingArchive = false;
           }
-          _popularQuestionsOffset += _popularQuestionsLimit;
+          // A short page means the underlying source is exhausted.
+          if (page.length < _archiveLimit) _archiveExhausted = true;
+          _archiveOffset += _archiveLimit;
         });
       }
     } catch (e) {
-      print('Error loading popular questions: $e');
-      if (mounted) {
+      print('Error loading archive queue: $e');
+      if (mounted && requestId == _archiveRequestId) {
         setState(() {
-          if (!loadMore) {
-            _popularQuestions = [];
-          }
-          _isLoadingPopular = false;
-          _isLoadingMorePopular = false;
+          if (!loadMore) _archiveQueue = [];
+          _isLoadingArchive = false;
+          _isLoadingMoreArchive = false;
         });
       }
     }
   }
 
-  Future<List<Map<String, dynamic>>> _fetchAllTimePopularQuestions({
-    required int limit,
-    required int offset,
-  }) async {
-    final questionService = Provider.of<QuestionService>(context, listen: false);
+  /// The archive queue as rendered: defensively re-subtract answered / reported
+  /// questions (the local answered set can change after the fetch) and apply the
+  /// active topic / review chip filter.
+  List<Map<String, dynamic>> _visibleArchiveQueue(UserService userService) {
+    final answeredIds = userService.answeredQuestions
+        .map((q) => q['id']?.toString())
+        .whereType<String>()
+        .toSet();
+    var list = archiveQueueExcludingAnswered(_archiveQueue, answeredIds);
+    list = list
+        .where((q) => !userService.shouldHideReportedQuestion(q['id'].toString()))
+        .toList();
+    return _applyChipFilter(list);
+  }
+
+  /// The "Answered" view: the user's answered questions in the section's chosen
+  /// order — newest answered first, or by vote count (fresh server counts merged
+  /// over the stored answer-time value) — guest-migration stubs excluded, then
+  /// narrowed by the active topic / review chip filter (which applies to
+  /// whichever view is showing). The list is local, so both sorts are applied
+  /// client-side.
+  List<Map<String, dynamic>> _visibleYourAnswers(UserService userService) {
+    final merged = mergeAnsweredWithFreshCounts(
+      userService.answeredQuestions,
+      _answeredFreshCounts,
+    );
+    return _applyChipFilter(sortYourAnswers(merged, _answeredSort));
+  }
+
+  /// Lazily fetches fresh vote counts for the user's answered questions the
+  /// first time the Answered view is shown, so it can rank by current
+  /// popularity rather than the votes frozen at answer time. Batched into one
+  /// query; on failure it silently falls back to the stored votes (handled by
+  /// [mergeAnsweredWithFreshCounts]).
+  Future<void> _loadAnsweredVoteCounts() async {
+    if (!mounted || _answeredCountsLoaded || _isLoadingAnsweredCounts) return;
+
     final userService = Provider.of<UserService>(context, listen: false);
-    
-    // Access Supabase client
-    final supabase = Supabase.instance.client;
-    
-    // Query for all-time popular questions without date restrictions
-    final response = await supabase
-        .from('question_feed_scores')
-        .select('''
-          id,
-          prompt,
-          description,
-          type,
-          created_at,
-          nsfw,
-          is_hidden,
-          is_private,
-          targeting_type,
-          country_code,
-          city_id,
-          author_id,
-          categories,
-          vote_count,
-          question_options (
-            id,
-            option_text,
-            sort_order
-          )
-        ''')
-        .eq('is_hidden', false)
-        .eq('nsfw', false) // Always exclude NSFW for popular questions display
-        .neq('is_private', true) // Exclude private questions
-        .filter('targeting_type', 'in', '("globe","country")') // Apply targeting type filter for global questions
-        .order('vote_count', ascending: false) // Order by vote count (all-time popularity)
-        .range(offset, offset + limit - 1); // Apply pagination
-    
-    print('📊 All-time popular query returned ${response?.length ?? 0} questions');
-    
-    // DEBUG: Log first 5 questions' vote counts to verify ordering
-    if (response.isNotEmpty) {
-      final voteCounts = response.take(5).map((q) => q['vote_count'] ?? 0).toList();
-      print('🐛 DEBUG: First 5 all-time vote counts: $voteCounts');
+    final ids = userService.answeredQuestions
+        .map((q) => q['id']?.toString())
+        .whereType<String>()
+        .where((id) => id.isNotEmpty)
+        .toList();
+    if (ids.isEmpty) {
+      setState(() => _answeredCountsLoaded = true);
+      return;
     }
-    
-    // Transform the data to match the expected format
-    final List<Map<String, dynamic>> transformedQuestions = response.map((question) {
-      // Rename vote_count to votes to match expected format
-      final transformedQuestion = Map<String, dynamic>.from(question);
-      transformedQuestion['votes'] = question['vote_count'] ?? 0;
-      return transformedQuestion;
-    }).toList();
-    
-    // Enrich with engagement data if needed
-    await questionService.enrichQuestionsWithEngagementData(transformedQuestions);
-    
-    return transformedQuestions;
+
+    setState(() => _isLoadingAnsweredCounts = true);
+    try {
+      final questionService =
+          Provider.of<QuestionService>(context, listen: false);
+      final counts = await questionService.fetchVoteCountsForIds(ids);
+      if (mounted) {
+        setState(() {
+          _answeredFreshCounts = counts;
+          _answeredCountsLoaded = true;
+          _isLoadingAnsweredCounts = false;
+        });
+      }
+    } catch (e) {
+      print('Error loading answered vote counts: $e');
+      if (mounted) {
+        setState(() {
+          _answeredCountsLoaded = true; // fall back to stored votes
+          _isLoadingAnsweredCounts = false;
+        });
+      }
+    }
+  }
+
+  /// Applies the active topic / review chip filter to [list]. Category match:
+  /// the question's `categories` list contains the topic name (tolerant of both
+  /// the `List<String>` and `List<{name}>` shapes). Review match: the question
+  /// id is in the qualifying id set.
+  List<Map<String, dynamic>> _applyChipFilter(List<Map<String, dynamic>> list) {
+    var result = list;
+    if (_activeCategoryFilter != null) {
+      result = result
+          .where((q) => _questionHasCategory(q, _activeCategoryFilter!))
+          .toList();
+    }
+    if (_activeReviewTagFilter != null) {
+      result = result
+          .where((q) => _activeReviewTagIds.contains(q['id']?.toString()))
+          .toList();
+    }
+    return result;
+  }
+
+  bool _questionHasCategory(Map<String, dynamic> question, String categoryName) {
+    final cats = question['categories'];
+    if (cats is! List) return false;
+    final target = categoryName.toLowerCase();
+    for (final c in cats) {
+      final name = c is String
+          ? c
+          : (c is Map ? c['name']?.toString() : null);
+      if (name != null && name.toLowerCase() == target) return true;
+    }
+    return false;
+  }
+
+  void _clearChipFilter() {
+    setState(() {
+      _activeCategoryFilter = null;
+      _activeReviewTagFilter = null;
+      _activeReviewTagIds = {};
+      // Re-apply (now empty) chip filter to any active search results.
+      if (_hasSearched && _originalSearchResults.isNotEmpty) {
+        _searchResults = _applyClientSideFilters(_originalSearchResults);
+      }
+    });
   }
 
   void _onSearchChanged(String query) {
@@ -352,12 +637,19 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
       if (mounted) {
         // Store original results and apply client-side filtering and sorting
         final filteredResults = _applyClientSideFilters(results);
-        
+
         setState(() {
           _originalSearchResults = List.from(results); // Store original results
           _searchResults = filteredResults;
           _hasSearched = true;
           _isSearching = false;
+        });
+
+        // Analytics: never records the raw query text, only its length.
+        AnalyticsService().trackEvent('search_performed', {
+          'query_length': query.length,
+          'result_count': filteredResults.length,
+          'filters_active': _hasActiveFilters(),
         });
       }
     } catch (e) {
@@ -388,10 +680,11 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
 
   Widget _buildSearchPrompt() {
     if (_searchQuery.isEmpty) {
-      // Show popular questions when not searching
-      return _buildPopularQuestions();
+      // Empty-query default view: the full Archive surface (recent searches when
+      // present, then the Unanswered queue, then Your answers).
+      return _buildDefaultView();
     }
-    
+
     if (_searchQuery.length < _minQueryLength) {
       return Center(
         child: Column(
@@ -416,236 +709,363 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
     return const SizedBox.shrink();
   }
 
-  Widget _buildPopularQuestions() {
-    if (_isLoadingPopular) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('Loading popular questions...'),
-          ],
-        ),
-      );
+  // ---- Default (empty-query) Archive view ----------------------------------
+
+  /// The empty-query default view: a single scrollable with the recent-searches
+  /// block (when history exists), the Answered / Unanswered toggle, and the
+  /// active view's questions. Pagination for the Unanswered queue is driven by
+  /// the outer scroll NotificationListener (see [build]).
+  Widget _buildDefaultView() {
+    final userService = Provider.of<UserService>(context, listen: false);
+    final children = <Widget>[];
+
+    // Dismissible topic / review filter header.
+    if (_hasChipFilter) children.add(_buildFilterHeader());
+
+    // Recent searches (compact) — respects the no-flash-while-loading rule.
+    switch (searchEmptyState(
+      historyLoaded: _historyLoaded,
+      hasHistory: _searchHistory.isNotEmpty,
+    )) {
+      case SearchEmptyState.loadingHistory:
+      case SearchEmptyState.archiveQueue:
+        break; // No recent-searches block.
+      case SearchEmptyState.recentSearches:
+        children.add(_buildRecentSearchesCompact());
+        break;
     }
 
-    if (_popularQuestions.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.search, size: 64, color: Colors.grey),
-            const SizedBox(height: 16),
-            const Text(
-              'Search Questions',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+    // Answered / Unanswered toggle, with the active section's sort spelled out
+    // beneath it ("Unanswered — most answered first", …).
+    children.add(_buildArchiveToggle());
+    children.add(_buildArchiveSectionHeader());
+
+    if (_archiveView == kArchiveUnansweredSection) {
+      _buildUnansweredView(children, userService);
+    } else {
+      _buildAnsweredView(children, userService);
+    }
+
+    children.add(const SizedBox(height: 24));
+
+    return ListView(
+      controller: _popularScrollController,
+      children: children,
+    );
+  }
+
+  /// The one-line section header under the toggle, spelling out the active
+  /// section's sort ("Unanswered — most answered first", "Your answers — newest
+  /// first", …) so the flip is legible as words and not only as the chip's
+  /// indicator.
+  Widget _buildArchiveSectionHeader() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Text(
+        archiveSectionHeader(_archiveView, _archiveSortFor(_archiveView)),
+        style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+      ),
+    );
+  }
+
+  /// Appends the Unanswered queue tiles (in [_unansweredSort]'s order, with the
+  /// load-more spinner) to [children]. Infinite scroll is driven by the build's
+  /// NotificationListener.
+  void _buildUnansweredView(
+    List<Widget> children,
+    UserService userService,
+  ) {
+    final archive = _visibleArchiveQueue(userService);
+    if (_isLoadingArchive && archive.isEmpty) {
+      children.add(const Padding(
+        padding: EdgeInsets.all(24.0),
+        child: Center(child: CircularProgressIndicator()),
+      ));
+    } else if (archive.isEmpty) {
+      children.add(_buildEmptyArchiveNotice());
+    } else {
+      for (int i = 0; i < archive.length; i++) {
+        children.add(_buildQuestionTile(
+          context,
+          archive[i],
+          userService,
+          orderedList: archive,
+          rank: i,
+          feedType: 'archive',
+          entrySource: 'archive',
+          analyticsSection: 'archive',
+        ));
+      }
+      if (_isLoadingMoreArchive) {
+        children.add(const Padding(
+          padding: EdgeInsets.all(16.0),
+          child: Center(child: CircularProgressIndicator()),
+        ));
+      }
+    }
+  }
+
+  /// Appends the "Answered" view tiles (in [_answeredSort]'s order,
+  /// guest-migration stubs excluded, routing straight to results) to [children].
+  void _buildAnsweredView(
+    List<Widget> children,
+    UserService userService,
+  ) {
+    final yours = _visibleYourAnswers(userService);
+    if (_isLoadingAnsweredCounts && yours.isEmpty) {
+      children.add(const Padding(
+        padding: EdgeInsets.all(24.0),
+        child: Center(child: CircularProgressIndicator()),
+      ));
+    } else if (yours.isEmpty) {
+      children.add(_buildEmptyAnsweredNotice());
+    } else {
+      for (int i = 0; i < yours.length; i++) {
+        children.add(_buildQuestionTile(
+          context,
+          yours[i],
+          userService,
+          orderedList: yours,
+          rank: i,
+          feedType: 'archive',
+          entrySource: 'archive',
+          analyticsSection: 'your_answers',
+          forceResults: true,
+        ));
+      }
+    }
+  }
+
+  /// The Answered / Unanswered segmented toggle, styled to match the screen's
+  /// existing pill chips (rounded, primaryColor-tinted when active). The
+  /// selected chip carries its section's sort ("Popular ⇅" / "New ⇅"), which
+  /// tapping that chip again flips.
+  Widget _buildArchiveToggle() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: _buildToggleChip(
+              label: 'Unanswered',
+              value: kArchiveUnansweredSection,
             ),
-            const SizedBox(height: 8),
-            const Text(
-              'Start typing to search through questions.',
-              style: TextStyle(color: Colors.grey),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _buildToggleChip(
+              label: 'Answered',
+              value: kArchiveAnsweredSection,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Handles a toggle-chip tap: the other chip selects that section, the
+  /// already-selected chip flips that section's sort between Popular and New
+  /// (persisted, with a haptic and an `archive_sort_changed` event).
+  void _onArchiveTogglePressed(String value) {
+    final outcome = archiveToggleTap(
+      currentView: _archiveView,
+      tappedView: value,
+      tappedSectionSort: _archiveSortFor(value),
+    );
+
+    if (outcome.sortFlipped) {
+      AppHaptics.lightImpact();
+      AnalyticsService().trackEvent('archive_sort_changed', {
+        'section': value,
+        'sort': outcome.sort.wireName,
+      });
+      setState(() {
+        if (value == kArchiveAnsweredSection) {
+          _answeredSort = outcome.sort;
+        } else {
+          _unansweredSort = outcome.sort;
+          // The queue's order comes from the server, so drop the page we have
+          // rather than show it in the sort the user just left.
+          _archiveQueue = [];
+        }
+      });
+      _saveArchiveSort(value, outcome.sort);
+      if (value == kArchiveUnansweredSection) {
+        _loadArchiveQueue(force: true);
+      }
+      return;
+    }
+
+    if (!outcome.viewChanged) return;
+    setState(() => _archiveView = outcome.view);
+    // Lazily fetch fresh answered vote counts the first time Answered shows.
+    if (outcome.view == kArchiveAnsweredSection) _loadAnsweredVoteCounts();
+  }
+
+  Widget _buildToggleChip({required String label, required String value}) {
+    final selected = _archiveView == value;
+    final primary = Theme.of(context).primaryColor;
+    final sort = _archiveSortFor(value);
+    final chip = InkWell(
+      borderRadius: BorderRadius.circular(20),
+      onTap: () => _onArchiveTogglePressed(value),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          border: Border.all(
+            color: selected ? primary : Colors.grey.shade300,
+          ),
+          borderRadius: BorderRadius.circular(20),
+          color: selected ? primary.withOpacity(0.1) : null,
+        ),
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                  color: selected ? primary : Colors.grey.shade600,
+                ),
+              ),
+              // Sort indicator on the selected chip only — the affordance for
+              // "tap again to flip".
+              if (selected) ...[
+                const SizedBox(width: 6),
+                Text(
+                  archiveSortChipLabel(sort),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: primary.withOpacity(0.8),
+                  ),
+                ),
+                const SizedBox(width: 2),
+                Icon(Icons.swap_vert, size: 14, color: primary.withOpacity(0.8)),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+
+    if (!selected) return chip;
+    return Tooltip(
+      message: 'Tap again to sort by ${archiveSortChipLabel(sort.flipped)}',
+      child: chip,
+    );
+  }
+
+  Widget _buildEmptyAnsweredNotice() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 32.0),
+      child: Center(
+        child: Column(
+          children: [
+            const Icon(Icons.history_toggle_off, size: 48, color: Colors.grey),
+            const SizedBox(height: 12),
+            Text(
+              _hasChipFilter
+                  ? 'None of your answers match this filter.'
+                  : 'You haven\'t answered any questions yet.',
+              style: const TextStyle(color: Colors.grey),
               textAlign: TextAlign.center,
             ),
           ],
         ),
-      );
+      ),
+    );
+  }
+
+  Widget _buildFilterHeader() {
+    final String label;
+    if (_activeCategoryFilter != null) {
+      label = 'Topic: $_activeCategoryFilter';
+    } else {
+      final tag = _activeReviewTagFilter;
+      label = 'Review: ${ReviewTagNavigation.chipLabels[tag] ?? tag}';
     }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: InputChip(
+          label: Text(label),
+          onDeleted: _clearChipFilter,
+          deleteIcon: const Icon(Icons.close, size: 18),
+          backgroundColor: Theme.of(context).primaryColor.withOpacity(0.1),
+          side: BorderSide(
+            color: Theme.of(context).primaryColor.withOpacity(0.3),
+          ),
+        ),
+      ),
+    );
+  }
 
-    // Filter out NSFW and private questions from popular questions
-    final userService = Provider.of<UserService>(context, listen: false);
-    final filteredPopularQuestions = _popularQuestions.where((question) {
-      // Filter out private questions
-      if (question['is_private'] == true) {
-        return false;
-      }
-      
-      // Filter out NSFW questions since we want family-friendly popular content
-      if (question['is_nsfw'] == true) {
-        return false;
-      }
-      
-      // Filter out reported questions
-      if (userService.shouldHideReportedQuestion(question['id'].toString())) {
-        return false;
-      }
+  Widget _buildEmptyArchiveNotice() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 32.0),
+      child: Center(
+        child: Column(
+          children: [
+            const Icon(Icons.inbox, size: 48, color: Colors.grey),
+            const SizedBox(height: 12),
+            Text(
+              _hasChipFilter
+                  ? 'No unanswered questions match this filter.'
+                  : 'You\'re all caught up — no unanswered questions right now.',
+              style: const TextStyle(color: Colors.grey),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
-      return true;
-    }).toList();
-
+  /// Compact recent-searches block (no nested scroll view — it composes inside
+  /// the default view's single ListView).
+  Widget _buildRecentSearchesCompact() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Add spacing above Popular Questions section
-        SizedBox(height: 24),
-        // Popular questions header
+        const SizedBox(height: 16),
         Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
+          child: Row(
             children: [
-              const Text(
-                'Popular Questions',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              const Expanded(
+                child: Text(
+                  'Recent searches',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
               ),
-              const SizedBox(height: 4),
-              Text(
-                'Chameleon classics (top all-time)',
-                style: const TextStyle(color: Colors.grey, fontSize: 14),
+              TextButton(
+                onPressed: _clearHistory,
+                child: const Text('Clear all'),
               ),
             ],
           ),
         ),
-        // Questions list
-        Expanded(
-          child: ListView.builder(
-            controller: _popularScrollController,
-            itemCount: filteredPopularQuestions.length + (_isLoadingMorePopular ? 1 : 0),
-            itemBuilder: (context, index) {
-              // Show loading indicator at the bottom when loading more
-              if (index == filteredPopularQuestions.length) {
-                return const Padding(
-                  padding: EdgeInsets.all(16.0),
-                  child: Center(
-                    child: CircularProgressIndicator(),
-                  ),
-                );
-              }
-
-              // Load more when reaching near the end
-              if (index == filteredPopularQuestions.length - 3 && !_isLoadingMorePopular) {
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  _loadPopularQuestions(loadMore: true);
-                });
-              }
-
-              final question = filteredPopularQuestions[index];
-              final hasAnswered = userService.hasAnsweredQuestion(question['id']);
-              
-              // Determine targeting emoji like in home screen
-              final targetingType = question['targeting_type']?.toString();
-              final questionCountryCode = question['country_code']?.toString();
-              String? targetingEmoji;
-              
-              if (targetingType == 'city') {
-                targetingEmoji = '🏙️';
-              } else if (targetingType == 'country' && questionCountryCode != null && questionCountryCode.isNotEmpty) {
-                final flagEmoji = _getCountryFlagEmoji(questionCountryCode);
-                targetingEmoji = flagEmoji.isNotEmpty ? flagEmoji : '🇺🇳';
-              } else if (targetingType == 'globe' || targetingType == 'global') {
-                targetingEmoji = '🌍';
-              } else if (targetingType == 'country' && (questionCountryCode == null || questionCountryCode.isEmpty)) {
-                targetingEmoji = '🇺🇳'; // Show UN flag while we fetch
-                _fetchAndCacheTargetingData(question);
-              } else if (targetingType == null) {
-                targetingEmoji = '🌍'; // Show world while we fetch
-                _fetchAndCacheTargetingData(question);
-              } else {
-                targetingEmoji = '🌍';
-              }
-              
-              return Container(
-                margin: EdgeInsets.only(left: 16.0, right: 16.0, bottom: 12.0),
-                decoration: BoxDecoration(
-                  color: hasAnswered
-                      ? null
-                      : (Theme.of(context).brightness == Brightness.dark ? null : Colors.white),
-                  border: Border.all(
-                    color: hasAnswered
-                        ? Theme.of(context).dividerColor.withOpacity(0.15)
-                        : Theme.of(context).dividerColor.withOpacity(0.3),
-                    width: 0.5,
-                  ),
-                  borderRadius: BorderRadius.circular(8.0),
-                  boxShadow: (!hasAnswered && Theme.of(context).brightness == Brightness.light)
-                      ? [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.08),
-                            blurRadius: 4,
-                            offset: Offset(0, 2),
-                          ),
-                        ]
-                      : null,
-                ),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(8.0),
-                  onLongPress: () => _showBoostDialog(question),
-                  onTap: () {
-                    final questionService = Provider.of<QuestionService>(context, listen: false);
-                    final locationService = Provider.of<LocationService>(context, listen: false);
-
-                    // Create FeedContext from popular questions
-                    final filters = <String, dynamic>{
-                      'feedType': 'popular',
-                      'showNSFW': false,
-                      'questionTypes': userService.enabledQuestionTypes,
-                      'userCountry': locationService.userLocation?['country_code'],
-                      'userCity': locationService.selectedCity?['id'],
-                    };
-
-                    final questionIndex = filteredPopularQuestions.indexOf(question);
-                    final feedContext = FeedContext(
-                      feedType: 'popular_search',
-                      filters: filters,
-                      questions: filteredPopularQuestions,
-                      currentQuestionIndex: questionIndex,
-                      originalQuestionId: question['id']?.toString(),
-                      originalQuestionIndex: questionIndex,
-                    );
-
-                    if (hasAnswered) {
-                      questionService.navigateToResultsScreen(context, question, feedContext: feedContext, fromSearch: true);
-                    } else {
-                      questionService.navigateToAnswerScreen(context, question, feedContext: feedContext, fromSearch: true);
-                    }
-                  },
-                  child: ListTile(
-                    title: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          height: 60,
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            crossAxisAlignment: CrossAxisAlignment.center,
-                            children: [
-                              if (targetingEmoji != null) ...[
-                                Opacity(
-                                  opacity: hasAnswered ? 0.4 : 1.0,
-                                  child: Text(
-                                    targetingEmoji,
-                                    style: TextStyle(fontSize: 16),
-                                  ),
-                                ),
-                                SizedBox(height: 8),
-                              ],
-                              QuestionTypeBadge(
-                                type: question['type'] ?? 'unknown',
-                                color: hasAnswered ? Colors.grey : Theme.of(context).primaryColor,
-                              ),
-                            ],
-                          ),
-                        ),
-                        SizedBox(width: 16),
-                        Expanded(
-                          child: Text(
-                            question['prompt'] ?? question['title'] ?? 'No Title',
-                            style: TextStyle(
-                              color: hasAnswered ? Colors.grey : null,
-                            ),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
-                    subtitle: _buildSubtitle(context, question),
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
+        ..._searchHistory.map((query) => ListTile(
+              dense: true,
+              leading: const Icon(Icons.history, color: Colors.grey),
+              title: Text(
+                query,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: IconButton(
+                icon: const Icon(Icons.close, size: 18, color: Colors.grey),
+                tooltip: 'Remove',
+                onPressed: () => _removeHistoryItem(query),
+              ),
+              onTap: () => _runHistoryQuery(query),
+            )),
       ],
     );
   }
@@ -686,6 +1106,170 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
     );
   }
 
+  /// Builds a single search-result tile, shared by the "Posted by me" and
+  /// "All results" sections. [rank] is the position within its section and
+  /// [section] is 'mine' | 'all' (used for analytics only).
+  /// Shared question tile for every section: genuine text-search results
+  /// ([feedType] 'search', [entrySource] 'search', records history on tap), the
+  /// Archive "Unanswered" queue and "Your answers" ([feedType] 'archive',
+  /// [entrySource] 'archive'). [orderedList] backs the swipe-navigation
+  /// FeedContext so swipe walks that section. [forceResults] routes straight to
+  /// the results screen (used by "Your answers", which are all answered).
+  Widget _buildQuestionTile(
+    BuildContext context,
+    Map<String, dynamic> question,
+    UserService userService, {
+    required List<Map<String, dynamic>> orderedList,
+    required int rank,
+    required String feedType,
+    required String entrySource,
+    required String analyticsSection,
+    bool recordHistoryOnTap = false,
+    bool forceResults = false,
+  }) {
+    final hasAnswered =
+        forceResults || userService.hasAnsweredQuestion(question['id']);
+
+    // Determine targeting emoji like in home screen
+    final targetingType = question['targeting_type']?.toString();
+    final questionCountryCode = question['country_code']?.toString();
+    String? targetingEmoji;
+
+    if (targetingType == 'city') {
+      targetingEmoji = '🏙️';
+    } else if (targetingType == 'country' && questionCountryCode != null && questionCountryCode.isNotEmpty) {
+      final flagEmoji = _getCountryFlagEmoji(questionCountryCode);
+      targetingEmoji = flagEmoji.isNotEmpty ? flagEmoji : '🇺🇳';
+    } else if (targetingType == 'globe' || targetingType == 'global') {
+      targetingEmoji = '🌍';
+    } else if (targetingType == 'country' && (questionCountryCode == null || questionCountryCode.isEmpty)) {
+      targetingEmoji = '🇺🇳'; // Show UN flag while we fetch
+      _fetchAndCacheTargetingData(question);
+    } else if (targetingType == null) {
+      targetingEmoji = '🌍'; // Show world while we fetch
+      _fetchAndCacheTargetingData(question);
+    } else {
+      targetingEmoji = '🌍';
+    }
+
+    return Container(
+      margin: EdgeInsets.only(left: 16.0, right: 16.0, bottom: 12.0),
+      decoration: BoxDecoration(
+        color: hasAnswered
+            ? null
+            : (Theme.of(context).brightness == Brightness.dark ? null : Colors.white),
+        border: Border.all(
+          color: hasAnswered
+              ? Theme.of(context).dividerColor.withOpacity(0.15)
+              : Theme.of(context).dividerColor.withOpacity(0.3),
+          width: 0.5,
+        ),
+        borderRadius: BorderRadius.circular(8.0),
+        boxShadow: (!hasAnswered && Theme.of(context).brightness == Brightness.light)
+            ? [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.08),
+                  blurRadius: 4,
+                  offset: Offset(0, 2),
+                ),
+              ]
+            : null,
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8.0),
+        onLongPress: () => BoostDialog.show(context, question),
+        onTap: () {
+          final questionService = Provider.of<QuestionService>(context, listen: false);
+          final locationService = Provider.of<LocationService>(context, listen: false);
+
+          // A tapped text-search result counts as a "used" query → record it.
+          if (recordHistoryOnTap) {
+            _addToHistory(_displayQuery);
+          }
+
+          AnalyticsService().trackEvent('search_result_tapped', {
+            'result_rank': rank,
+            'section': analyticsSection,
+          });
+
+          // FeedContext over this section so swipe navigation walks it.
+          final filters = <String, dynamic>{
+            'feedType': feedType,
+            'showNSFW': userService.showNSFWContent,
+            'userCountry': locationService.userLocation?['country_code'],
+            'userCity': locationService.selectedCity?['id'],
+            if (feedType == 'search') 'searchQuery': _displayQuery,
+          };
+
+          final questionIndex = orderedList.indexOf(question);
+          final feedContext = FeedContext(
+            feedType: feedType,
+            filters: filters,
+            questions: orderedList,
+            currentQuestionIndex: questionIndex,
+            originalQuestionId: question['id']?.toString(),
+            originalQuestionIndex: questionIndex,
+          );
+
+          // Answered → results, unanswered → answer screen (guest gating and
+          // answered/unanswered routing preserved by the service navigators).
+          if (forceResults || userService.hasAnsweredQuestion(question['id'])) {
+            questionService.navigateToResultsScreen(context, question, feedContext: feedContext, fromSearch: true);
+          } else {
+            questionService.navigateToAnswerScreen(context, question, feedContext: feedContext, fromSearch: true, entrySource: entrySource);
+          }
+        },
+        child: ListTile(
+          title: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                height: 60,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    if (targetingEmoji != null) ...[
+                      Opacity(
+                        opacity: hasAnswered ? 0.4 : 1.0,
+                        child: Text(
+                          targetingEmoji,
+                          style: TextStyle(fontSize: 16),
+                        ),
+                      ),
+                      SizedBox(height: 8),
+                    ],
+                    QuestionTypeBadge(
+                      type: question['type'] ?? 'unknown',
+                      color: hasAnswered ? Colors.grey : Theme.of(context).primaryColor,
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(width: 16),
+              Expanded(
+                child: Text(
+                  question['prompt'] ?? question['title'] ?? 'No Title',
+                  style: TextStyle(
+                    color: hasAnswered ? Colors.grey : null,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (hasAnswered)
+                Padding(
+                  padding: EdgeInsets.only(left: 8.0),
+                  child: Icon(Icons.check_circle, color: Colors.grey, size: 18),
+                ),
+            ],
+          ),
+          subtitle: _buildSubtitle(context, question),
+        ),
+      ),
+    );
+  }
+
   Widget _buildSubtitle(BuildContext context, Map<String, dynamic> question) {
     final votes = question['votes'] ?? 0;
     final reactionCount = _getReactionCount(question);
@@ -702,11 +1286,14 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
     final parts = <String>[];
     parts.add(timeAgo);
     parts.add('$votes ${votes == 1 ? 'vote' : 'votes'}');
-    
+
     // Build single line with comments on the right if there are comments (matching home screen layout)
     return Padding(
       padding: EdgeInsets.only(left: leftPadding, top: 2.0),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
         children: [
           Expanded(
             child: Text(
@@ -724,6 +1311,8 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
                 color: hasAnswered ? Colors.grey : null,
               ),
             ),
+        ],
+      ),
         ],
       ),
     );
@@ -1077,327 +1666,6 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
     }
   }
 
-  String _getLocationDisplayText() {
-    if (_selectedCity != null && _selectedCountry != null) {
-      return '$_selectedCity, $_selectedCountry';
-    } else if (_selectedCountry != null) {
-      return _selectedCountry!;
-    }
-    return 'Location';
-  }
-
-  String _getReviewsDisplayText() {
-    if (_selectedReviewTags.isEmpty) {
-      return 'Reviews';
-    } else if (_selectedReviewTags.length == 1) {
-      return ReviewTagNavigation.chipLabels[_selectedReviewTags.first] ?? _selectedReviewTags.first;
-    } else {
-      return '${_selectedReviewTags.length} tags';
-    }
-  }
-
-  void _showLocationDialog() {
-    final TextEditingController countryController = TextEditingController(text: _selectedCountry ?? '');
-    final TextEditingController cityController = TextEditingController(text: _selectedCity ?? '');
-    
-    // Reset suggestions
-    _countrySuggestions.clear();
-    _citySuggestions.clear();
-    _showCountrySuggestions = false;
-    _showCitySuggestions = false;
-
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              title: const Text('Filter by Location'),
-              content: SizedBox(
-                width: double.maxFinite,
-                height: 300,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Country field with autocomplete
-                    TextField(
-                      controller: countryController,
-                      decoration: const InputDecoration(
-                        labelText: 'Country',
-                        hintText: 'Enter country name',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.location_on),
-                      ),
-                      onChanged: (value) async {
-                        if (value.length >= 2) {
-                          final locationService = Provider.of<LocationService>(context, listen: false);
-                          final results = await locationService.searchCountries(value);
-                          setDialogState(() {
-                            _countrySuggestions = results;
-                            _showCountrySuggestions = value.isNotEmpty && results.isNotEmpty;
-                          });
-                        } else {
-                          setDialogState(() {
-                            _showCountrySuggestions = false;
-                            _countrySuggestions.clear();
-                          });
-                        }
-                        
-                        // Clear city when country changes
-                        if (value != _selectedCountry) {
-                          cityController.clear();
-                          setDialogState(() {
-                            _showCitySuggestions = false;
-                            _citySuggestions.clear();
-                          });
-                        }
-                      },
-                    ),
-                    
-                    // Country suggestions
-                    if (_showCountrySuggestions && _countrySuggestions.isNotEmpty)
-                      Container(
-                        margin: const EdgeInsets.only(top: 4),
-                        constraints: const BoxConstraints(maxHeight: 100),
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Colors.grey.shade300),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: ListView.builder(
-                          shrinkWrap: true,
-                          itemCount: _countrySuggestions.length,
-                          itemBuilder: (context, index) {
-                            return ListTile(
-                              dense: true,
-                              title: Text(_countrySuggestions[index]),
-                              onTap: () {
-                                countryController.text = _countrySuggestions[index];
-                                setDialogState(() {
-                                  _showCountrySuggestions = false;
-                                });
-                                // Clear city when country changes
-                                cityController.clear();
-                                setDialogState(() {
-                                  _showCitySuggestions = false;
-                                  _citySuggestions.clear();
-                                });
-                              },
-                            );
-                          },
-                        ),
-                      ),
-                    
-                    const SizedBox(height: 16),
-                    
-                    // City field with autocomplete
-                    TextField(
-                      controller: cityController,
-                      decoration: InputDecoration(
-                        labelText: 'City (optional)',
-                        hintText: countryController.text.isNotEmpty 
-                            ? 'Search cities in ${countryController.text}'
-                            : 'Select a country first',
-                        border: const OutlineInputBorder(),
-                        prefixIcon: const Icon(Icons.location_city),
-                      ),
-                      enabled: countryController.text.isNotEmpty,
-                      onChanged: (value) async {
-                        if (value.length >= 3 && countryController.text.isNotEmpty) {
-                          final locationService = Provider.of<LocationService>(context, listen: false);
-                          final results = await locationService.searchCitiesInCountry(value, countryController.text);
-                          setDialogState(() {
-                            _citySuggestions = results;
-                            _showCitySuggestions = value.isNotEmpty && results.isNotEmpty;
-                          });
-                        } else {
-                          setDialogState(() {
-                            _showCitySuggestions = false;
-                            _citySuggestions.clear();
-                          });
-                        }
-                      },
-                    ),
-                    
-                    // City suggestions
-                    if (_showCitySuggestions && _citySuggestions.isNotEmpty)
-                      Expanded(
-                        child: Container(
-                          margin: const EdgeInsets.only(top: 4),
-                          decoration: BoxDecoration(
-                            border: Border.all(color: Colors.grey.shade300),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: ListView.builder(
-                            shrinkWrap: true,
-                            itemCount: _citySuggestions.length,
-                            itemBuilder: (context, index) {
-                              final city = _citySuggestions[index];
-                              final populationText = city['population'] != null && city['population'] > 0
-                                  ? ' • ${_formatPopulation(city['population'])}'
-                                  : '';
-                              
-                              return ListTile(
-                                dense: true,
-                                leading: const Icon(Icons.location_city, size: 16),
-                                title: Text(city['name']),
-                                subtitle: Text('${city['country_name_en']}$populationText'),
-                                onTap: () {
-                                  cityController.text = city['display_name'] ?? city['name'];
-                                  setDialogState(() {
-                                    _showCitySuggestions = false;
-                                  });
-                                },
-                              );
-                            },
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    setState(() {
-                      _selectedCountry = null;
-                      _selectedCity = null;
-                      // Apply filtering to existing results instead of re-searching
-                      if (_hasSearched && _originalSearchResults.isNotEmpty) {
-                        _searchResults = _applyClientSideFilters(_originalSearchResults);
-                      }
-                    });
-                    Navigator.of(context).pop();
-                  },
-                  child: const Text('Clear'),
-                ),
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Cancel'),
-                ),
-                ElevatedButton(
-                  onPressed: () {
-                    setState(() {
-                      _selectedCountry = countryController.text.trim().isEmpty ? null : countryController.text.trim();
-                      _selectedCity = cityController.text.trim().isEmpty ? null : cityController.text.trim();
-                      // Apply filtering to existing results instead of re-searching
-                      if (_hasSearched && _originalSearchResults.isNotEmpty) {
-                        _searchResults = _applyClientSideFilters(_originalSearchResults);
-                      }
-                    });
-                    Navigator.of(context).pop();
-                  },
-                  child: const Text('Apply'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-
-  String _formatPopulation(int population) {
-    if (population >= 1000000) {
-      return '${(population / 1000000).toStringAsFixed(1)}M';
-    } else if (population >= 1000) {
-      return '${(population / 1000).toStringAsFixed(0)}K';
-    } else {
-      return population.toString();
-    }
-  }
-
-  void _showReviewsDialog() {
-    final allTags = [...ReviewTagNavigation.positiveChips, ...ReviewTagNavigation.negativeChips];
-    List<String> tempSelectedTags = List.from(_selectedReviewTags);
-
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              title: const Text('Filter by Reviews'),
-              content: SizedBox(
-                width: double.maxFinite,
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: allTags.length,
-                  itemBuilder: (context, index) {
-                    final tag = allTags[index];
-                    final label = ReviewTagNavigation.chipLabels[tag] ?? tag;
-                    final isSelected = tempSelectedTags.contains(tag);
-
-                    return CheckboxListTile(
-                      title: Text(
-                        label,
-                        style: TextStyle(fontSize: 14),
-                      ),
-                      value: isSelected,
-                      dense: true,
-                      onChanged: (bool? value) {
-                        setDialogState(() {
-                          if (value == true) {
-                            tempSelectedTags.add(tag);
-                          } else {
-                            tempSelectedTags.remove(tag);
-                          }
-                        });
-                      },
-                    );
-                  },
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    setState(() {
-                      _selectedReviewTags.clear();
-                      _reviewFilterQuestionIds.clear();
-                      if (_hasSearched && _originalSearchResults.isNotEmpty) {
-                        _searchResults = _applyClientSideFilters(_originalSearchResults);
-                      }
-                    });
-                    Navigator.of(context).pop();
-                  },
-                  child: const Text('Clear All'),
-                ),
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Cancel'),
-                ),
-                ElevatedButton(
-                  onPressed: () async {
-                    Navigator.of(context).pop();
-                    // Fetch qualifying question IDs
-                    if (tempSelectedTags.isNotEmpty) {
-                      final ratingService = QuestionRatingService();
-                      final ids = await ratingService.getQuestionIdsForTopTags(tempSelectedTags);
-                      setState(() {
-                        _selectedReviewTags = tempSelectedTags;
-                        _reviewFilterQuestionIds = ids;
-                        if (_hasSearched && _originalSearchResults.isNotEmpty) {
-                          _searchResults = _applyClientSideFilters(_originalSearchResults);
-                        }
-                      });
-                    } else {
-                      setState(() {
-                        _selectedReviewTags = tempSelectedTags;
-                        _reviewFilterQuestionIds = {};
-                        if (_hasSearched && _originalSearchResults.isNotEmpty) {
-                          _searchResults = _applyClientSideFilters(_originalSearchResults);
-                        }
-                      });
-                    }
-                  },
-                  child: const Text('Apply'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
 
   bool _hasActiveFilters() {
     return _sortMode != 'popular' ||
@@ -1440,7 +1708,10 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
     filtered = filtered.where((question) {
       return question['is_private'] != true;
     }).toList();
-    
+
+    // Apply the active topic / review chip filter (from a chip-driven entry).
+    filtered = _applyChipFilter(filtered);
+
     // Apply location filtering
     if (_selectedCountry != null || _selectedCity != null) {
       filtered = filtered.where((question) {
@@ -1516,7 +1787,7 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
       },
       child: Scaffold(
       appBar: AppBar(
-        title: const Text('Search'),
+        title: const Text('Archive'),
         backgroundColor: Theme.of(context).scaffoldBackgroundColor,
         elevation: 4,
       ),
@@ -1560,6 +1831,16 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
                   _hideSearchBar = shouldHide;
                 });
               }
+              // Infinite-scroll pagination for the Unanswered archive queue
+              // only (the Answered view is a fixed, fully-loaded list).
+              if (_archiveView == kArchiveUnansweredSection &&
+                  notification.metrics.pixels >=
+                      notification.metrics.maxScrollExtent - 300 &&
+                  !_isLoadingArchive &&
+                  !_isLoadingMoreArchive &&
+                  !_archiveExhausted) {
+                _loadArchiveQueue(loadMore: true);
+              }
             }
             return false;
           },
@@ -1576,175 +1857,43 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
             // Buffer space above filter chips
             const SizedBox(height: 16.0),
 
-            // Filter tabs
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
-              child: Row(
-                children: [
-                  // Sort toggle
-                  Expanded(
-                    child: InkWell(
-                      onTap: () {
-                        setState(() {
-                          _sortMode = _sortMode == 'popular' ? 'new' : 'popular';
-                          // Apply sorting to existing results instead of re-searching
-                          if (_hasSearched && _originalSearchResults.isNotEmpty) {
-                            _searchResults = _applyClientSideFilters(_originalSearchResults);
-                          }
-                        });
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-                        decoration: BoxDecoration(
-                          border: Border.all(
-                            color: _sortMode == 'new' 
-                                ? Theme.of(context).primaryColor 
-                                : Colors.grey.shade300,
-                          ),
-                          borderRadius: BorderRadius.circular(20),
-                          color: _sortMode == 'new'
-                              ? Theme.of(context).primaryColor.withOpacity(0.1)
-                              : null,
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              _sortMode == 'popular' ? Icons.trending_up : Icons.access_time,
-                              size: 16,
-                              color: _sortMode == 'new'
-                                  ? Theme.of(context).primaryColor
-                                  : Colors.grey.shade600,
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              _sortMode == 'popular' ? 'Popular' : 'New',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: _sortMode == 'new'
-                                    ? Theme.of(context).primaryColor
-                                    : Colors.grey.shade600,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  // Location filter
-                  Expanded(
-                    child: InkWell(
-                      onTap: _showLocationDialog,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-                        decoration: BoxDecoration(
-                          border: Border.all(
-                            color: (_selectedCountry != null || _selectedCity != null) 
-                                ? Theme.of(context).primaryColor 
-                                : Colors.grey.shade300,
-                          ),
-                          borderRadius: BorderRadius.circular(20),
-                          color: (_selectedCountry != null || _selectedCity != null)
-                              ? Theme.of(context).primaryColor.withOpacity(0.1)
-                              : null,
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.location_on,
-                              size: 16,
-                              color: (_selectedCountry != null || _selectedCity != null)
-                                  ? Theme.of(context).primaryColor
-                                  : Colors.grey.shade600,
-                            ),
-                            const SizedBox(width: 4),
-                            Expanded(
-                              child: Text(
-                                _getLocationDisplayText(),
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: (_selectedCountry != null || _selectedCity != null)
-                                      ? Theme.of(context).primaryColor
-                                      : Colors.grey.shade600,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  // Reviews filter
-                  Expanded(
-                    child: InkWell(
-                      onTap: _showReviewsDialog,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-                        decoration: BoxDecoration(
-                          border: Border.all(
-                            color: _selectedReviewTags.isNotEmpty
-                                ? Theme.of(context).primaryColor
-                                : Colors.grey.shade300,
-                          ),
-                          borderRadius: BorderRadius.circular(20),
-                          color: _selectedReviewTags.isNotEmpty
-                              ? Theme.of(context).primaryColor.withOpacity(0.1)
-                              : null,
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.star,
-                              size: 16,
-                              color: _selectedReviewTags.isNotEmpty
-                                  ? Theme.of(context).primaryColor
-                                  : Colors.grey.shade600,
-                            ),
-                            const SizedBox(width: 4),
-                            Expanded(
-                              child: Text(
-                                _getReviewsDisplayText(),
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: _selectedReviewTags.isNotEmpty
-                                      ? Theme.of(context).primaryColor
-                                      : Colors.grey.shade600,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            
             Padding(
                   padding: const EdgeInsets.all(8.0),
-                  child: TextField(
-                    controller: _searchController,
-                    focusNode: _searchFocusNode, // Add focus node
-                    autofocus: true, // Show blinking cursor to indicate typing
-                    decoration: InputDecoration(
-                      hintText: 'Type to search...',
-                      prefixIcon: const Icon(Icons.search),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                      suffixIcon: _searchQuery.isNotEmpty
-                          ? IconButton(
-                              icon: const Icon(Icons.clear),
-                              onPressed: _clearSearch,
-                            )
-                          : null,
+                  child: Hero(
+                    tag: kSearchHeroTag,
+                    // Keep the field interactive during/after the flight.
+                    flightShuttleBuilder: (context, animation, direction,
+                        fromContext, toContext) {
+                      return Material(
+                        color: Colors.transparent,
+                        child: toContext.widget,
+                      );
+                    },
+                    child: Material(
+                      color: Colors.transparent,
+                      child: TextField(
+                        controller: _searchController,
+                        focusNode: _searchFocusNode, // Add focus node
+                        autofocus: widget.autofocus, // Focus when opened from the Home pill
+                        textInputAction: TextInputAction.search,
+                        decoration: InputDecoration(
+                          hintText: 'Search Read the Room…',
+                          prefixIcon: const Icon(Icons.search),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                          suffixIcon: _searchQuery.isNotEmpty
+                              ? IconButton(
+                                  icon: const Icon(Icons.clear),
+                                  onPressed: _clearSearch,
+                                )
+                              : null,
+                        ),
+                        onChanged: _onSearchChanged,
+                        onSubmitted: (value) {
+                          // "Submitted" query → record in device-local history.
+                          _addToHistory(value);
+                        },
+                      ),
                     ),
-                    onChanged: _onSearchChanged,
                   ),
                 ),
                   ],
@@ -1815,7 +1964,7 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
                     if (question['is_private'] == true) {
                       return false;
                     }
-                    
+
                     // Filter out reported questions
                     if (userService.shouldHideReportedQuestion(question['id'].toString())) {
                       return false;
@@ -1824,143 +1973,64 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
                     return true;
                   }).toList();
 
-                  // Show filtered results
+                  // Group "Posted by me" first, then "All results".
+                  // Both sections already respect the sort/location/reviews
+                  // filters applied in _applyClientSideFilters().
+                  final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+                  final groups =
+                      partitionByAuthor(filteredQuestions, currentUserId);
+                  final mine = groups.mine;
+                  final others = groups.others;
+                  // Ordered list backs swipe-navigation FeedContext across sections.
+                  final orderedResults = groups.ordered;
+
+                  // Build a flat entry list of headers + tiles for lazy rendering.
+                  final entries = <_SearchEntry>[];
+                  final bool showSectionHeaders = groups.hasMine;
+                  if (showSectionHeaders) {
+                    entries.add(_SearchEntry.header('Posted by me'));
+                    for (int i = 0; i < mine.length; i++) {
+                      entries.add(_SearchEntry.tile(mine[i], i, 'mine'));
+                    }
+                    entries.add(_SearchEntry.header('All results'));
+                    for (int i = 0; i < others.length; i++) {
+                      entries.add(_SearchEntry.tile(others[i], i, 'all'));
+                    }
+                  } else {
+                    for (int i = 0; i < others.length; i++) {
+                      entries.add(_SearchEntry.tile(others[i], i, 'all'));
+                    }
+                  }
+
+                  // Show grouped results
                   return RefreshIndicator(
                     onRefresh: _loadQuestions,
                     child: ListView.builder(
-                      itemCount: filteredQuestions.length,
+                      itemCount: entries.length,
                       itemBuilder: (context, index) {
-                        final question = filteredQuestions[index];
-                        
-                        // Check if user has already answered this question
-                        final hasAnswered = userService.hasAnsweredQuestion(question['id']);
-                        
-                        // Determine targeting emoji like in home screen
-                        final targetingType = question['targeting_type']?.toString();
-                        final questionCountryCode = question['country_code']?.toString();
-                        String? targetingEmoji;
-                        
-                        if (targetingType == 'city') {
-                          targetingEmoji = '🏙️';
-                        } else if (targetingType == 'country' && questionCountryCode != null && questionCountryCode.isNotEmpty) {
-                          final flagEmoji = _getCountryFlagEmoji(questionCountryCode);
-                          targetingEmoji = flagEmoji.isNotEmpty ? flagEmoji : '🇺🇳';
-                        } else if (targetingType == 'globe' || targetingType == 'global') {
-                          targetingEmoji = '🌍';
-                        } else if (targetingType == 'country' && (questionCountryCode == null || questionCountryCode.isEmpty)) {
-                          targetingEmoji = '🇺🇳'; // Show UN flag while we fetch
-                          _fetchAndCacheTargetingData(question);
-                        } else if (targetingType == null) {
-                          targetingEmoji = '🌍'; // Show world while we fetch
-                          _fetchAndCacheTargetingData(question);
-                        } else {
-                          targetingEmoji = '🌍';
+                        final entry = entries[index];
+                        if (entry.isHeader) {
+                          return Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                            child: Text(
+                              entry.headerLabel!,
+                              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.bold,
+                                color: Theme.of(context).primaryColor,
+                              ),
+                            ),
+                          );
                         }
-                        
-                        return Container(
-                          margin: EdgeInsets.only(left: 16.0, right: 16.0, bottom: 12.0),
-                          decoration: BoxDecoration(
-                            color: hasAnswered
-                                ? null
-                                : (Theme.of(context).brightness == Brightness.dark ? null : Colors.white),
-                            border: Border.all(
-                              color: hasAnswered
-                                  ? Theme.of(context).dividerColor.withOpacity(0.15)
-                                  : Theme.of(context).dividerColor.withOpacity(0.3),
-                              width: 0.5,
-                            ),
-                            borderRadius: BorderRadius.circular(8.0),
-                            boxShadow: (!hasAnswered && Theme.of(context).brightness == Brightness.light)
-                                ? [
-                                    BoxShadow(
-                                      color: Colors.black.withOpacity(0.08),
-                                      blurRadius: 4,
-                                      offset: Offset(0, 2),
-                                    ),
-                                  ]
-                                : null,
-                          ),
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(8.0),
-                            onLongPress: () => _showBoostDialog(question),
-                            onTap: () {
-                              final questionService = Provider.of<QuestionService>(context, listen: false);
-                              final userService = Provider.of<UserService>(context, listen: false);
-                              final locationService = Provider.of<LocationService>(context, listen: false);
-
-                              // Create FeedContext from search results
-                              final filters = <String, dynamic>{
-                                'searchQuery': _displayQuery,
-                                'showNSFW': userService.showNSFWContent,
-                                'questionTypes': userService.enabledQuestionTypes,
-                                'userCountry': locationService.userLocation?['country_code'],
-                                'userCity': locationService.selectedCity?['id'],
-                              };
-
-                              final questionIndex = filteredQuestions.indexOf(question);
-                              final feedContext = FeedContext(
-                                feedType: 'search',
-                                filters: filters,
-                                questions: filteredQuestions,
-                                currentQuestionIndex: questionIndex,
-                                originalQuestionId: question['id']?.toString(),
-                                originalQuestionIndex: questionIndex,
-                              );
-
-                              if (hasAnswered) {
-                                questionService.navigateToResultsScreen(context, question, feedContext: feedContext, fromSearch: true);
-                              } else {
-                                questionService.navigateToAnswerScreen(context, question, feedContext: feedContext, fromSearch: true);
-                              }
-                            },
-                            child: ListTile(
-                            title: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Container(
-                                  height: 60,
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    crossAxisAlignment: CrossAxisAlignment.center,
-                                    children: [
-                                      if (targetingEmoji != null) ...[
-                                        Opacity(
-                                          opacity: hasAnswered ? 0.4 : 1.0,
-                                          child: Text(
-                                            targetingEmoji,
-                                            style: TextStyle(fontSize: 16),
-                                          ),
-                                        ),
-                                        SizedBox(height: 8),
-                                      ],
-                                      QuestionTypeBadge(
-                                        type: question['type'] ?? 'unknown',
-                                        color: hasAnswered ? Colors.grey : Theme.of(context).primaryColor,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                SizedBox(width: 16),
-                                Expanded(
-                                  child: Text(
-                                    question['prompt'] ?? question['title'] ?? 'No Title',
-                                    style: TextStyle(
-                                      color: hasAnswered ? Colors.grey : null,
-                                    ),
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                                if (hasAnswered)
-                                  Padding(
-                                    padding: EdgeInsets.only(left: 8.0),
-                                    child: Icon(Icons.check_circle, color: Colors.grey, size: 18),
-                                  ),
-                              ],
-                            ),
-                            subtitle: _buildSubtitle(context, question),
-                          ),
-                          ),
+                        return _buildQuestionTile(
+                          context,
+                          entry.question!,
+                          userService,
+                          orderedList: orderedResults,
+                          rank: entry.rank,
+                          feedType: 'search',
+                          entrySource: 'search',
+                          analyticsSection: entry.section!,
+                          recordHistoryOnTap: true,
                         );
                       },
                     ),
@@ -1976,141 +2046,24 @@ class SearchScreenState extends State<SearchScreen> with WidgetsBindingObserver,
     );
   }
 
-  void _showBoostDialog(Map<String, dynamic> question) {
-    final boostService = Provider.of<BoostService>(context, listen: false);
+}
 
-    // Quick client-side eligibility check
-    final eligibilityError = boostService.checkEligibility(question);
-    if (eligibilityError != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          backgroundColor: Colors.orange,
-          content: Text(
-            BoostResult(success: false, error: eligibilityError).errorMessage,
-            style: TextStyle(color: Colors.white),
-          ),
-        ),
-      );
-      return;
-    }
+/// A single row in the grouped search results list: either a section header
+/// ("Posted by me" / "All results") or a question tile.
+class _SearchEntry {
+  final bool isHeader;
+  final String? headerLabel;
+  final Map<String, dynamic>? question;
+  final int rank; // position within the section (tiles only)
+  final String? section; // 'mine' | 'all' (tiles only)
 
-    showDialog(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Row(
-          children: [
-            Icon(
-              Icons.rocket_launch,
-              color: Theme.of(dialogContext).primaryColor,
-              size: 24,
-            ),
-            SizedBox(width: 12),
-            Text('Boost Question'),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Nominate this for Question of the Day!',
-              textAlign: TextAlign.center,
-              style: Theme.of(dialogContext).textTheme.titleSmall?.copyWith(
-                height: 1.4,
-              ),
-            ),
-            SizedBox(height: 20),
-            Container(
-              width: double.infinity,
-              padding: EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: Theme.of(dialogContext).dividerColor,
-                ),
-              ),
-              child: Text(
-                question['prompt'] ?? question['title'] ?? '',
-                textAlign: TextAlign.center,
-                style: Theme.of(dialogContext).textTheme.bodyMedium?.copyWith(
-                ),
-              ),
-            ),
-            SizedBox(height: 20),
-            _buildBoostRule(dialogContext, Icons.today, 'You can boost 1 question per day'),
-            SizedBox(height: 10),
-            _buildBoostRule(dialogContext, Icons.person_off, 'You can\'t boost your own question'),
-            SizedBox(height: 10),
-            _buildBoostRule(dialogContext, Icons.calendar_month, 'Must be over 1 month old'),
-            SizedBox(height: 10),
-            _buildBoostRule(dialogContext, Icons.timelapse, 'At least 3 months since last boost'),
-          ],
-        ),
-        actions: [
-          Row(
-            children: [
-              TextButton(
-                onPressed: () => Navigator.of(dialogContext).pop(),
-                child: Text(
-                  'Cancel',
-                  style: TextStyle(
-                    color: Theme.of(dialogContext).primaryColor,
-                  ),
-                ),
-              ),
-              Spacer(),
-              ElevatedButton(
-                onPressed: () async {
-                  Navigator.of(dialogContext).pop();
-                  final result = await boostService.boostQuestion(question['id'].toString());
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        backgroundColor: result.success
-                            ? Theme.of(context).primaryColor
-                            : Colors.orange,
-                        content: Text(
-                          result.success
-                              ? 'Question boosted! It may appear as a future Question of the Day.'
-                              : result.errorMessage,
-                          style: TextStyle(color: Colors.white),
-                        ),
-                      ),
-                    );
-                  }
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Theme.of(dialogContext).primaryColor,
-                  foregroundColor: Colors.white,
-                ),
-                child: Text('Boost'),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
+  _SearchEntry.header(this.headerLabel)
+      : isHeader = true,
+        question = null,
+        rank = -1,
+        section = null;
 
-  Widget _buildBoostRule(BuildContext context, IconData icon, String text) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(
-          icon,
-          color: Theme.of(context).primaryColor,
-          size: 20,
-        ),
-        SizedBox(width: 10),
-        Expanded(
-          child: Text(
-            text,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              height: 1.3,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
+  _SearchEntry.tile(this.question, this.rank, this.section)
+      : isHeader = false,
+        headerLabel = null;
 }

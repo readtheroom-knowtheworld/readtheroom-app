@@ -4,4 +4,8 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Debug builds only: allow plain HTTP so a local Supabase
+         (`supabase start`, e.g. http://10.0.2.2:54321) works. Release builds
+         are HTTPS-only. -->
+    <application android:usesCleartextTraffic="true"/>
 </manifest>

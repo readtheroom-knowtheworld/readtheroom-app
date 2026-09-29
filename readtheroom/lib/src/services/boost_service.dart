@@ -43,11 +43,34 @@ class BoostResult {
 class BoostService extends ChangeNotifier {
   final _supabase = Supabase.instance.client;
   DateTime? _lastBoostTime;
+  bool _isAdmin = false;
 
   bool get isAuthenticated => _supabase.auth.currentUser != null;
+  bool get isAdmin => _isAdmin;
+
+  /// Check if current user is in the admins table.
+  /// Call on app init or auth state change.
+  Future<void> checkAdminStatus() async {
+    final user = _supabase.auth.currentUser;
+    if (user == null) {
+      _isAdmin = false;
+      return;
+    }
+    try {
+      final result = await _supabase
+          .from('admins')
+          .select('user_id')
+          .eq('user_id', user.id)
+          .maybeSingle();
+      _isAdmin = result != null;
+    } catch (e) {
+      _isAdmin = false;
+    }
+  }
 
   /// Client-side check: has the user already boosted today?
   bool canBoostToday() {
+    if (_isAdmin) return true;
     if (_lastBoostTime == null) return true;
     return DateTime.now().difference(_lastBoostTime!).inHours >= 24;
   }

@@ -8,7 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 /// Bump this constant to trigger a new "What's New?" dialog for a release.
-const String whatsNewVersion = '1.1.5-boosts';
+const String whatsNewVersion = '2.0.0';
 
 class WhatsNewDialog extends StatefulWidget {
   const WhatsNewDialog({Key? key}) : super(key: key);
@@ -88,6 +88,35 @@ class _WhatsNewDialogState extends State<WhatsNewDialog> {
     }
   }
 
+  /// One concise What's New line: icon + bold title, one-sentence body.
+  Widget _item(BuildContext context, IconData icon, String title, String body) {
+    final primary = Theme.of(context).primaryColor;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: primary, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: RichText(
+              text: TextSpan(
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(height: 1.35),
+                children: [
+                  TextSpan(
+                    text: '$title — ',
+                    style: TextStyle(fontWeight: FontWeight.w600, color: primary),
+                  ),
+                  TextSpan(text: body),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
@@ -107,90 +136,28 @@ class _WhatsNewDialogState extends State<WhatsNewDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Icon(Icons.rocket_launch, color: Theme.of(context).primaryColor, size: 20),
-                SizedBox(width: 8),
-                Text(
-                  'Boost Questions',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: Theme.of(context).primaryColor,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.3,
-                  ),
-                ),
-              ],
-            ),
-            SizedBox(height: 6),
-            Text(
-              'Found an old gem? Long-press questions in the search screen to nominate them as a future Question of the Day!',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                height: 1.4,
-              ),
-            ),
-            SizedBox(height: 16),
-            Row(
-              children: [
-                Icon(Icons.calendar_today, color: Theme.of(context).primaryColor, size: 20),
-                SizedBox(width: 8),
-                Text(
-                  'QOTD Overlay',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: Theme.of(context).primaryColor,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.3,
-                  ),
-                ),
-              ],
-            ),
-            SizedBox(height: 6),
-            Text(
-              'The Question of the Day now greets you when you open the app. Answer it right away or pull down to dismiss.',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                height: 1.4,
-              ),
-            ),
-            SizedBox(height: 16),
-            Row(
-              children: [
-                Icon(Icons.comment, color: Theme.of(context).primaryColor, size: 20),
-                SizedBox(width: 8),
-                Text(
-                  'Comments are back!',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: Theme.of(context).primaryColor,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.3,
-                  ),
-                ),
-              ],
-            ),
-            SizedBox(height: 6),
-            Text(
-              'As per popular demand, comments are now visible by default again! Question ratings are only required to post a comment.',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                height: 1.4,
-              ),
-            ),
-            SizedBox(height: 16),
+            _item(context, Icons.today, 'One question a day',
+                'It drops at a random moment, turn on notifications to be there when it happens and vote on the Question of Tomorrow!'),
+            _item(context, Icons.group, 'Friends',
+                'Add friends by QR or handle. Close friends can share answers with each other.'),
+            _item(context, Icons.hub_rounded, 'Your network',
+                'See how your friends-of-friends think, are you in an echo chamber?'),
+            SizedBox(height: 4),
             RichText(
-              textAlign: TextAlign.center,
               text: TextSpan(
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  height: 1.5,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Colors.grey[600],
                 ),
                 children: [
-                  TextSpan(text: 'Psst! Please leave an '),
                   TextSpan(
-                    text: 'app store review',
+                    text: 'App store reviews',
                     style: TextStyle(
                       color: Theme.of(context).primaryColor,
                       fontWeight: FontWeight.w600,
                     ),
                     recognizer: TapGestureRecognizer()..onTap = _launchAppStore,
                   ),
-                  TextSpan(text: ' <3'),
+                  TextSpan(text: ' really help us out ;)'),
                 ],
               ),
             ),

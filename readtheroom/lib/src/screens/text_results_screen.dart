@@ -20,12 +20,13 @@ import '../services/guest_user_tracking_service.dart';
 import '../services/profanity_filter_service.dart';
 import '../models/category.dart';
 import 'dart:async';
+import '../widgets/network_results_section.dart';
 import '../widgets/notification_bell.dart';
 import '../widgets/swipe_navigation_wrapper.dart';
 import '../widgets/question_reactions_widget.dart';
 import '../widgets/comments_section.dart';
 import '../widgets/linked_questions_section.dart';
-import '../widgets/add_comment_dialog.dart';
+import '../widgets/comments_overlay.dart';
 import '../widgets/country_filter_dialog.dart';
 import '../widgets/question_rating_section.dart';
 import '../utils/generation_utils.dart';
@@ -34,11 +35,13 @@ import 'base_results_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/category_navigation.dart';
 import 'main_screen.dart';
+import '../widgets/send_to_friend_sheet.dart';
+import '../services/results_service.dart';
 
 class TextResultsScreen extends BaseResultsScreen {
   const TextResultsScreen({
     Key? key,
-    required Map<String, dynamic> question,
+        required Map<String, dynamic> question,
     FeedContext? feedContext,
     bool fromSearch = false,
     bool fromUserScreen = false,
@@ -46,7 +49,6 @@ class TextResultsScreen extends BaseResultsScreen {
   }) : super(
           key: key,
           question: question,
-          responses: const [], // Will be loaded dynamically
           feedContext: feedContext,
           fromSearch: fromSearch,
           fromUserScreen: fromUserScreen,
@@ -130,22 +132,16 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
     return result;
   }
 
-  Map<String, Map<String, dynamic>> _getGenerationResponseData() {
-    final genTotals = <String, int>{};
-    for (var response in _responses) {
-      final gen = response['generation']?.toString();
-      if (gen != null && gen.isNotEmpty) {
-        genTotals[gen] = (genTotals[gen] ?? 0) + 1;
-      }
-    }
-    final result = <String, Map<String, dynamic>>{};
-    genTotals.forEach((gen, total) {
-      if (total > 0) {
-        result[gen] = {'total': total};
-      }
-    });
-    return result;
-  }
+    /// The generation breakdown for the filter dialog.
+  ///
+  /// Always empty for a discussion question. Text answers are public content,
+  /// so they are served with the hour and the country and NOTHING else — no
+  /// generation (owner decision 2026-09-22, answers read lockdown). Without a
+  /// generation on the answer there is nothing to filter the list by, so the
+  /// dialog is given no generation chips rather than chips that cannot work.
+  /// The counts still exist server-side; they are simply not offered here.
+  Map<String, Map<String, dynamic>> _getGenerationResponseData() =>
+      const <String, Map<String, dynamic>>{};
 
   Future<void> _showCountryFilterDialog() async {
     final countryData = _getCountryResponseData();
@@ -285,40 +281,24 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
     }
   }
 
-  Future<void> _loadFreshDataFromDatabase() async {
-    // Try to fetch real text responses from the database
+    Future<void> _loadFreshDataFromDatabase() async {
+    // Fetch the public text answers. `created_at` on each is the HOUR the
+    // answer was given, rounded down server-side — never the second — and the
+    // generation is not sent at all (answers read lockdown, 2026-09-22).
     List<Map<String, dynamic>> realResponses = [];
-    
-    try {
-      // Query the responses table for text responses to this question
-      // Join with countries table to get full country names instead of codes
-      final response = await _supabase
-          .from('responses')
-          .select('''
-            text_response,
-            created_at,
-            generation,
-            countries!responses_country_code_fkey(country_name_en)
-          ''')
-          .eq('question_id', widget.question['id'])
-          .not('text_response', 'is', null)
-          .order('created_at', ascending: false);
 
-      if (response != null && response.isNotEmpty) {
-        // Convert to the format expected by the rest of the code
-        realResponses = response.map((r) => {
-          'text_response': r['text_response'],
-          'country': r['countries']?['country_name_en'] ?? 'Unknown', // Use full country name
-          'created_at': r['created_at'],
-          'generation': r['generation'],
-        }).toList();
-        
-        print('Found ${realResponses.length} real text responses from database');
+    try {
+      realResponses = await ResultsService()
+          .fetchTextAnswers(widget.question['id'].toString())
+          .then((page) => page.toRows());
+
+      if (realResponses.isNotEmpty) {
+        print('Found ${realResponses.length} text answers');
       } else {
         print('No text responses found in database for this question');
       }
     } catch (dbError) {
-      print('Error fetching responses from database: $dbError');
+      print('Error fetching text answers: $dbError');
       // realResponses remains empty, will trigger fallback
     }
     
@@ -397,14 +377,9 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
 
   Future<void> _checkForUpdates() async {
     try {
-      // Get current response count from database
-      final response = await _supabase
-          .from('responses')
-          .select('id')
-          .eq('question_id', widget.question['id'])
-          .not('text_response', 'is', null);
-      
-      final currentCount = response?.length ?? 0;
+            // Get current answer count from the results RPC
+      final currentCount = await ResultsService()
+          .fetchTextCount(widget.question['id'].toString());
       
       // Check if there's a significant change (>5% difference)
       final percentChange = (_lastResponseCount > 0) 
@@ -426,26 +401,13 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
     try {
       print('Auto-refreshing text responses for question ID: ${widget.question['id']}');
       
-      // Fetch fresh text responses from the database
-      final response = await _supabase
-          .from('responses')
-          .select('''
-            text_response, 
-            created_at,
-            countries!responses_country_code_fkey(country_name_en)
-          ''')
-          .eq('question_id', widget.question['id'])
-          .not('text_response', 'is', null)
-          .order('created_at', ascending: false);
-      
-      if (response != null && response.isNotEmpty) {
-        // Convert to the format expected by the rest of the code
-        final freshResponses = response.map((r) => {
-          'text_response': r['text_response'],
-          'country': r['countries']?['country_name_en'] ?? 'Unknown',
-          'created_at': r['created_at'],
-        }).toList();
-        
+            // Fetch fresh text answers
+      final page = await ResultsService()
+          .fetchTextAnswers(widget.question['id'].toString());
+
+      if (page.answers.isNotEmpty) {
+        final freshResponses = page.toRows();
+
         // Generate word cloud data from fresh responses
         final wordCloudData = _generateWordCloudData(freshResponses);
         
@@ -740,43 +702,52 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Question title - always shown in full
-            Text(
-              questionText,
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-            if (descriptionText != null) ...[
-              SizedBox(height: 8),
-              InkWell(
-                onTap: _shouldShowExpandButton(descriptionText) ? () {
-                  setState(() {
-                    _isQuestionExpanded = !_isQuestionExpanded;
-                  });
-                } : null,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      descriptionText,
-                      style: Theme.of(context).textTheme.bodyMedium,
-                      maxLines: _isQuestionExpanded ? null : 1,
-                      overflow: _isQuestionExpanded ? TextOverflow.visible : TextOverflow.ellipsis,
-                    ),
-                    if (_shouldShowExpandButton(descriptionText)) ...[
-                      SizedBox(height: 4),
-                      Text(
-                        _isQuestionExpanded ? '(show less)' : '(show more)',
-                        style: TextStyle(
-                          color: Theme.of(context).primaryColor,
-                          fontWeight: FontWeight.w500,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ],
+            // Question prompt + description, centred as one block.
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                // Question title - always shown in full
+                Text(
+                  questionText,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.headlineSmall,
                 ),
-              ),
-            ],
+                if (descriptionText != null) ...[
+                  SizedBox(height: 8),
+                  InkWell(
+                    onTap: _shouldShowExpandButton(descriptionText) ? () {
+                      setState(() {
+                        _isQuestionExpanded = !_isQuestionExpanded;
+                      });
+                    } : null,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Text(
+                          descriptionText,
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodyMedium,
+                          maxLines: _isQuestionExpanded ? null : 1,
+                          overflow: _isQuestionExpanded ? TextOverflow.visible : TextOverflow.ellipsis,
+                        ),
+                        if (_shouldShowExpandButton(descriptionText)) ...[
+                          SizedBox(height: 4),
+                          Text(
+                            _isQuestionExpanded ? '(show less)' : '(show more)',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Theme.of(context).primaryColor,
+                              fontWeight: FontWeight.w500,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
             SizedBox(height: 16),
             
             // Categories
@@ -993,51 +964,6 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
         appBar: AppBar(
         title: Text(_appBarTitle),
         actions: [
-          Consumer<UserService>(
-            builder: (context, userService, child) {
-              final isSaved = userService.savedQuestions
-                  .any((q) => q['id'] == widget.question['id']);
-              return IconButton(
-                icon: Icon(
-                  isSaved ? Icons.bookmark : Icons.bookmark_border,
-                  color: isSaved ? Theme.of(context).primaryColor : null,
-                ),
-                onPressed: () {
-                  if (isSaved) {
-                    userService.removeSavedQuestion(widget.question['id']);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Row(
-                          children: [
-                            Icon(Icons.bookmark_border, color: Colors.white, size: 20),
-                            SizedBox(width: 8),
-                            Text('Question removed from saved'),
-                          ],
-                        ),
-                        backgroundColor: Theme.of(context).primaryColor,
-                      ),
-                    );
-                  } else {
-                    userService.addSavedQuestion(widget.question);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Row(
-                          children: [
-                            Icon(Icons.bookmark, color: Colors.white, size: 20),
-                            SizedBox(width: 8),
-                            Text('Question saved'),
-                          ],
-                        ),
-                        backgroundColor: Theme.of(context).primaryColor,
-                      ),
-                    );
-                    // Auto-subscribe to saved question
-                    AutoSubscriptionHelper.autoSubscribeToSavedQuestion(context, widget.question);
-                  }
-                },
-              );
-            },
-          ),
           // Notification bell for subscribing to question updates
           NotificationBell(question: widget.question),
           // Show delete icon only if current user is the author
@@ -1168,6 +1094,19 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
             ],
             
             
+            // "Your network" - the ego graph, the quantised aggregate and the
+            // close-friend row, or the nudge card when the viewer has not earned
+            // one yet. Renders nothing at all until the linkage RPCs are deployed.
+            NetworkResultsSection(
+              questionId: widget.question['id']?.toString() ?? '',
+              questionType: widget.question['type']?.toString() ?? '',
+              prompt: widget.question['prompt']?.toString(),
+              emoji: widget.question['emoji']?.toString(),
+              padding: EdgeInsets.zero,
+            ),
+
+            const SizedBox(height: 16),
+
             // Linked Questions Section
             LinkedQuestionsSection(
               questionId: widget.question['id']?.toString() ?? '',
@@ -1189,6 +1128,11 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
               useDummyData: false, // Use real data
               questionContext: widget.question,
               margin: EdgeInsets.zero, // Remove default margin to align with other widgets
+              questionTitle: widget.question['prompt']?.toString() ?? 'Question',
+              isAuthor: _questionService?.isCurrentUserAuthor(widget.question) ?? false,
+              onRatingSubmitted: () {
+                if (mounted) setState(() => _ratingSectionRefreshKey++);
+              },
               onCommentsLoaded: (comments) {
                 setState(() {
                   _comments = comments;
@@ -1233,6 +1177,11 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
+                // WP-F: forward this question inside the app. Hides itself
+                // when the viewer has no accepted friends.
+                SendToFriendButton(
+                  questionId: widget.question['id']?.toString() ?? '',
+                ),
                 TextButton.icon(
                   icon: const Icon(Icons.share),
                   label: const Text('Share'),
@@ -1256,8 +1205,12 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
             // Home - clear stack and go to home
             Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
           } else if (index == 1) {
-            // Search - clear stack and go to home
-            Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
+            // Navigate to community tab
+            Navigator.pushAndRemoveUntil(
+              context,
+              MaterialPageRoute(builder: (context) => MainScreen(initialIndex: 1)),
+              (route) => false,
+            );
           } else if (index == 2) {
             // Navigate to activity tab
             Navigator.pushAndRemoveUntil(
@@ -1275,7 +1228,7 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
         type: BottomNavigationBarType.fixed,
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
-          BottomNavigationBarItem(icon: Icon(Icons.search), label: 'Search'),
+          BottomNavigationBarItem(icon: Icon(Icons.groups_outlined), label: 'Community'),
           BottomNavigationBarItem(icon: Icon(Icons.notifications_outlined), label: 'Activity'),
           BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Me'),
         ],
@@ -2070,37 +2023,24 @@ class _TextResultsScreenState extends BaseResultsScreenState<TextResultsScreen> 
   }
 
   Future<void> _handleAddComment() async {
-    try {
-      final questionTitle = widget.question['prompt']?.toString() ?? 'Question';
-      final result = await AddCommentDialog.show(
-        context: context,
-        questionId: widget.question['id'].toString(),
-        questionTitle: questionTitle,
-        question: widget.question,
-        isAuthor: _questionService?.isCurrentUserAuthor(widget.question) ?? false,
-        onCommentAdded: (newComment) {
-          // Refresh the comments section immediately
-          (_commentsSectionKey.currentState as dynamic)?.refreshComments();
-        },
-        onRatingSubmitted: () {
-          if (mounted) {
-            setState(() => _ratingSectionRefreshKey++);
-          }
-        },
-      );
+    final questionTitle = widget.question['prompt']?.toString() ?? 'Question';
+    final isAuthor = _questionService?.isCurrentUserAuthor(widget.question) ?? false;
 
-      // No need to show additional snackbar or setState - the dialog handles everything
-    } catch (e) {
-      print('Error adding comment: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to add comment. Please try again.'),
-            backgroundColor: Colors.red,
-            duration: Duration(seconds: 3),
-          ),
-        );
-      }
-    }
+    await CommentsOverlay.show(
+      context: context,
+      questionId: widget.question['id'].toString(),
+      questionTitle: questionTitle,
+      question: widget.question,
+      isAuthor: isAuthor,
+      focusInput: true,
+      onCommentAdded: (newComment) {
+        (_commentsSectionKey.currentState as dynamic)?.refreshComments();
+      },
+      onRatingSubmitted: () {
+        if (mounted) {
+          setState(() => _ratingSectionRefreshKey++);
+        }
+      },
+    );
   }
 } 

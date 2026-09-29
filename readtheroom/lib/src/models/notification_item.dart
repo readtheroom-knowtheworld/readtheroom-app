@@ -8,7 +8,6 @@ class NotificationItem {
   final String type; // 'comment', 'vote_activity', 'qotd', 'system'
   final DateTime timestamp;
   final String? questionId;
-  final String? suggestionId;
   final bool isViewed;
   final bool isDismissed;
   final Map<String, dynamic>? metadata;
@@ -20,7 +19,6 @@ class NotificationItem {
     required this.type,
     required this.timestamp,
     this.questionId,
-    this.suggestionId,
     this.isViewed = false,
     this.isDismissed = false,
     this.metadata,
@@ -34,7 +32,6 @@ class NotificationItem {
       type: json['type'],
       timestamp: DateTime.parse(json['timestamp']),
       questionId: json['question_id'],
-      suggestionId: json['suggestion_id'],
       isViewed: json['is_viewed'] ?? false,
       isDismissed: json['is_dismissed'] ?? false,
       metadata: json['metadata'],
@@ -49,7 +46,6 @@ class NotificationItem {
       'type': type,
       'timestamp': timestamp.toIso8601String(),
       'question_id': questionId,
-      'suggestion_id': suggestionId,
       'is_viewed': isViewed,
       'is_dismissed': isDismissed,
       'metadata': metadata,
@@ -63,7 +59,6 @@ class NotificationItem {
     String? type,
     DateTime? timestamp,
     String? questionId,
-    String? suggestionId,
     bool? isViewed,
     bool? isDismissed,
     Map<String, dynamic>? metadata,
@@ -75,7 +70,6 @@ class NotificationItem {
       type: type ?? this.type,
       timestamp: timestamp ?? this.timestamp,
       questionId: questionId ?? this.questionId,
-      suggestionId: suggestionId ?? this.suggestionId,
       isViewed: isViewed ?? this.isViewed,
       isDismissed: isDismissed ?? this.isDismissed,
       metadata: metadata ?? this.metadata,

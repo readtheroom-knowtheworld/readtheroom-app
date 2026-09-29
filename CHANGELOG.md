@@ -1,3 +1,95 @@
+## [1.3.0] - Unreleased
+Added:
+- The home screen is now the Question of the Day: answer it right there, watch the world's answer unfold on the existing results pages
+- The Archive: every past question in one library behind the archive button — unanswered questions first (most-answered at the top), your own answers collected below, every entry answerable with full results
+- Asker's pick: after posting a question, choose your favourite from upcoming Question of the Day candidates (one pick, can't pick your own, server-enforced)
+- Answered questions on home show results right in the card — distribution, your own answer highlighted, the response map, no tap needed
+- The answered card's button is comment-aware: "Comment" when the conversation hasn't started, "View comments (N)" once it has
+- Archive has an Answered / Unanswered toggle, both sorted by response count
+- Home header: logo on the left, "> read(the_room) / know the world" tagline on the right (matching the app drawer)
+- The answered card's average marker animates in: sweeps from far disapprove to far approve, bounces onto the true average, and the "average" label fades in (skipped when reduce-motion is on)
+- The response map on the answered card runs full-width with no inner card chrome, and shows the question's description above the results divider
+
+Removed:
+- "Top Choice" and average-answer summary sections on results pages (reactions moved up, above the map)
+- Sort / Location / Reviews filter chips above the Archive search bar
+- "Where people stand" subtitle on results-page maps
+- The ring legend (You / Close friend / Friend / Friend of friend) under the Community demo network graph — tap tooltips carry that context
+- The "Before enough friends answer" gated-state demo (and its chameleon deep-thoughts question) on the Community tab
+
+Changed:
+- The streak moved into the top bar as a compact badge, replacing the Camo Counter badge (question engagement stats still live on the Me tab); same colours, medal ranks and tap-for-details
+- Answered card: "Done for today" became "Thanks for contributing today ♥", the "You answered today ✓" header is gone, and the question stays full-size instead of greying out
+- Streaks now mean showing up: answering the daily question — or asking one — keeps your streak; other answers no longer count. Existing streaks carry over untouched.
+- The feed is retired (trending/new/popular, pagination, vote polling all removed)
+- Topic and review chips on questions now open the Archive filtered to that topic
+- The QOTD cold-start overlay is retired — home is the QOTD now
+- QOTD deep links land on the home question directly
+- Maps restyled for both themes following basemap best practices: light mode gets Positron-style near-white land on muted blue ocean, dark mode gets Dark Matter-style near-black ocean with low-contrast land — response dots are the only saturated colour
+- Thumbs beside the answered card's dot plot use the strong approve/disapprove colours; the "0" axis label and the fullscreen map's "long-press a country" hint are gone
+- "Filter to here" on a map dot now filters results to that city (country filtering lives in the results filter button); filter affordances only appear when the map is opened from a results page, not from the home card
+- Community demo: regular friends show as "@friend" — usernames are a close-friends privilege
+- The new-question button fades in only when you reach the bottom of the home screen, so it no longer covers the answer card's buttons
+- New question form: topics moved into Advanced options (most questions skip them)
+- New question form: the NSFW (18+) toggle also moved into Advanced options, and the "Use @ to tag countries" hint under the description is gone (the @ feature still works; its helper only appears while tagging)
+- On days the Question of the Day is 18+, users with 18+ content off now get the top question they haven't answered yet (was: top trending question, answered or not), pinned for the day
+- Community tab: the sneak-peek demo now leads; "Bring your people to the room" moved below it
+- The notify-me switch became an email signup ("Stay up to date and support Read the Room") — addresses land in a write-only `email_signups` table via a new `subscribe_email` RPC (deploy `supabase/migrations/add_email_signups.sql` before release)
+- Multiple-choice results are ordered highest votes first, and fill in a top-to-bottom cascade — dot rows and percentage bars alike (bars grow from zero; poll updates glide instead of replaying)
+- Guide and welcome tutorial refocused on the daily ritual — one question, everyone, worldwide, every day; audience-targeting copy and the whole "Customized Feeds / Topic Filtering" section are gone, and Basics now covers QOTD / Asking / the Archive
+- The notification permission ask now appears right after your first successful answer (it used to interrupt your second answer attempt before submitting)
+- Answering the QOTD on home now stays on home — the card flips straight to its in-card results; the results screen only opens from the comments button
+- Home multiple-choice results are ranked most-answered first and cascade in top-to-bottom (colors stay tied to each option); the "Top choice by place" map subtitle is gone
+- The answered card no longer repeats your answer in a quote pill above the results (the result rows already mark yours)
+- The home map only appears from 5 geo-tagged responses — a lone dot on a blank landmass read worse than no map
+- Fixed the home map flashing when the new-question button appeared (nav-bar/FAB visibility changes were rebuilding all four tab pages; now only the chrome rebuilds)
+
+Fixed:
+- Answers submitted through the QOTD overlay never counted toward streaks (missing timestamp)
+- Navigation bar could stay hidden after scrolling in some flows
+- Home card response count matched the results page (it was counting one averaged row per country instead of individual answers)
+- Light mode: neutral dots no longer look like hollow rings, dot outlines are subtle dark instead of white, and the dot-plot axis line is actually visible
+
+## [1.2.0] - 2026-08-28
+Added:
+- World map is now a real map: response dots over country landmasses, coloured by answer, clustered by city (nearby cities merge as you zoom out, split apart as you zoom in)
+- Full-screen map mode: tap any results map to expand; legend chips highlight where each answer comes from; tap a dot for town/count details; "filter to here" jumps back to filtered results
+- Dot charts on small questions (<30 respondents): one dot per person instead of bars — approval shows a beeswarm along a thumbs-down → thumbs-up axis with a marked average, multiple choice shows a dot per vote
+- New Community tab with a sneak peek of the upcoming Networks update: demo network graph (you, close friends and friends-of-friends coloured by answer; other friends stay private), circle aggregate card, close-friends answers row, and a notify-me toggle
+- Search bar on the home feed (Reddit-style pill that morphs into the search screen)
+- Recent searches: last 10 searches shown when opening search, tap to re-run, deletable
+- Search results grouped with "Posted by me" first
+- Answer-source analytics (QOTD vs feed vs search vs links) plus onboarding funnel, answer/creation abandonment, share and notification-open tracking
+- Automated test suite (120 tests)
+
+Changed:
+- New question screen simplified: questions default to public World questions — private questions and country/city targeting now live in a collapsed "Advanced options" section (active selections stay visible in the section header)
+- Topics are now optional when posting a question
+- Removed persistent topic and question-type feed filters (and the "all topics disabled" empty-feed trap) — tapping a topic chip on a question still filters the feed temporarily; the filter button is gone from the feed (18+ toggle lives in Settings)
+- Topic chips on the new question form collapse to a line or two with "(show more)"
+- Onboarding shortened from 8 slides to 3 — the removed content now lives in the Guide
+- Bottom navigation is now Home / Community / Activity / Me (search moved into the home feed)
+- Rooms retired — replaced by the upcoming Friends features; old room links show a retirement notice
+- Maps appear from 3 responses (was 10–20)
+- What's New dialog updated for 1.2.0
+
+Fixed:
+- Community tab showed as a Search button on answer/results screens
+- White-on-white snackbar text on the Community tab
+- Recent searches didn't appear when tapping into search
+- Analytics opt-out was bypassed by one startup event
+
+## [1.1.6] - 2026-04-24
+Added: 
+- Comments overlay
+- Ability to tag others in comments 
+- Notifications if you get tagged in a comment
+
+Changed: 
+- Rounded corners on histogram bars
+- Changed colour mapping for responses
+- Text response is now discussion-based format
+
 ## [1.1.5] - 2026-04-18
 Added: 
 - QOTD Overlay on app cold start
@@ -5,6 +97,7 @@ Added:
 
 Changed: 
 - Comments now veiwable again by default. Question rating only required before posting a comment.
+- Comment UI overhauled 
 - Cleaned up onboarding slides
 - QOTD can repeat is boosted by a user, but only once in 3 months. 
 

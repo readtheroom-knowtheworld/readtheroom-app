@@ -9,7 +9,8 @@
           "/q/*",
           "/suggestion/*",
           "/s/*",
-          "/room/*"
+          "/room/*",
+          "/friend/*"
         ]
       }
     ]

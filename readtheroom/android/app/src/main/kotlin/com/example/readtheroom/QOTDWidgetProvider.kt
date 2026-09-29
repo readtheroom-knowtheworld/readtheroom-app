@@ -93,12 +93,9 @@ class QOTDWidgetProvider : AppWidgetProvider() {
             }
             views.setImageViewResource(R.id.qotd_curio_image, curioDrawable)
 
-            // Set click intent to open app via deep link to QOTD
-            val deepLinkUri = if (questionId.isNotEmpty()) {
-                "readtheroom://qotd/$questionId"
-            } else {
-                "readtheroom://home"
-            }
+            // A widget tap just opens the app on home (the QOTD is the hero
+            // there); it never routes into a question.
+            val deepLinkUri = "readtheroom://home?src=qotd_widget"
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 data = Uri.parse(deepLinkUri)
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP

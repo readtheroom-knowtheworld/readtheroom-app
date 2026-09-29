@@ -5,7 +5,6 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -15,7 +14,9 @@ import 'dart:io';
 import 'package:timezone/timezone.dart' as tz;
 import 'analytics_service.dart';
 import 'notification_log_service.dart';
-import 'qotd_reminder_service.dart';
+import 'results_service.dart';
+import 'user_service.dart';
+import '../utils/qotd_push_payload.dart';
 import 'home_widget_service.dart';
 import '../models/notification_item.dart';
 
@@ -23,6 +24,13 @@ class NotificationService {
   // Singleton pattern
   static final NotificationService _instance = NotificationService._internal();
   factory NotificationService() => _instance;
+
+  /// Fires with the event type (`friend_accepted`, `friend_request`) when a
+  /// friend-graph push lands while the app is in the foreground. `MainScreen`
+  /// answers with `FriendService.refresh()`.
+  Stream<String> get friendGraphChanged => _friendGraphChanged.stream;
+  final StreamController<String> _friendGraphChanged =
+      StreamController<String>.broadcast();
   NotificationService._internal() {
     print('🦎 SINGLETON: Creating NotificationService instance ${identityHashCode(this)}');
   }
@@ -34,7 +42,15 @@ class NotificationService {
   
   // Store pending navigation for when app context becomes available
   String? _pendingQuestionNavigation;
-  String? _pendingSuggestionNavigation;
+
+  /// Set by a tapped QOTD push (either payload shape): the tap opens the app on
+  /// home, never the question (owner decision 2026-09-22). Drained by
+  /// `main.dart` into `readtheroom://home`.
+  bool _pendingHomeNavigation = false;
+
+  /// Friend id whose chat overlay a tapped friend-event push should open
+  /// (WP-F, deep link `readtheroom://friend/{userId}`).
+  String? _pendingFriendNavigation;
 
   Future<void> initialize() async {
     try {
@@ -133,6 +149,23 @@ class NotificationService {
             ),
           );
 
+          // QOTD Drop Channel — the Drop push names `qotd_drop` and a push
+          // cannot create a channel, so it has to exist before the first drop
+          // ever lands (drop spec §10.2, backend doc O-4). Max importance: the
+          // drop is the one notification of the day that is the event itself.
+          await androidPlugin.createNotificationChannel(
+            const AndroidNotificationChannel(
+              'qotd_drop',
+              'The Daily Drop',
+              description:
+                  'The moment the day\'s question drops — one a day, at a different time each day',
+              importance: Importance.max,
+              playSound: true,
+              enableVibration: true,
+              enableLights: true,
+            ),
+          );
+
           // Comment Notification Channel
           await androidPlugin.createNotificationChannel(
             const AndroidNotificationChannel(
@@ -157,18 +190,6 @@ class NotificationService {
             ),
           );
 
-          // Streak Reminder Channel
-          await androidPlugin.createNotificationChannel(
-            const AndroidNotificationChannel(
-              'streak_reminder_channel',
-              'Streak Reminders',
-              description: 'Daily reminders to maintain your answer streak',
-              importance: Importance.high,
-              playSound: true,
-              enableVibration: true,
-            ),
-          );
-
           // Test Channel for debugging
           await androidPlugin.createNotificationChannel(
             const AndroidNotificationChannel(
@@ -178,20 +199,6 @@ class NotificationService {
               importance: Importance.high,
               playSound: true,
               enableVibration: true,
-            ),
-          );
-
-          // Streak Reminder Channel V2 - Fresh channel with guaranteed high importance
-          await androidPlugin.createNotificationChannel(
-            const AndroidNotificationChannel(
-              'streak_reminder_v2_channel',
-              'Streak Reminders V2',
-              description: 'Daily reminders to maintain your answer streak (improved)',
-              importance: Importance.high,
-              playSound: true,
-              enableVibration: true,
-              enableLights: true,
-              ledColor: Color(0xFF00897B), // Teal notification light
             ),
           );
 
@@ -218,6 +225,37 @@ class NotificationService {
           if (!kReleaseMode) {
             print("❌ Failed to subscribe to system topic: $e");
           }
+        }
+
+        // Re-assert the `qotd` topic on every launch while the setting is on.
+        // The setting defaults to on, but the topic used to be joined only when
+        // the user accepted the notification ask or flipped the Settings
+        // toggle — a fresh install that skipped the ask, or a grant that landed
+        // before the push token existed, was never subscribed while Settings
+        // said it was (drop-push-review-2026-09-22.md). Subscribing is
+        // idempotent on FCM, so a repeat costs nothing. Not user-scoped: a
+        // guest can hold the subscription too.
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          if (prefs.getBool('notify_qotd') ?? true) {
+            await _firebaseMessaging.subscribeToTopic('qotd');
+            if (!kReleaseMode) {
+              print("✅ Subscribed to QOTD topic (launch re-assert)");
+            }
+            // Review 2026-09-22 A3: drop-push-review C3 — "is this device even
+            // on the topic?" — is the one cause we cannot rule out from data.
+            // This is the denominator under A1's delivery denominator.
+            AnalyticsService().trackPushTopicSubscription(
+                topic: 'qotd', result: 'ok', trigger: 'launch');
+            AnalyticsService()
+                .setUserProperties({'qotd_topic_subscribed': true});
+          }
+        } catch (e) {
+          if (!kReleaseMode) {
+            print("❌ Failed to re-assert QOTD topic: $e");
+          }
+          AnalyticsService().trackPushTopicSubscription(
+              topic: 'qotd', result: 'failed', trigger: 'launch');
         }
 
         // ✅ Subscribe to user-specific topic if authenticated
@@ -257,6 +295,10 @@ class NotificationService {
         print('📱 Copy this token for testing notifications!');
       } catch (e) {
         print('❌ Error updating FCM token: $e');
+        // Review 2026-09-19 P0-4: a device whose token never lands is
+        // unreachable by push for good, and nothing else reports it.
+        AnalyticsService()
+            .trackRpcFailed('fcm_token_upsert', reason: analyticsRpcReason(e));
       }
     } else {
       print('🔑 FCM TOKEN (no user): $token');
@@ -267,38 +309,51 @@ class NotificationService {
   Future<void> _handleForegroundMessage(RemoteMessage message) async {
     print('🦎 FCM: Received foreground message - type: ${message.data['type']}');
     
-    // Track notification received
-    AnalyticsService().trackNotificationReceived(message.data['type'] ?? 'unknown', {
-      'delivery_context': 'foreground',
-      'question_id': message.data['question_id'] ?? message.data['questionId'],
-    });
+    // Track notification received.
+    //
+    // Review 2026-09-22 §4.4: the `question_id` that used to ride here went
+    // against an identified person — the same join the answer events just had
+    // removed. `drop_date` is the aggregate-safe replacement, and matches what
+    // the background receipts (A1) report.
+    final foregroundPush = QotdPushPayload.parse(message.data);
+    AnalyticsService().trackNotificationReceived(
+      message.data['type']?.toString() ?? 'unknown',
+      {
+        'delivery_context': 'foreground',
+        if (foregroundPush != null) 'push_kind': foregroundPush.kind.name,
+        if (foregroundPush != null) 'is_drop': foregroundPush.isDrop,
+        if (foregroundPush?.publishedAt != null)
+          'drop_date': foregroundPush!.publishedAt!
+              .toUtc()
+              .toIso8601String()
+              .substring(0, 10),
+      },
+    );
     
     // Always log to activity feed first, regardless of whether we show the notification
     final notificationTitle = message.notification?.title ?? 'Notification';
     final notificationBody = message.notification?.body ?? '';
     String? payload;
     
-    // Check if it's a QOTD notification (now data-only — local notification handles display timing)
-    if (message.data['type'] == 'qotd') {
-      final questionId = message.data['questionId'] ?? message.data['question_id'];
-      final body = message.data['body'] ?? 'Check out today\'s question!';
+    // QOTD: the Drop. Both payload shapes (`qotd_drop` and the legacy data-only
+    // `qotd`) are shown the instant they arrive — the server's random minute IS
+    // the moment, so there is nothing left to schedule. Neither Android nor iOS
+    // renders a notification block while the app is in front, so in the
+    // foreground we always show it ourselves, drop mode included.
+    final qotdPush = QotdPushPayload.parse(
+      message.data,
+      notificationTitle: message.notification?.title,
+      notificationBody: message.notification?.body,
+    );
+    if (qotdPush != null) {
+      await _showQotdNotification(qotdPush);
 
-      // Log to activity feed
-      await _logNotificationToInAppLog(
-        '📆 Question of the Day',
-        body,
-        questionId != null ? 'question_$questionId' : null,
-      );
-
-      // Update today's scheduled local notification with actual question text
-      if (questionId != null) {
-        final qotdReminderService = QOTDReminderService();
-        await qotdReminderService.updateTodayContent(body, questionId);
-
-        // Update home screen widget with real question data
-        await _updateQOTDWidgetWithFreshData(questionId, body);
+      // Keep the home-screen widget in step with the question that just landed.
+      if (qotdPush.questionId != null) {
+        await _updateQOTDWidgetWithFreshData(
+            qotdPush.questionId!, qotdPush.body);
       }
-      return; // Don't show immediately — local notification fires at preferred time
+      return;
     }
     // Check if it's a comment notification
     else if (message.data['type'] == 'comment') {
@@ -327,28 +382,6 @@ class NotificationService {
       await _showLocalNotification(
         title: message.notification?.title ?? 'New Comment',
         body: message.notification?.body ?? 'Someone left a comment',
-        payload: payload,
-      );
-    }
-    // Check if it's a suggestion comment notification
-    else if (message.data['type'] == 'suggestion_comment') {
-      final suggestionId = message.data['suggestionId'];
-      if (suggestionId == null) {
-        print('Suggestion comment notification missing suggestionId');
-        // Still log to activity feed even if we can't process it
-        await _logNotificationToInAppLog(
-          notificationTitle,
-          notificationBody,
-          null,
-        );
-        return;
-      }
-      
-      payload = 'suggestion_$suggestionId';
-      // Show local notification using FCM payload
-      await _showLocalNotification(
-        title: message.notification?.title ?? 'New Suggestion Comment',
-        body: message.notification?.body ?? 'Someone commented on your suggestion',
         payload: payload,
       );
     }
@@ -389,6 +422,33 @@ class NotificationService {
         payload: payload,
       );
     }
+    // Friend graph: requests and acceptances (WP-E), licks / forwards /
+    // reactions (WP-F). All of them open the sender's chat, so the payload
+    // carries the actor, never the forwarded question — routing to the
+    // question would skip past the conversation the push is about.
+    else if (message.data['type'] == 'friend_event') {
+      final actorId = message.data['senderId'] ??
+          message.data['actorId'] ??
+          message.data['actor_id'];
+      payload = actorId != null ? 'friend_$actorId' : null;
+
+      // A graph change while the app is open: let the friend list reload so
+      // the scanned phone gets its "you're friends now" moment (a QR add
+      // arrives as friend_accepted) and a new request appears without a
+      // manual refresh.
+      final eventType = (message.data['event_type'] ??
+              message.data['friendEventType'])
+          ?.toString();
+      if (eventType == 'friend_accepted' || eventType == 'friend_request') {
+        _friendGraphChanged.add(eventType!);
+      }
+
+      await _showLocalNotification(
+        title: message.notification?.title ?? '🦎 Friends',
+        body: message.notification?.body ?? 'Something happened in your network',
+        payload: payload,
+      );
+    }
     // Unknown notification type - still log it
     else {
       await _logNotificationToInAppLog(
@@ -403,26 +463,62 @@ class NotificationService {
     print('🦎 FCM: Received background message - type: ${message.data['type']}');
     print('🦎 SINGLETON: _handleBackgroundMessage called on instance ${identityHashCode(this)}');
 
-    // Handle data-only QOTD messages in background — update scheduled local notification
-    if (message.data['type'] == 'qotd') {
-      final qotdQuestionId = message.data['questionId'] ?? message.data['question_id'];
-      final body = message.data['body'] ?? 'Check out today\'s question!';
+    // QOTD (both payload shapes). This handler runs on a TAP
+    // (onMessageOpenedApp / getInitialMessage), so the notification the user
+    // tapped has already been displayed — by the OS for a drop-mode push, or by
+    // `_firebaseMessagingBackgroundHandler` for a legacy data-only one. Showing
+    // another here would be the double notification. All that is left is the
+    // navigation, the widget refresh and the log line.
+    //
+    // Parsed BEFORE the analytics call (review 2026-09-22 A2) so the open can
+    // carry the Drop's own metadata.
+    final qotdPush = QotdPushPayload.parse(
+      message.data,
+      notificationTitle: message.notification?.title,
+      notificationBody: message.notification?.body,
+    );
 
+    // §4.2 fix: this handler runs on a notification TAP (onMessageOpenedApp /
+    // getInitialMessage), so record notification_opened with the precise type
+    // (makes the received→opened funnel real; QOTD effectiveness measurable).
+    //
+    // A2: `seconds_since_publish` is the single number the Drop launch is
+    // judged on — median seconds from drop to open — and `push_kind` says
+    // whether drop-mode outperforms legacy-mode when the server flips. No
+    // question id and no history id: the metadata is about the Drop, not about
+    // who opened it.
+    AnalyticsService().trackNotificationOpened(
+      message.data['type']?.toString() ?? 'unknown',
+      {
+        'delivery': 'fcm',
+        if (qotdPush != null) 'push_kind': qotdPush.kind.name,
+        if (qotdPush != null) 'is_drop': qotdPush.isDrop,
+        if (qotdPush?.publishedAt != null)
+          'seconds_since_publish': DateTime.now()
+              .toUtc()
+              .difference(qotdPush!.publishedAt!.toUtc())
+              .inSeconds,
+      },
+    );
+    if (qotdPush != null) {
+      // The tap lands on home, where today's question already sits at the
+      // top — not on the question screen (owner decision 2026-09-22).
+      _pendingHomeNavigation = true;
+      _persistPendingNavigation('home', 'qotd');
+      print('🦎 FCM: QOTD tap — pending navigation to home');
+
+      final qotdQuestionId = qotdPush.questionId;
       if (qotdQuestionId != null) {
-        final qotdReminderService = QOTDReminderService();
-        await qotdReminderService.updateTodayContent(body, qotdQuestionId);
-        _pendingQuestionNavigation = qotdQuestionId;
-
         // Update home screen widget with real question data
-        await _updateQOTDWidgetWithFreshData(qotdQuestionId, body);
+        await _updateQOTDWidgetWithFreshData(qotdQuestionId, qotdPush.body);
       }
 
       await _logNotificationToInAppLog(
-        '📆 Question of the Day',
-        body,
-        qotdQuestionId != null ? 'question_$qotdQuestionId' : null,
+        qotdPush.title,
+        qotdPush.body,
+        qotdPush.navigationPayload,
       );
-      return; // Don't show immediately — local notification fires at preferred time
+      return;
     }
 
     // For background messages, the system already shows the notification
@@ -430,9 +526,30 @@ class NotificationService {
     final notificationTitle = message.notification?.title ?? 'Notification';
     final notificationBody = message.notification?.body ?? '';
 
+    // Friend events are checked FIRST: a forward's push does carry the
+    // forwarded question's id (as `forwardQuestionId`, deliberately not
+    // `questionId`), but the tap belongs to the chat, not the question.
+    if (message.data['type'] == 'friend_event') {
+      final actorId = message.data['senderId'] ??
+          message.data['actorId'] ??
+          message.data['actor_id'];
+      if (actorId != null) {
+        _pendingFriendNavigation = actorId;
+        // `_persistPendingNavigation` is a fire-and-forget `void` async, as
+        // the question path uses it.
+        _persistPendingNavigation('friend', actorId);
+        print('🦎 FCM: Stored pending navigation for friend: $actorId');
+      }
+      await _logNotificationToInAppLog(
+        notificationTitle,
+        notificationBody,
+        actorId != null ? 'friend_$actorId' : null,
+      );
+      return;
+    }
+
     // We just need to handle the tap action here
     final questionId = message.data['questionId'] ?? message.data['question_id'];
-    final suggestionId = message.data['suggestionId'] ?? message.data['suggestion_id'];
 
     String? payload;
     if (questionId != null) {
@@ -440,11 +557,6 @@ class NotificationService {
       _pendingQuestionNavigation = questionId;
       print('🦎 FCM: Stored pending navigation for question: $questionId');
       print('🦎 SINGLETON: Stored on instance ${identityHashCode(this)}, _pendingQuestionNavigation = $_pendingQuestionNavigation');
-    } else if (suggestionId != null) {
-      payload = 'suggestion_$suggestionId';
-      _pendingSuggestionNavigation = suggestionId;
-      print('🦎 FCM: Stored pending navigation for suggestion: $suggestionId');
-      print('🦎 SINGLETON: Stored on instance ${identityHashCode(this)}, _pendingSuggestionNavigation = $_pendingSuggestionNavigation');
     }
 
     // Log to activity feed
@@ -455,12 +567,38 @@ class NotificationService {
     );
   }
 
+  // Check if current user is tagged (@username) in a comment
+  Future<bool> _isUserTaggedInComment(String questionId, String commentContent) async {
+    if (!commentContent.contains('@')) return false;
+
+    try {
+      final currentUserId = _supabase.auth.currentUser?.id;
+      if (currentUserId == null) return false;
+
+      final response = await _supabase
+          .from('question_comment_usernames')
+          .select('randomized_username')
+          .eq('question_id', questionId)
+          .eq('user_id', currentUserId)
+          .maybeSingle();
+
+      if (response == null) return false;
+      final username = response['randomized_username'] as String?;
+      if (username == null) return false;
+
+      return commentContent.contains('@$username');
+    } catch (e) {
+      print('Error checking user tag in comment: $e');
+      return false;
+    }
+  }
+
   // Handle comment notifications for subscribed questions
   Future<void> _handleCommentNotification(RemoteMessage message) async {
     final questionId = message.data['question_id'];
     final commentId = message.data['comment_id'];
     final commenterName = message.data['commenter_name'] ?? 'Someone';
-    
+
     if (questionId == null) return;
 
     try {
@@ -473,44 +611,82 @@ class NotificationService {
       final entry = watchlist[questionId];
       if (entry == null) return; // Not subscribed to this question
 
-      // Check comment notification rate limiting (max 2 per hour per question)
-      final commentRateLimitKey = 'comment_rate_limit_$questionId';
-      final rateLimit = prefs.getString(commentRateLimitKey);
-      final now = DateTime.now();
-      
-      if (rateLimit != null) {
-        final Map<String, dynamic> rateLimitData = json.decode(rateLimit);
-        final lastResetTime = DateTime.parse(rateLimitData['last_reset']);
-        final notificationCount = rateLimitData['count'] ?? 0;
-        
-        // Reset counter if more than 1 hour has passed
-        if (now.difference(lastResetTime).inHours >= 1) {
+      // Determine question type and tag status for rate limiting
+      final questionType = message.data['question_type'] ?? message.data['questionType'] ?? '';
+      final commentContent = message.data['commentContent'] ?? message.data['comment_content'] ?? '';
+      final isDiscussion = questionType == 'text';
+
+      // Check if user is tagged in this comment (only worth checking if comment has @)
+      bool isTagged = false;
+      if (commentContent.contains('@')) {
+        isTagged = await _isUserTaggedInComment(questionId, commentContent);
+      }
+
+      // Tagged users always get immediate notification — skip rate limiting
+      if (!isTagged) {
+        // Determine rate limit based on question type
+        // Discussion: 1 per 3 hours for regular subscribers, 1 per hour for author
+        // Other types: 2 per hour (existing behavior)
+        int maxNotifications;
+        int windowHours;
+
+        if (isDiscussion) {
+          // Check if current user is the question author
+          final currentUserId = _supabase.auth.currentUser?.id;
+          final isAuthor = entry['subscription_source'] == 'author';
+
+          if (isAuthor) {
+            maxNotifications = 1;
+            windowHours = 1;
+          } else {
+            maxNotifications = 1;
+            windowHours = 3;
+          }
+        } else {
+          maxNotifications = 2;
+          windowHours = 1;
+        }
+
+        final commentRateLimitKey = 'comment_rate_limit_$questionId';
+        final rateLimit = prefs.getString(commentRateLimitKey);
+        final now = DateTime.now();
+
+        if (rateLimit != null) {
+          final Map<String, dynamic> rateLimitData = json.decode(rateLimit);
+          final lastResetTime = DateTime.parse(rateLimitData['last_reset']);
+          final notificationCount = rateLimitData['count'] ?? 0;
+
+          // Reset counter if window has passed
+          if (now.difference(lastResetTime).inHours >= windowHours) {
+            await prefs.setString(commentRateLimitKey, json.encode({
+              'count': 1,
+              'last_reset': now.toIso8601String(),
+            }));
+          } else if (notificationCount >= maxNotifications) {
+            // Rate limit exceeded - skip notification but still log to in-app activity
+            print('🦎 Comment notification: Rate limit exceeded for question $questionId ($notificationCount/$maxNotifications per ${windowHours}h)');
+            await _logNotificationToInAppLog(
+              '💬 ${message.data['question_title'] ?? 'Your subscribed question'}',
+              '$commenterName left a comment!',
+              'question_$questionId',
+            );
+            return;
+          } else {
+            // Increment counter
+            await prefs.setString(commentRateLimitKey, json.encode({
+              'count': notificationCount + 1,
+              'last_reset': lastResetTime.toIso8601String(),
+            }));
+          }
+        } else {
+          // First notification for this question - initialize rate limit counter
           await prefs.setString(commentRateLimitKey, json.encode({
             'count': 1,
             'last_reset': now.toIso8601String(),
           }));
-        } else if (notificationCount >= 2) {
-          // Rate limit exceeded - skip notification but still log to in-app activity
-          print('🦎 Comment notification: Rate limit exceeded for question $questionId (${notificationCount}/2 this hour)');
-          await _logNotificationToInAppLog(
-            '💬 ${message.data['question_title'] ?? 'Your subscribed question'}',
-            '$commenterName left a comment!',
-            'question_$questionId',
-          );
-          return;
-        } else {
-          // Increment counter
-          await prefs.setString(commentRateLimitKey, json.encode({
-            'count': notificationCount + 1,
-            'last_reset': lastResetTime.toIso8601String(),
-          }));
         }
       } else {
-        // First notification for this question - initialize rate limit counter
-        await prefs.setString(commentRateLimitKey, json.encode({
-          'count': 1,
-          'last_reset': now.toIso8601String(),
-        }));
+        print('🦎 Comment notification: User tagged in comment, bypassing rate limit for question $questionId');
       }
 
       // Track seen comments to avoid duplicate notifications
@@ -780,6 +956,82 @@ class NotificationService {
     );
   }
 
+  /// Shows a QOTD push the instant it arrives, on its own channel.
+  ///
+  /// Kept separate from [_showLocalNotification] because the Drop needs the
+  /// max-importance `qotd_drop` channel (and, for the legacy payload, the old
+  /// `qotd_channel`) rather than that method's title-sniffing channel choice.
+  ///
+  /// Nothing here decides *when* the notification appears: the server's random
+  /// drop minute already did that. Call it and it shows.
+  Future<void> _showQotdNotification(QotdPushPayload push) async {
+    await _logNotificationToInAppLog(
+      push.title,
+      push.body,
+      push.navigationPayload,
+    );
+
+    final androidDetails = AndroidNotificationDetails(
+      push.androidChannelId,
+      push.isDrop ? 'The Daily Drop' : 'Question of the Day',
+      channelDescription: push.isDrop
+          ? 'The moment the day\'s question drops — one a day, at a different time each day'
+          : 'Notifications for new Question of the Day',
+      importance: push.isDrop ? Importance.max : Importance.high,
+      priority: Priority.high,
+      icon: 'ic_stat_rtr_logo_aug2025',
+      playSound: true,
+      enableVibration: true,
+      // A second drop notification should replace the first, never stack —
+      // matching the server's `collapse_key: qotd_drop`.
+      tag: push.isDrop ? 'qotd_drop' : null,
+    );
+
+    final iosDetails = DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: true,
+      presentSound: true,
+      // Only the drop claims time-sensitive (and only once the entitlement is
+      // filed — O-4; until then iOS ignores the level rather than failing).
+      interruptionLevel:
+          push.isDrop ? InterruptionLevel.timeSensitive : InterruptionLevel.active,
+    );
+
+    await _localNotifications.show(
+      // Same id for every drop, so a re-delivery replaces rather than stacks.
+      _qotdNotificationId,
+      push.title,
+      push.body,
+      NotificationDetails(android: androidDetails, iOS: iosDetails),
+      payload: push.navigationPayload,
+    );
+    print('📆 QOTD notification shown immediately (${push.kind.name})');
+  }
+
+  /// Fixed local-notification id for the day's QOTD, so a re-sent drop replaces
+  /// the one already on screen.
+  static const int _qotdNotificationId = 2100;
+
+  /// Debug-only: shows a local notification carrying the exact copy the
+  /// `send-friend-event-notifications` edge function would have sent, with the
+  /// same `friend_{actorId}` payload a real friend push carries — so a tap
+  /// routes through [_onNotificationTap] → `_pendingFriendNavigation` →
+  /// `readtheroom://friend/{actorId}` just like the real thing.
+  ///
+  /// Used by "Demo friends" mode (`lib/src/services/demo/`), which is itself
+  /// gated on [kDebugMode]; nothing in a release build calls this.
+  Future<void> showDemoFriendNotification({
+    required String title,
+    required String body,
+    required String actorId,
+  }) {
+    return _showLocalNotification(
+      title: title,
+      body: body,
+      payload: 'friend_$actorId',
+    );
+  }
+
   void _onNotificationTap(NotificationResponse response) {
     // Handle notification tap
     print('🦎 NOTIFICATION TAP: Received tap response');
@@ -788,8 +1040,25 @@ class NotificationService {
     if (response.payload != null) {
       print('🦎 NOTIFICATION TAP: Payload received: ${response.payload}');
 
+      // §4.2 fix: wire notification_opened for local-notification taps. The
+      // local payload carries no finer type than "this is a question"; precise
+      // types arrive via the FCM open path.
+      final openedType = QotdPushPayload.isQotdNavigationPayload(response.payload!)
+          ? 'qotd'
+          : response.payload!.startsWith('question_')
+              ? 'question'
+              : 'unknown';
+      AnalyticsService().trackNotificationOpened(openedType, {'delivery': 'local'});
+
+      // QOTD (the Drop or the legacy push, shown locally): open on home, not
+      // the question (owner decision 2026-09-22).
+      if (QotdPushPayload.isQotdNavigationPayload(response.payload!)) {
+        print('🦎 NOTIFICATION TAP: ✅ QOTD tapped — pending navigation to home');
+        _pendingHomeNavigation = true;
+        _persistPendingNavigation('home', 'qotd');
+      }
       // Check if it's a question notification
-      if (response.payload!.startsWith('question_')) {
+      else if (response.payload!.startsWith('question_')) {
         final questionId = response.payload!.substring('question_'.length);
         print('🦎 NOTIFICATION TAP: ✅ Question ID extracted: $questionId');
 
@@ -800,19 +1069,15 @@ class NotificationService {
         // Also persist to SharedPreferences for cold-start reliability
         _persistPendingNavigation('question', questionId);
       }
-      // Check if it's a suggestion notification
-      else if (response.payload!.startsWith('suggestion_')) {
-        final suggestionId = response.payload!.substring('suggestion_'.length);
-        print('🦎 NOTIFICATION TAP: ✅ Suggestion ID extracted: $suggestionId');
+      // Friend event (WP-F): open that friend's chat overlay.
+      else if (response.payload!.startsWith('friend_')) {
+        final friendId = response.payload!.substring('friend_'.length);
+        print('🦎 NOTIFICATION TAP: ✅ Friend ID extracted: $friendId');
 
-        // Store the suggestion ID for navigation when app context is available
-        _pendingSuggestionNavigation = suggestionId;
-        print('🦎 NOTIFICATION TAP: ✅ Stored pending navigation for suggestion: $suggestionId');
-
-        // Also persist to SharedPreferences for cold-start reliability
-        _persistPendingNavigation('suggestion', suggestionId);
+        _pendingFriendNavigation = friendId;
+        _persistPendingNavigation('friend', friendId);
       } else {
-        print('🦎 NOTIFICATION TAP: ❌ Payload does not start with "question_" or "suggestion_": ${response.payload}');
+        print('🦎 NOTIFICATION TAP: ❌ Payload is not a qotd, "question_" or "friend_" payload: ${response.payload}');
       }
     } else {
       print('🦎 NOTIFICATION TAP: ❌ No payload in notification response');
@@ -826,8 +1091,10 @@ class NotificationService {
       final prefs = await SharedPreferences.getInstance();
       if (type == 'question') {
         await prefs.setString('pending_question_navigation', id);
-      } else if (type == 'suggestion') {
-        await prefs.setString('pending_suggestion_navigation', id);
+      } else if (type == 'friend') {
+        await prefs.setString('pending_friend_navigation', id);
+      } else if (type == 'home') {
+        await prefs.setBool('pending_home_navigation', true);
       }
       print('🦎 NOTIFICATION TAP: Persisted pending $type navigation: $id');
     } catch (e) {
@@ -840,8 +1107,13 @@ class NotificationService {
     try {
       await _firebaseMessaging.subscribeToTopic('qotd');
       print("✅ Subscribed to QOTD topic");
+      AnalyticsService().trackPushTopicSubscription(
+          topic: 'qotd', result: 'ok', trigger: 'settings');
+      AnalyticsService().setUserProperties({'qotd_topic_subscribed': true});
     } catch (e) {
       print("❌ Failed to subscribe to QOTD topic: $e");
+      AnalyticsService().trackPushTopicSubscription(
+          topic: 'qotd', result: 'failed', trigger: 'settings');
     }
   }
 
@@ -850,8 +1122,13 @@ class NotificationService {
     try {
       await _firebaseMessaging.unsubscribeFromTopic('qotd');
       print("✅ Unsubscribed from QOTD topic");
+      AnalyticsService().trackPushTopicSubscription(
+          topic: 'qotd', result: 'ok', trigger: 'unsubscribe');
+      AnalyticsService().setUserProperties({'qotd_topic_subscribed': false});
     } catch (e) {
       print("❌ Failed to unsubscribe from QOTD topic: $e");
+      AnalyticsService().trackPushTopicSubscription(
+          topic: 'qotd', result: 'failed', trigger: 'unsubscribe');
     }
   }
 
@@ -923,7 +1200,7 @@ class NotificationService {
         'comments_on_watched_enabled': true,
         'comments_on_created_enabled': true,
         'votes_on_created_enabled': true,
-      });
+      }, onConflict: 'user_id');
       print("✅ Updated notification settings for question activity");
 
     } catch (e) {
@@ -950,11 +1227,117 @@ class NotificationService {
         'comments_on_watched_enabled': false,
         'comments_on_created_enabled': false,
         'votes_on_created_enabled': false,
-      });
+      }, onConflict: 'user_id');
       print("✅ Updated notification settings to disable question activity");
 
     } catch (e) {
       print("❌ Failed to unsubscribe from question activity: $e");
+    }
+  }
+
+  /// Master toggle for friend-graph pushes: requests and acceptances (WP-E),
+  /// licks / forwards / reactions (WP-F). Writes
+  /// `notification_settings.friend_events_enabled`, which
+  /// `send-friend-event-notifications` checks before every send.
+  ///
+  /// Turning it **on** also subscribes to the personal `user_{id}` topic,
+  /// because that is the topic friend pushes are sent to — and a user who
+  /// turned "Comments & Activity" off has been unsubscribed from it, so without
+  /// this the switch would appear to work and deliver nothing.
+  ///
+  /// Turning it **off** does *not* unsubscribe: the same topic carries vote and
+  /// comment activity, which this switch has no business disabling. The
+  /// server-side flag is what suppresses friend pushes.
+  Future<void> setFriendEventsEnabled(bool enabled) async {
+    try {
+      final user = _supabase.auth.currentUser;
+      if (user == null) {
+        print("❌ Cannot set friend event notifications: user not authenticated");
+        return;
+      }
+
+      if (enabled) {
+        await _firebaseMessaging.subscribeToTopic('user_${user.id}');
+      }
+
+      await _supabase.from('notification_settings').upsert({
+        'user_id': user.id,
+        'friend_events_enabled': enabled,
+      }, onConflict: 'user_id');
+      print("✅ friend_events_enabled = $enabled");
+    } catch (e) {
+      print("❌ Failed to set friend event notifications: $e");
+    }
+  }
+
+  /// Writes `notification_settings.qotd_enabled`.
+  ///
+  /// QOTD push is delivered to the `qotd` FCM topic, so the subscription is what
+  /// actually gates delivery — but this column existed from the start and the
+  /// client never wrote it, leaving every row at its `true` default regardless
+  /// of what the user chose. Called from `UserService.setNotifyQOTD`.
+  Future<void> setQotdEnabled(bool enabled) async {
+    await _upsertNotificationSettings({'qotd_enabled': enabled});
+  }
+
+  /// Writes the quiet-hours window (and the timezone it is interpreted in).
+  ///
+  /// `null` start/end clears the window. The send-side edge functions defer a
+  /// push that lands inside it, so this is server-authoritative — there is no
+  /// local equivalent.
+  Future<void> setQuietHours({
+    required String? start,
+    required String? end,
+    String? timezone,
+  }) async {
+    await _upsertNotificationSettings({
+      'quiet_hours_start': start,
+      'quiet_hours_end': end,
+      if (timezone != null) 'timezone': timezone,
+    });
+  }
+
+  /// Reads the caller's `notification_settings` row, or null when there is none
+  /// (a user who has never changed a setting) or the read fails.
+  Future<Map<String, dynamic>?> fetchNotificationSettings() async {
+    try {
+      final user = _supabase.auth.currentUser;
+      if (user == null) return null;
+      final rows = await _supabase
+          .from('notification_settings')
+          .select()
+          .eq('user_id', user.id)
+          .limit(1);
+      if (rows.isNotEmpty) {
+        return Map<String, dynamic>.from(rows.first);
+      }
+      return null;
+    } catch (e) {
+      print("❌ Failed to read notification settings: $e");
+      return null;
+    }
+  }
+
+  /// One merge-on-`user_id` write for `notification_settings`.
+  ///
+  /// `onConflict: 'user_id'` is load-bearing: the table's primary key is `id`
+  /// (uuid, defaulted), so a plain upsert infers the PK, never finds a conflict,
+  /// and the INSERT fails on the separate `unique(user_id)` for every user who
+  /// already has a row — silently, because the caller swallows the error.
+  Future<void> _upsertNotificationSettings(Map<String, dynamic> values) async {
+    try {
+      final user = _supabase.auth.currentUser;
+      if (user == null) {
+        print("❌ Cannot write notification settings: user not authenticated");
+        return;
+      }
+      await _supabase.from('notification_settings').upsert({
+        'user_id': user.id,
+        ...values,
+      }, onConflict: 'user_id');
+      print("✅ notification_settings updated: ${values.keys.join(', ')}");
+    } catch (e) {
+      print("❌ Failed to write notification settings: $e");
     }
   }
 
@@ -1018,7 +1401,12 @@ class NotificationService {
         sound: true,
       );
 
-      if (settings.authorizationStatus == AuthorizationStatus.authorized) {
+      // `provisional` is iOS "deliver quietly": notifications ARE delivered, to
+      // Notification Centre rather than as banners. Treating it as a denial used
+      // to hand the caller `false`, which ran the denied branch and unsubscribed
+      // a user who could in fact be reached.
+      if (settings.authorizationStatus == AuthorizationStatus.authorized ||
+          settings.authorizationStatus == AuthorizationStatus.provisional) {
         // Get initial FCM token with error handling
         try {
           final token = await _firebaseMessaging.getToken();
@@ -1076,27 +1464,61 @@ class NotificationService {
     return questionId;
   }
 
-  // Check if there's a pending suggestion navigation from notification tap
-  String? getPendingSuggestionNavigation() {
-    print('🦎 SINGLETON: getPendingSuggestionNavigation called on instance ${identityHashCode(this)}');
-    print('🦎 SINGLETON: Current _pendingSuggestionNavigation value: $_pendingSuggestionNavigation');
-    
-    final suggestionId = _pendingSuggestionNavigation;
-    if (suggestionId != null) {
-      print('🦎 NOTIFICATION NAV: Retrieved pending suggestion navigation: $suggestionId');
-      _pendingSuggestionNavigation = null; // Clear after retrieving
-      print('🦎 NOTIFICATION NAV: Cleared pending navigation, will attempt deep link');
-    } else {
-      print('🦎 NOTIFICATION NAV: No pending suggestion navigation found');
+  /// Pending home navigation from a tapped QOTD push (owner decision
+  /// 2026-09-22: the Drop opens the app on home, not the question).
+  ///
+  /// Cleared on read and drained in `main.dart` into `readtheroom://home`.
+  /// Also drains the SharedPreferences copy, which is what survives a cold
+  /// start where the singleton is rebuilt before anyone asks.
+  Future<bool> getPendingHomeNavigation() async {
+    var pending = _pendingHomeNavigation;
+    _pendingHomeNavigation = false;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      pending = pending || (prefs.getBool('pending_home_navigation') ?? false);
+      await prefs.remove('pending_home_navigation');
+    } catch (e) {
+      print('🦎 NOTIFICATION NAV: Error reading pending home navigation: $e');
     }
-    return suggestionId;
+
+    if (pending) {
+      print('🦎 NOTIFICATION NAV: Retrieved pending home navigation (QOTD)');
+    }
+    return pending;
+  }
+
+  /// Pending friend-chat navigation from a tapped friend-event push (WP-F).
+  ///
+  /// Cleared on read, like the question equivalent, and drained
+  /// in `main.dart` into `readtheroom://friend/{userId}`. Also drains the
+  /// SharedPreferences copy, which is what survives a cold start where the
+  /// singleton is rebuilt before anyone asks.
+  Future<String?> getPendingFriendNavigation() async {
+    var friendId = _pendingFriendNavigation;
+    _pendingFriendNavigation = null;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      friendId ??= prefs.getString('pending_friend_navigation');
+      await prefs.remove('pending_friend_navigation');
+    } catch (e) {
+      print('🦎 NOTIFICATION NAV: Error reading pending friend navigation: $e');
+    }
+
+    if (friendId != null) {
+      print('🦎 NOTIFICATION NAV: Retrieved pending friend navigation: $friendId');
+    }
+    return friendId;
   }
 
   // Check if notification permissions are already granted
   Future<bool> arePermissionsGranted() async {
     try {
       final settings = await _firebaseMessaging.getNotificationSettings();
-      return settings.authorizationStatus == AuthorizationStatus.authorized;
+      // Provisional counts as granted — see requestPermissions().
+      return settings.authorizationStatus == AuthorizationStatus.authorized ||
+          settings.authorizationStatus == AuthorizationStatus.provisional;
     } catch (e) {
       print('Error checking notification permissions: $e');
       return false;
@@ -1171,13 +1593,9 @@ class NotificationService {
       // Fetch current vote and comment counts for all subscribed questions
       for (final questionId in watchlist.keys) {
         try {
-          // Get current vote count from responses table (same as getQuestionById)
-          final responseCountQuery = await _supabase
-              .from('responses')
-              .select('id')
-              .eq('question_id', questionId);
-          
-          final currentVoteCount = responseCountQuery?.length ?? 0;
+                    // Get current answer count from the results RPC
+          final currentVoteCount =
+              await ResultsService().fetchTotalCount(questionId);
           
           // Get current comment count from comments table
           final commentCountQuery = await _supabase
@@ -1593,12 +2011,16 @@ class NotificationService {
   Future<void> _logNotificationToInAppLog(String title, String body, String? payload) async {
     try {
       String? questionId;
-      String? suggestionId;
       String notificationType = 'system';
 
       // Parse payload to extract IDs and determine type
       if (payload != null) {
-        if (payload.startsWith('question_')) {
+        if (QotdPushPayload.isQotdNavigationPayload(payload)) {
+          // Either QOTD shape. The tap lands on home, but the log entry still
+          // links to the question when the push named one.
+          notificationType = 'qotd';
+          questionId = QotdPushPayload.questionIdFromNavigationPayload(payload);
+        } else if (payload.startsWith('question_')) {
           questionId = payload.substring('question_'.length);
           if (title.contains('💬')) {
             notificationType = 'comment';
@@ -1606,12 +2028,11 @@ class NotificationService {
             notificationType = 'qotd';
           } else if (title.contains('🦎')) {
             notificationType = 'vote_activity';
-          } else if (title.contains('❓')) {
+          } else if (title.contains('❓') || title.contains('⚡')) {
+            // '⚡' is the Drop's own title ("⚡ Today's question just
+            // dropped" / "⚡ N spots left ..."), composed server-side.
             notificationType = 'qotd';
           }
-        } else if (payload.startsWith('suggestion_')) {
-          suggestionId = payload.substring('suggestion_'.length);
-          notificationType = 'comment';
         }
       }
 
@@ -1621,7 +2042,6 @@ class NotificationService {
         body: body,
         type: notificationType,
         questionId: questionId,
-        suggestionId: suggestionId,
       );
 
       await _notificationLogService.addNotification(notification);
@@ -1634,11 +2054,7 @@ class NotificationService {
   /// Fetch real vote/comment counts and hasAnswered for a question, then update the home widget.
   Future<void> _updateQOTDWidgetWithFreshData(String questionId, String questionText) async {
     try {
-      final voteCountQuery = await _supabase
-          .from('responses')
-          .select('id')
-          .eq('question_id', questionId);
-      final voteCount = voteCountQuery.length;
+            final voteCount = await ResultsService().fetchTotalCount(questionId);
 
       final commentCountQuery = await _supabase
           .from('comments')
@@ -1646,17 +2062,9 @@ class NotificationService {
           .eq('question_id', questionId);
       final commentCount = commentCountQuery.length;
 
-      bool hasAnswered = false;
-      final userId = _supabase.auth.currentUser?.id;
-      if (userId != null) {
-        final responseCheck = await _supabase
-            .from('responses')
-            .select('id')
-            .eq('question_id', questionId)
-            .eq('user_id', userId)
-            .maybeSingle();
-        hasAnswered = responseCheck != null;
-      }
+      // Local state: `responses` is anonymous (no user column), so the
+      // server cannot say whether THIS user answered.
+      final hasAnswered = await UserService.hasAnsweredLocally(questionId);
 
       await HomeWidgetService().updateQOTDWidget(
         questionText: questionText,

@@ -14,6 +14,7 @@ import '../services/user_service.dart';
 import '../services/deep_link_service.dart';
 import 'approval_results_screen.dart';
 import '../utils/time_utils.dart';
+import '../utils/approval_labels.dart';
 import '../utils/haptic_utils.dart';
 import '../services/user_service.dart';
 import 'report_question_screen.dart';
@@ -25,15 +26,20 @@ import '../models/category.dart';
 import '../widgets/swipe_navigation_wrapper.dart';
 import '../utils/category_navigation.dart';
 import '../widgets/animated_submit_button.dart';
+import '../widgets/approval_end_labels_row.dart';
 import '../widgets/approval_slider.dart';
 import '../services/analytics_service.dart';
 import 'main_screen.dart';
+import '../widgets/send_to_friend_sheet.dart';
+import '../widgets/share_with_close_friends_toggle.dart';
 
 class AnswerApprovalScreen extends StatefulWidget {
   final Map<String, dynamic> question;
   final FeedContext? feedContext;
   final bool fromSearch;
   final bool fromUserScreen;
+  /// Where the answer flow was entered from — see [AnswerSource] vocabulary.
+  final String entrySource;
 
   const AnswerApprovalScreen({
     Key? key,
@@ -41,6 +47,7 @@ class AnswerApprovalScreen extends StatefulWidget {
     this.feedContext,
     this.fromSearch = false,
     this.fromUserScreen = false,
+    this.entrySource = 'other',
   }) : super(key: key);
 
   @override
@@ -50,21 +57,56 @@ class AnswerApprovalScreen extends StatefulWidget {
 class _AnswerApprovalScreenState extends State<AnswerApprovalScreen> {
   double _sliderValue = 0.0;
   bool _isSubmitting = false;
+
+  /// Per-answer close-friend flag for this answer (owner decision 2026-09-17).
+  /// Default ON, chosen above the slider, sent with the submit and then frozen
+  /// onto the row — not a profile setting, so nothing loads or persists it.
+  bool _shareWithCloseFriends = true;
+  bool _answerSubmitted = false;
+  final DateTime _openedAt = DateTime.now();
   bool _wasViewedAsGuest = false;
   final ScrollController _scrollController = ScrollController();
   bool _showQuestionInTitle = false;
+  // Lets the slider release fire the submit button so it visibly plays its
+  // press + progress animation (WP-A / decision D7) instead of duplicating it.
+  final AnimatedSubmitButtonController _submitButtonController =
+      AnimatedSubmitButtonController();
 
   @override
   void initState() {
     super.initState();
     _setupScrollListener();
-    AnalyticsService().trackQuestionAnswerStarted(widget.question['type']?.toString() ?? 'approval_rating');
+    AnalyticsService().trackQuestionAnswerStarted(
+      widget.question['type']?.toString() ?? 'approval_rating',
+      source: widget.entrySource,
+    );
   }
 
   @override
   void dispose() {
+    // §4.2: answer abandoned if the screen is left without a successful submit.
+    if (!_answerSubmitted) {
+      AnalyticsService().trackQuestionAnswerAbandoned(
+        widget.question['type']?.toString() ?? 'approval_rating',
+        DateTime.now().difference(_openedAt).inSeconds,
+        source: widget.entrySource,
+      );
+    }
     _scrollController.dispose();
+    _submitButtonController.dispose();
     super.dispose();
+  }
+
+  /// Submit-on-release (decision D7): the slider's `onChangeEnd` fires the
+  /// submit button through its controller, so the same submit path runs and the
+  /// button plays its press + progress animation. Releases during an in-flight
+  /// submission are ignored (both here and inside the controller).
+  void _onSliderReleased(double value) {
+    if (_isSubmitting) return;
+    setState(() => _sliderValue = value);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _submitButtonController.trigger();
+    });
   }
 
   void _setupScrollListener() {
@@ -178,6 +220,7 @@ class _AnswerApprovalScreenState extends State<AnswerApprovalScreen> {
         _sliderValue,
         countryCode,
         locationService: locationService,
+        sharedWithCloseFriends: _shareWithCloseFriends,
       );
       final minAnimationFuture = Future.delayed(const Duration(seconds: 2));
 
@@ -229,6 +272,11 @@ class _AnswerApprovalScreenState extends State<AnswerApprovalScreen> {
             _isSubmitting = false;
           });
         }
+        // Review 2026-09-22 C2 — see answer_multiple_choice_screen.
+        AnalyticsService().trackAnswerSubmitFailed(
+          widget.question['type']?.toString() ?? 'approval_rating',
+          source: widget.entrySource,
+        );
         return; // Don't continue if submission failed
       }
       
@@ -237,9 +285,12 @@ class _AnswerApprovalScreenState extends State<AnswerApprovalScreen> {
           .addAnsweredQuestion(answeredQuestion, context: context);
 
       // Track successful answer
+      _answerSubmitted = true;
       AnalyticsService().trackQuestionAnswered(
         widget.question['type']?.toString() ?? 'approval_rating',
         'approval_rating',
+        source: widget.entrySource,
+        sharedWithCloseFriends: _shareWithCloseFriends,
       );
 
       // Update the question's vote count
@@ -255,20 +306,15 @@ class _AnswerApprovalScreenState extends State<AnswerApprovalScreen> {
       // Haptic feedback on successful submission
       await AppHaptics.mediumImpact();
 
-      // For now, use dummy responses
-      final responses = List<Map<String, dynamic>>.from(_dummyResponses)
-        ..add({
-          'answer': _sliderValue,
-          'country': locationService.userLocation?['country_name_en'] ?? 'Unknown',
-        });
-
+            // The results screen fetches its own results from the server; this hands
+      // it nothing, so it shows its loading state for one round trip and then
+      // the real numbers, the user's own answer included.
       // Navigate to results screen
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
           builder: (context) => ApprovalResultsScreen(
             question: widget.question,
-            responses: responses,
             feedContext: widget.feedContext,
             fromSearch: widget.fromSearch,
             fromUserScreen: widget.fromUserScreen,
@@ -470,50 +516,6 @@ class _AnswerApprovalScreenState extends State<AnswerApprovalScreen> {
                         ),
                       );
                     }
-                  }
-                },
-              );
-            },
-          ),
-          // Save/bookmark button
-          Consumer<UserService>(
-            builder: (context, userService, child) {
-              final isSaved = userService.savedQuestions
-                  .any((q) => q['id'] == widget.question['id']);
-              return IconButton(
-                icon: Icon(
-                  isSaved ? Icons.bookmark : Icons.bookmark_border,
-                  color: isSaved ? Theme.of(context).primaryColor : null,
-                ),
-                onPressed: () {
-                  if (isSaved) {
-                    userService.removeSavedQuestion(widget.question['id']);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Row(
-                          children: [
-                            Icon(Icons.bookmark_border, color: Colors.white, size: 20),
-                            SizedBox(width: 8),
-                            Text('Question removed from saved'),
-                          ],
-                        ),
-                        backgroundColor: Theme.of(context).primaryColor,
-                      ),
-                    );
-                  } else {
-                    userService.addSavedQuestion(widget.question);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Row(
-                          children: [
-                            Icon(Icons.bookmark, color: Colors.white, size: 20),
-                            SizedBox(width: 8),
-                            Text('Question saved'),
-                          ],
-                        ),
-                        backgroundColor: Theme.of(context).primaryColor,
-                      ),
-                    );
                   }
                 },
               );
@@ -805,12 +807,8 @@ class _AnswerApprovalScreenState extends State<AnswerApprovalScreen> {
               ),
               child: Column(
                 children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Icon(Icons.thumb_down, color: Colors.red),
-                      Icon(Icons.thumb_up, color: Colors.green),
-                    ],
+                  ApprovalEndLabelsRow(
+                    labels: approvalLabelsFrom(widget.question),
                   ),
                   SizedBox(height: 8),
                   
@@ -822,19 +820,34 @@ class _AnswerApprovalScreenState extends State<AnswerApprovalScreen> {
                         _sliderValue = value;
                       });
                     },
+                    onChangeEnd: _onSliderReleased,
                   ),
                 ],
               ),
             ),
             SizedBox(height: 32),
-            AnimatedSubmitButton(
-              onPressed: (_isSubmitting || wasViewedAsGuest) ? null : _submitAnswer,
-              isLoading: _isSubmitting,
-              buttonText: 'Submit Answer',
-              disabledText: wasViewedAsGuest ? 'Cannot Vote (Viewed as Guest)' : 'Submit Answer',
-              backgroundColor: wasViewedAsGuest ? Colors.grey : Theme.of(context).primaryColor,
-              foregroundColor: Colors.white,
-              padding: EdgeInsets.symmetric(vertical: 16),
+            // Submit + the per-answer close-friend choice on one row (the toggle
+            // renders nothing until the user has a close friend).
+            Row(
+              children: [
+                Expanded(
+                  child: AnimatedSubmitButton(
+                    controller: _submitButtonController,
+                    onPressed: (_isSubmitting || wasViewedAsGuest) ? null : _submitAnswer,
+                    isLoading: _isSubmitting,
+                    buttonText: 'Submit Answer',
+                    disabledText: wasViewedAsGuest ? 'Cannot Vote (Viewed as Guest)' : 'Submit Answer',
+                    backgroundColor: wasViewedAsGuest ? Colors.grey : Theme.of(context).primaryColor,
+                    foregroundColor: Colors.white,
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                  ),
+                ),
+                ShareWithCloseFriendsToggle(
+                  value: _shareWithCloseFriends,
+                  enabled: !_isSubmitting,
+                  onChanged: (v) => setState(() => _shareWithCloseFriends = v),
+                ),
+              ],
             ),
             
             // Swipe to next indicator
@@ -862,16 +875,22 @@ class _AnswerApprovalScreenState extends State<AnswerApprovalScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
+                // WP-F: forward this question inside the app. Hides itself
+                // when the viewer has no accepted friends.
+                SendToFriendButton(
+                  questionId: widget.question['id']?.toString() ?? '',
+                ),
                                   TextButton.icon(
                     icon: Icon(Icons.share),
                     label: Text('Share'),
                     onPressed: () {
                       final questionTitle = widget.question['prompt'] ?? widget.question['title'] ?? 'Check out this question';
                       final questionId = widget.question['id']?.toString() ?? '';
-                      final shareText = questionId.isNotEmpty 
+                      AnalyticsService().trackShareInitiated('question', method: 'system', questionId: questionId.isNotEmpty ? questionId : null);
+                      final shareText = questionId.isNotEmpty
                           ? 'Check out this question on Read the Room:\n\n$questionTitle\n\nhttps://readtheroom.site/question/$questionId'
                           : 'Check out this question on Read the Room:\n\n$questionTitle';
-                      
+
                       final box = context.findRenderObject() as RenderBox?;
                       Share.share(
                         shareText,
@@ -923,8 +942,12 @@ class _AnswerApprovalScreenState extends State<AnswerApprovalScreen> {
           if (index == 0) {
             Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
           } else if (index == 1) {
-            Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
-            // Navigate to search tab - this would need to be handled in main screen
+            // Navigate to community tab
+            Navigator.pushAndRemoveUntil(
+              context,
+              MaterialPageRoute(builder: (context) => MainScreen(initialIndex: 1)),
+              (route) => false,
+            );
           } else if (index == 2) {
             // Navigate to activity tab
             Navigator.pushAndRemoveUntil(
@@ -941,7 +964,7 @@ class _AnswerApprovalScreenState extends State<AnswerApprovalScreen> {
         type: BottomNavigationBarType.fixed,
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
-          BottomNavigationBarItem(icon: Icon(Icons.search), label: 'Search'),
+          BottomNavigationBarItem(icon: Icon(Icons.groups_outlined), label: 'Community'),
           BottomNavigationBarItem(icon: Icon(Icons.notifications_outlined), label: 'Activity'),
           BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Me'),
         ],

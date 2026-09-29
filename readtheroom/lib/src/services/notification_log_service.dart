@@ -188,7 +188,6 @@ class NotificationLogService {
     required String body,
     required String type,
     String? questionId,
-    String? suggestionId,
     Map<String, dynamic>? additionalMetadata,
   }) {
     return NotificationItem(
@@ -198,7 +197,6 @@ class NotificationLogService {
       type: type,
       timestamp: DateTime.now(),
       questionId: questionId,
-      suggestionId: suggestionId,
       metadata: additionalMetadata,
     );
   }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import 'package:flutter/material.dart';
+import '../utils/results_colors.dart';
 
 class RatingDistributionChart extends StatelessWidget {
   final Map<String, int> distribution;
@@ -21,24 +22,17 @@ class RatingDistributionChart extends StatelessWidget {
     'strongly_approve',
   ];
 
-  static const _binColors = [
-    Colors.red,
-    Color(0xFFEF9A9A), // Colors.red[200]
-    Color(0xFFE0E0E0), // Colors.grey[300]
-    Color(0xFFA5D6A7), // Colors.green[200]
-    Colors.green,
-  ];
-
-  static const _binIcons = [
-    Icons.thumb_down,
-    Icons.thumb_down,
-    Icons.sentiment_neutral,
-    Icons.thumb_up,
-    Icons.thumb_up,
+  static const _binLabels = [
+    'Strongly Disapprove',
+    'Disapprove',
+    'Neutral',
+    'Approve',
+    'Strongly Approve',
   ];
 
   @override
   Widget build(BuildContext context) {
+    final binColors = ResultsColors.approvalBinColors(context);
     final counts = _binKeys.map((k) => distribution[k] ?? 0).toList();
     final maxCount = counts.fold<int>(0, (a, b) => a > b ? a : b);
     final total = counts.fold<int>(0, (a, b) => a + b);
@@ -60,7 +54,7 @@ class RatingDistributionChart extends StatelessWidget {
                     curve: Curves.easeOutCubic,
                     height: fraction * height,
                     decoration: BoxDecoration(
-                      color: _binColors[i],
+                      color: binColors[i],
                       borderRadius: BorderRadius.circular(4),
                     ),
                   ),
@@ -72,24 +66,11 @@ class RatingDistributionChart extends StatelessWidget {
         const SizedBox(height: 8),
         Row(
           children: List.generate(5, (i) {
-            final iconColor = i < 2
-                ? (i == 0 ? Colors.red : Colors.red[200])
-                : i == 2
-                    ? Colors.grey[600]
-                    : (i == 3 ? Colors.green[200] : Colors.green);
             final iconSize = (i == 0 || i == 4) ? 16.0 : 18.0;
             return Expanded(
               child: Center(
-                child: i == 0 || i == 4
-                    ? Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(_binIcons[i], color: iconColor, size: iconSize),
-                          const SizedBox(width: 1),
-                          Icon(_binIcons[i], color: iconColor, size: iconSize),
-                        ],
-                      )
-                    : Icon(_binIcons[i], color: iconColor, size: iconSize),
+                child: ResultsColors.iconForApprovalLabel(
+                    context, _binLabels[i], size: iconSize),
               ),
             );
           }),

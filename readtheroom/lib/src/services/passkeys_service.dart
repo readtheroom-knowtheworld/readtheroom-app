@@ -12,7 +12,31 @@ import 'dart:typed_data';
 import 'dart:math';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:webauthn/webauthn.dart';
+import '../utils/passkey_device_lookup.dart';
+import 'analytics_service.dart';
 import 'device_id_provider.dart';
+import 'network_service.dart' show isMissingRpc;
+
+/// Reduces a passkey failure to a code from OUR OWN vocabulary.
+///
+/// Never the exception's message: a WebAuthn or PostgREST string can quote a
+/// device name, an rpId or a server message, and `auth_failed` is not a place
+/// to leak any of that (review 2026-09-22 F4). Pure and top-level so the
+/// mapping is unit-testable without a device.
+String passkeyFailureReason(Object? error) {
+  final text = error?.toString().toLowerCase() ?? '';
+  if (text.isEmpty) return 'unknown';
+  if (text.contains('no credentials exist')) return 'no_credentials';
+  if (text.contains('no passkey found')) return 'no_passkey';
+  if (text.contains('could not be authenticated')) return 'stale_user_record';
+  if (text.contains('cancel') || text.contains('abort')) return 'cancelled';
+  if (text.contains('timeout') || text.contains('timed out')) return 'timeout';
+  if (text.contains('not supported') || text.contains('unsupported')) {
+    return 'unsupported';
+  }
+  if (text.contains('network') || text.contains('socket')) return 'network';
+  return 'exception';
+}
 
 class PasskeysService {
   final _supabase = Supabase.instance.client;
@@ -70,6 +94,88 @@ class PasskeysService {
     return null;
   }
 
+  /// THE one way this file looks a device up in `users`.
+  ///
+  /// It asks `find_passkey_user_for_device(p_device_id, p_platform)`, which
+  /// answers one exact device id with at most one row. The old shape — a
+  /// pre-auth `from('users').select('*').eq('android_id', …)` — worked only
+  /// because a blanket SELECT policy was open to anon, and a caller-supplied
+  /// filter is a caller-droppable filter: the same public key could list every
+  /// passkey user's `uuid`, `credential_id` and `public_key`, and the Supabase
+  /// password is derived from `uuid`.
+  ///
+  /// [fullyRegistered] filters client-side (see [passkeyRowFromRpc]): the RPC
+  /// returns the device's BEST row, fully registered first, so one round trip
+  /// answers both "is there an account" and "is there a broken half-
+  /// registration". Pass null to accept either.
+  ///
+  /// [requirePasskeyAuthMethod] exists only for the fallback: the RPC always
+  /// scopes to `auth_method = 'passkey'`, but one legacy call site (the
+  /// duplicate-key recovery in [register]) did not, and its fallback must stay
+  /// exactly what it was.
+  ///
+  /// Falls back to the direct table read while `PGRST202` says the function is
+  /// not deployed yet — same shape as `submit_response` in question_service.
+  /// Real errors are rethrown, so every caller's existing catch behaves as it
+  /// did before.
+  Future<Map<String, dynamic>?> _lookupPasskeyUser(
+    String deviceId, {
+    required bool? fullyRegistered,
+    bool requirePasskeyAuthMethod = true,
+  }) async {
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      _debugLog('_lookupPasskeyUser() - Unsupported platform, no lookup');
+      return null;
+    }
+
+    final platform = passkeyLookupPlatform(isAndroid: Platform.isAndroid);
+    try {
+      final raw = await _supabase.rpc('find_passkey_user_for_device', params: {
+        'p_device_id': deviceId,
+        'p_platform': platform,
+      });
+      final row = passkeyRowFromRpc(raw, fullyRegistered: fullyRegistered);
+      _debugLog('_lookupPasskeyUser() - RPC ($platform, '
+          'fully_registered: $fullyRegistered) -> '
+          '${row != null ? 'FOUND ${row['uuid']}' : 'NO USER'}');
+      return row;
+    } catch (e) {
+      if (!isMissingRpc(e)) rethrow;
+
+      // The backend predates the lookup RPC. Fall back to the older read so
+      // sign-in still works; once per session, because the fact is about the server's
+      // schema and not about how many times a screen asked.
+      _debugLog('_lookupPasskeyUser() - ⚠️ find_passkey_user_for_device is not '
+          'deployed — falling back to the direct users read.');
+      AnalyticsService().trackRpcNotDeployedOnce('find_passkey_user_for_device');
+      return _lookupPasskeyUserByTableRead(
+        deviceId,
+        fullyRegistered: fullyRegistered,
+        requirePasskeyAuthMethod: requirePasskeyAuthMethod,
+      );
+    }
+  }
+
+  /// The pre-RPC query, kept byte-for-byte equivalent for the window before
+  /// `find_passkey_user_for_device` is deployed. On a backend that closes
+  /// direct reads of `users`, this returns nothing to an anon caller by
+  /// design.
+  Future<Map<String, dynamic>?> _lookupPasskeyUserByTableRead(
+    String deviceId, {
+    required bool? fullyRegistered,
+    required bool requirePasskeyAuthMethod,
+  }) async {
+    final column = Platform.isAndroid ? 'android_id' : 'apple_vendor_id';
+    var query = _supabase.from('users').select('*').eq(column, deviceId);
+    if (requirePasskeyAuthMethod) {
+      query = query.eq('auth_method', 'passkey');
+    }
+    if (fullyRegistered != null) {
+      query = query.eq('is_fully_registered', fullyRegistered);
+    }
+    return await query.maybeSingle();
+  }
+
   Future<Map<String, dynamic>?> findExistingPasskeyForDevice() async {
     _debugLog('findExistingPasskeyForDevice() - Starting search');
     try {
@@ -82,31 +188,10 @@ class PasskeysService {
 
       _debugLog('findExistingPasskeyForDevice() - Looking for existing user with device ID: $deviceId');
 
-      Map<String, dynamic>? userData;
-      
-      if (Platform.isAndroid) {
-        _debugLog('findExistingPasskeyForDevice() - Querying users table for Android device');
-        final response = await _supabase
-            .from('users')
-            .select('*')
-            .eq('android_id', deviceId)
-            .eq('auth_method', 'passkey')
-            .eq('is_fully_registered', true) // Only return fully registered users
-            .maybeSingle();
-        userData = response;
-        _debugLog('findExistingPasskeyForDevice() - Android query result: ${userData != null ? 'FOUND USER' : 'NO USER'} ${userData != null ? '(UUID: ${userData['uuid']}, is_fully_registered: ${userData['is_fully_registered']})' : ''}');
-      } else if (Platform.isIOS) {
-        _debugLog('findExistingPasskeyForDevice() - Querying users table for iOS device');
-        final response = await _supabase
-            .from('users')
-            .select('*')
-            .eq('apple_vendor_id', deviceId)
-            .eq('auth_method', 'passkey')
-            .eq('is_fully_registered', true) // Only return fully registered users
-            .maybeSingle();
-        userData = response;
-        _debugLog('findExistingPasskeyForDevice() - iOS query result: ${userData != null ? 'FOUND USER' : 'NO USER'} ${userData != null ? '(UUID: ${userData['uuid']}, is_fully_registered: ${userData['is_fully_registered']})' : ''}');
-      }
+      // Only fully registered users count as "an account on this device".
+      final userData =
+          await _lookupPasskeyUser(deviceId, fullyRegistered: true);
+      _debugLog('findExistingPasskeyForDevice() - Lookup result: ${userData != null ? 'FOUND USER' : 'NO USER'} ${userData != null ? '(UUID: ${userData['uuid']}, is_fully_registered: ${userData['is_fully_registered']})' : ''}');
 
       if (userData != null) {
         _debugLog('findExistingPasskeyForDevice() - Found existing fully registered user: ${userData['uuid']}');
@@ -115,29 +200,10 @@ class PasskeysService {
         _debugLog('findExistingPasskeyForDevice() - No existing fully registered user found for device ID: $deviceId');
         
         // Check if there are any broken registrations for this device that need cleanup
-        Map<String, dynamic>? brokenUser;
-        if (Platform.isAndroid) {
-          _debugLog('findExistingPasskeyForDevice() - Checking for broken Android registrations');
-          final response = await _supabase
-              .from('users')
-              .select('*')
-              .eq('android_id', deviceId)
-              .eq('auth_method', 'passkey')
-              .eq('is_fully_registered', false)
-              .maybeSingle();
-          brokenUser = response;
-        } else if (Platform.isIOS) {
-          _debugLog('findExistingPasskeyForDevice() - Checking for broken iOS registrations');
-          final response = await _supabase
-              .from('users')
-              .select('*')
-              .eq('apple_vendor_id', deviceId)
-              .eq('auth_method', 'passkey')
-              .eq('is_fully_registered', false)
-              .maybeSingle();
-          brokenUser = response;
-        }
-        
+        _debugLog('findExistingPasskeyForDevice() - Checking for broken registrations');
+        final brokenUser =
+            await _lookupPasskeyUser(deviceId, fullyRegistered: false);
+
         if (brokenUser != null) {
           _debugLog('findExistingPasskeyForDevice() - ⚠️ FOUND BROKEN REGISTRATION: ${brokenUser['uuid']} (is_fully_registered=false, created_at=${brokenUser['created_at']})');
         } else {
@@ -179,7 +245,12 @@ class PasskeysService {
             _debugLog('register() - Attempting automatic cleanup of stale database record...');
             
             try {
-              // Force delete the stale database record
+              // Force delete the stale database record.
+              //
+              // A DELETE, not a read — `find_passkey_user_for_device` cannot
+              // stand in for it. Where the backend grants a pre-auth caller no
+              // DELETE on `users`, this cleanup is a no-op and the user is sent
+              // down the Reset / Recover path instead.
               final deviceId = await _getDeviceId();
               if (deviceId != null) {
                 _debugLog('register() - Force deleting stale record for device: $deviceId');
@@ -386,22 +457,14 @@ class PasskeysService {
           Map<String, dynamic>? existingUser;
           try {
             _debugLog('register() - Searching for existing user with device ID: $deviceId');
-            if (Platform.isAndroid) {
-              final response = await _supabase
-                  .from('users')
-                  .select('*')
-                  .eq('android_id', deviceId)
-                  .maybeSingle();
-              existingUser = response;
-            } else if (Platform.isIOS) {
-              final response = await _supabase
-                  .from('users')
-                  .select('*')
-                  .eq('apple_vendor_id', deviceId)
-                  .maybeSingle();
-              existingUser = response;
-            }
-            
+            // Either registration state, and (in the fallback) any auth_method:
+            // this is the row the unique constraint just tripped over.
+            existingUser = await _lookupPasskeyUser(
+              deviceId,
+              fullyRegistered: null,
+              requirePasskeyAuthMethod: false,
+            );
+
             _debugLog('register() - Query result: ${existingUser != null ? 'FOUND' : 'NOT FOUND'}');
             if (existingUser != null) {
               _debugLog('register() - Existing user details: UUID=${existingUser['uuid']}, is_fully_registered=${existingUser['is_fully_registered']}, auth_method=${existingUser['auth_method']}');
@@ -459,6 +522,10 @@ class PasskeysService {
       }
     } catch (e) {
       _debugLog('register() - ❌ FINAL ERROR: $e');
+      AnalyticsService().trackEvent('auth_failed', {
+        'stage': 'register',
+        'reason': passkeyFailureReason(e),
+      });
       return false;
     }
   }
@@ -490,6 +557,10 @@ class PasskeysService {
       }
     } catch (e) {
       _debugLog('authenticate() - ❌ FINAL ERROR: $e');
+      AnalyticsService().trackEvent('auth_failed', {
+        'stage': 'authenticate',
+        'reason': passkeyFailureReason(e),
+      });
       return false;
     }
   }
@@ -726,24 +797,8 @@ class PasskeysService {
 
       // Find any users for this device
       _debugLog('resetPasskeyForCurrentDevice() - Looking for users to delete for device: $deviceId');
-      Map<String, dynamic>? existingUser;
-      if (Platform.isAndroid) {
-        final response = await _supabase
-            .from('users')
-            .select('*')
-            .eq('android_id', deviceId)
-            .eq('auth_method', 'passkey')
-            .maybeSingle();
-        existingUser = response;
-      } else if (Platform.isIOS) {
-        final response = await _supabase
-            .from('users')
-            .select('*')
-            .eq('apple_vendor_id', deviceId)
-            .eq('auth_method', 'passkey')
-            .maybeSingle();
-        existingUser = response;
-      }
+      final existingUser =
+          await _lookupPasskeyUser(deviceId, fullyRegistered: null);
 
       if (existingUser != null) {
         _debugLog('resetPasskeyForCurrentDevice() - 🗑️ Found existing user for device, deleting: ${existingUser['uuid']} (is_fully_registered: ${existingUser['is_fully_registered']})');
@@ -758,41 +813,39 @@ class PasskeysService {
         
         _debugLog('resetPasskeyForCurrentDevice() - Users table delete result: ${deleteResult?.length ?? 0} rows deleted');
         
-        // Then delete from auth.users if we have the auth ID
-        if (existingUser['id'] != null) {
+        // Then delete from auth.users if we know the auth ID.
+        //
+        // `find_passkey_user_for_device` deliberately does not return `id` —
+        // the auth uid is not something a pre-auth caller should be handed.
+        // We can still name it in the one case it is ours to name: a
+        // signed-in session whose stored uuid is the row we just deleted. A
+        // pre-auth reset skips the auth.users cleanup.
+        final storedUuid = await getStoredUserId();
+        final sessionAuthId = _supabase.auth.currentUser?.id;
+        final authUserId =
+            (sessionAuthId != null && storedUuid == existingUser['uuid'])
+                ? sessionAuthId
+                : null;
+        if (authUserId != null) {
           try {
-            _debugLog('resetPasskeyForCurrentDevice() - Attempting to delete auth user: ${existingUser['id']}');
+            _debugLog('resetPasskeyForCurrentDevice() - Attempting to delete auth user: $authUserId');
             await _supabase.rpc('reset_passkey_user', params: {
-              'p_user_id': existingUser['id']
+              'p_user_id': authUserId
             });
-            _debugLog('resetPasskeyForCurrentDevice() - ✅ Deleted auth user: ${existingUser['id']}');
+            _debugLog('resetPasskeyForCurrentDevice() - ✅ Deleted auth user: $authUserId');
           } catch (e) {
             _debugLog('resetPasskeyForCurrentDevice() - ⚠️ Warning: Could not delete auth user: $e');
             // Continue anyway - the important part is clearing the users table
           }
+        } else {
+          _debugLog('resetPasskeyForCurrentDevice() - No signed-in session for this row; leaving auth.users to the server-side cleanup');
         }
-        
+
         // Verify the deletion worked by querying again
         _debugLog('resetPasskeyForCurrentDevice() - Verifying deletion...');
-        Map<String, dynamic>? verifyUser;
-        if (Platform.isAndroid) {
-          final response = await _supabase
-              .from('users')
-              .select('*')
-              .eq('android_id', deviceId)
-              .eq('auth_method', 'passkey')
-              .maybeSingle();
-          verifyUser = response;
-        } else if (Platform.isIOS) {
-          final response = await _supabase
-              .from('users')
-              .select('*')
-              .eq('apple_vendor_id', deviceId)
-              .eq('auth_method', 'passkey')
-              .maybeSingle();
-          verifyUser = response;
-        }
-        
+        final verifyUser =
+            await _lookupPasskeyUser(deviceId, fullyRegistered: null);
+
         if (verifyUser != null) {
           _debugLog('resetPasskeyForCurrentDevice() - ❌ ERROR: User still exists after deletion! UUID: ${verifyUser['uuid']}, is_fully_registered: ${verifyUser['is_fully_registered']}');
           throw Exception('Failed to delete user record - user still exists in database');
@@ -872,6 +925,14 @@ class PasskeysService {
       
       // Update the database record
       // First, try to find the user record by android_id since authentication might be mismatched
+      //
+      // C1 NOTE: this one stays a table read. It runs only while
+      // authenticated (the `currentUser == null` guard above returns early)
+      // and it needs `users.id` — the auth uid, which the migration UPDATE
+      // keys on and which is compared against `currentUser.id` below.
+      // `find_passkey_user_for_device` does not return `id` by design, and
+      // after step 2 (passkey_lookup_02) this is an own-row read, which the
+      // `users_select_own` policy still allows.
       _debugLog('migrateDeviceId() - Looking for user record with android_id: $oldId');
       final userLookup = await _supabase
           .from('users')
@@ -1027,25 +1088,8 @@ class PasskeysService {
 
       // First, verify there's an existing user for this device
       _debugLog('recoverPasskeyForDevice() - Step 1: Checking for existing user...');
-      Map<String, dynamic>? existingUser;
-
-      if (Platform.isAndroid) {
-        final response = await _supabase
-            .from('users')
-            .select('*')
-            .eq('android_id', deviceId)
-            .eq('auth_method', 'passkey')
-            .maybeSingle();
-        existingUser = response;
-      } else if (Platform.isIOS) {
-        final response = await _supabase
-            .from('users')
-            .select('*')
-            .eq('apple_vendor_id', deviceId)
-            .eq('auth_method', 'passkey')
-            .maybeSingle();
-        existingUser = response;
-      }
+      final existingUser =
+          await _lookupPasskeyUser(deviceId, fullyRegistered: null);
 
       if (existingUser == null) {
         _debugLog('recoverPasskeyForDevice() - ❌ No existing user found for this device - cannot recover');

@@ -7,7 +7,7 @@ you can get involved.
 ## Bug Reports
 
 Bug reports are welcome and encouraged. Please
-[open an issue](https://github.com/soud/readtheroom-app/issues/new?template=bug_report.md)
+[open an issue](https://github.com/readtheroom-knowtheworld/readtheroom-app/issues/new?template=bug_report.md)
 with:
 
 - Steps to reproduce
@@ -18,11 +18,11 @@ with:
 ## Feature Requests and Discussion
 
 Have an idea? Open a
-[feature request issue](https://github.com/soud/readtheroom-app/issues/new?template=feature_request.md)
+[feature request issue](https://github.com/readtheroom-knowtheworld/readtheroom-app/issues/new?template=feature_request.md)
 or start a discussion. Even if a feature doesn't get built right away, the
 conversation helps shape the project's direction.
 
-There's also a Feedback page within the app to brainstorm ideas and upvote feature requests that is actively monitored.
+You can also join the beta from the app's menu ("Join the beta") to try new features early and send feedback.
 
 ## Security Vulnerabilities
 

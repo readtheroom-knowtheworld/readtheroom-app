@@ -18,15 +18,18 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.readtheroom.app"
-    compileSdk = 35
+    compileSdk = 36
     ndkVersion = "27.0.12077973"
 
     defaultConfig {
         applicationId = "com.readtheroom.app"
-        minSdk = 21
-        targetSdk = 35
-        versionCode = 77               // 🔧 Must increase with every new Play Store upload
-        versionName = "1.1.4"   // Recommended for user-facing clarity
+        minSdk = 23
+        targetSdk = 36
+        // Single source of truth is pubspec.yaml's `version: x.y.z+N` — the
+        // Flutter Gradle plugin exposes it as flutter.versionCode/versionName.
+        // (Hardcoded 1.3.0+82 until 2026-09-22, which lagged the app.)
+        versionCode = flutter.versionCode
+        versionName = flutter.versionName
     }
 
     compileOptions {

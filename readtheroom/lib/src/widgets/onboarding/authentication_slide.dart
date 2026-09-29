@@ -4,7 +4,9 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../screens/authentication_screen.dart';
+import '../../services/analytics_service.dart';
 import 'onboarding_slide.dart';
+import 'passkey_explainer.dart';
 
 class AuthenticationSlide extends StatefulWidget {
   final VoidCallback onNext;
@@ -17,6 +19,11 @@ class AuthenticationSlide extends StatefulWidget {
 
 class _AuthenticationSlideState extends State<AuthenticationSlide> {
   void _navigateToAuthentication() async {
+    // §4.2 onboarding funnel: passkey auth attempted.
+    AnalyticsService().trackOnboardingStepCanonical(
+      OnboardingStep.authAttempted,
+      properties: {'auth_method': 'passkey'},
+    );
     // Navigate to authentication screen
     final result = await Navigator.push(
       context,
@@ -32,6 +39,11 @@ class _AuthenticationSlideState extends State<AuthenticationSlide> {
     
     // If authentication was successful, proceed to next slide
     if (result == true && mounted) {
+      // §4.2 onboarding funnel: passkey auth completed.
+      AnalyticsService().trackOnboardingStepCanonical(
+        OnboardingStep.authCompleted,
+        properties: {'auth_method': 'passkey'},
+      );
       widget.onNext();
     }
   }
@@ -74,10 +86,15 @@ class _AuthenticationSlideState extends State<AuthenticationSlide> {
       );
     }
 
-    // Show authentication slide with direct button
+    // Show authentication slide with direct button.
+    //
+    // The description is deliberately one line: the why/what/how that used to
+    // be crammed into it now lives in [PasskeyExplainer] below, where each
+    // point gets its own line and icon.
     return OnboardingSlide(
       title: "Authenticate as Human",
-      description: "Everyone needs to prove to us that they are a human to prevent bots voting on the platform!\n\nWe do this with Passkeys: by unlocking your device you are validating that you are the device's owner.",
+      description:
+          "One person, one account — we want to keep this platform human not filled with bots.",
       showCurio: true,
       onNext: null, // No default next button
       customContent: Container(
@@ -85,6 +102,8 @@ class _AuthenticationSlideState extends State<AuthenticationSlide> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            const PasskeyExplainer(),
+            SizedBox(height: 20),
             // Authentication button
             SizedBox(
               width: 280,

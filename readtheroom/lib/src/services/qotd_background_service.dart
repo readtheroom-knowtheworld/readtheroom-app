@@ -6,6 +6,8 @@ import 'dart:io' show Platform;
 import 'package:workmanager/workmanager.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'home_widget_service.dart';
+import '../utils/release_logging.dart';
+import '../utils/supabase_config.dart';
 
 /// Background service for refreshing QOTD widget data.
 ///
@@ -58,14 +60,18 @@ class QOTDBackgroundService {
 /// This runs in a separate isolate, so we need to initialize Supabase here.
 @pragma('vm:entry-point')
 void callbackDispatcher() {
-  Workmanager().executeTask((task, inputData) async {
+  Workmanager().executeTask((task, inputData) => runWithReleaseLogging(() async {
     try {
       print('QOTD background task started: $task');
 
       // Initialize Supabase in background isolate
+      if (!SupabaseConfig.isConfigured) {
+        print('QOTD background task skipped: build has no Supabase config');
+        return true;
+      }
       await Supabase.initialize(
-        url: const String.fromEnvironment('SUPABASE_URL'),
-        anonKey: const String.fromEnvironment('SUPABASE_ANON_KEY'),
+        url: SupabaseConfig.url,
+        anonKey: SupabaseConfig.anonKey,
       );
 
       final supabase = Supabase.instance.client;
@@ -111,5 +117,5 @@ void callbackDispatcher() {
       print('QOTD background task error: $e');
       return false;
     }
-  });
+  }));
 }

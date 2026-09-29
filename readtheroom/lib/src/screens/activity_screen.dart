@@ -4,12 +4,11 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../models/notification_item.dart';
+import '../widgets/notification_permission_card.dart';
 import '../services/notification_log_service.dart';
 import '../services/question_service.dart';
 import '../services/user_service.dart';
-import '../services/notification_service.dart';
 import 'authentication_screen.dart';
 
 class ActivityScreen extends StatefulWidget {
@@ -21,11 +20,8 @@ class ActivityScreen extends StatefulWidget {
 
 class _ActivityScreenState extends State<ActivityScreen> {
   final NotificationLogService _notificationService = NotificationLogService();
-  final NotificationService _notificationPermissionService = NotificationService();
   bool _hasUnviewedNotifications = false;
   bool _isAuthenticated = false;
-  bool _notificationsEnabled = false;
-  bool _notificationWidgetDismissed = false;
 
   @override
   void initState() {
@@ -33,12 +29,6 @@ class _ActivityScreenState extends State<ActivityScreen> {
     _checkAuthentication();
     _checkUnviewedNotifications();
     _markAllAsViewed();
-    _initializeNotificationState();
-  }
-
-  Future<void> _initializeNotificationState() async {
-    await _checkNotificationPermissions();
-    await _loadNotificationWidgetState();
   }
 
   void _checkAuthentication() {
@@ -66,74 +56,6 @@ class _ActivityScreenState extends State<ActivityScreen> {
           _hasUnviewedNotifications = false;
         });
       }
-    }
-  }
-
-  Future<void> _checkNotificationPermissions() async {
-    if (_isAuthenticated) {
-      final enabled = await _notificationPermissionService.arePermissionsGranted();
-      if (mounted) {
-        setState(() {
-          _notificationsEnabled = enabled;
-        });
-      }
-    }
-  }
-
-  Future<void> _loadNotificationWidgetState() async {
-    final prefs = await SharedPreferences.getInstance();
-    final dismissed = prefs.getBool('notification_widget_dismissed') ?? false;
-    
-    // If notifications are disabled, reset the dismissed state so widget shows again
-    if (!_notificationsEnabled && dismissed) {
-      await prefs.setBool('notification_widget_dismissed', false);
-      if (mounted) {
-        setState(() {
-          _notificationWidgetDismissed = false;
-        });
-      }
-    } else {
-      if (mounted) {
-        setState(() {
-          _notificationWidgetDismissed = dismissed;
-        });
-      }
-    }
-  }
-
-  Future<void> _dismissNotificationWidget() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('notification_widget_dismissed', true);
-    setState(() {
-      _notificationWidgetDismissed = true;
-    });
-  }
-
-  Future<void> _enableNotifications() async {
-    final success = await _notificationPermissionService.requestPermissions();
-    if (success) {
-      setState(() {
-        _notificationsEnabled = true;
-        _notificationWidgetDismissed = true;
-      });
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('notification_widget_dismissed', true);
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Notifications enabled! You\'ll now receive activity updates.'),
-          backgroundColor: Theme.of(context).primaryColor,
-          duration: const Duration(seconds: 3),
-        ),
-      );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please enable notifications in your device settings to receive activity updates.'),
-          backgroundColor: Colors.orange,
-          duration: Duration(seconds: 4),
-        ),
-      );
     }
   }
 
@@ -272,84 +194,26 @@ class _ActivityScreenState extends State<ActivityScreen> {
     );
   }
 
+  /// The Activity tab's notification promo.
+  ///
+  /// Was a near-duplicate of `NotificationPermissionCard` with its own
+  /// permission check, its own dismissal handling and its own enable button —
+  /// which meant the two copies disagreed about OS-denied (this one ran a dead
+  /// `requestPermissions()` and then claimed the user had refused). It now
+  /// delegates, keeping its own copy text and its own dismissal key.
   Widget _buildNotificationPermissionWidget() {
-    // Show if authenticated and notifications are disabled
-    // If dismissed once, only show again if notifications are still disabled
-    final shouldShow = _isAuthenticated && !_notificationsEnabled && !_notificationWidgetDismissed;
-    
-    if (!shouldShow) {
-      return const SizedBox.shrink();
-    }
-
-    // Always show close button since this is the dismissible version
-    
-    return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.orange.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: Colors.orange.withOpacity(0.3),
-          width: 1,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(
-                Icons.notifications_off,
-                color: Colors.orange[700],
-                size: 24,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  'Stay in the loop!',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: Colors.orange[700],
-                  ),
-                ),
-              ),
-              GestureDetector(
-                onTap: _dismissNotificationWidget,
-                child: Icon(
-                  Icons.close,
-                  color: Colors.grey[600],
-                  size: 20,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Enabling notifications allows you to get to get updates here when people vote or comment on your subscribed questions.',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              color: Colors.orange[600],
-            ),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: _enableNotifications,
-              icon: const Icon(Icons.notifications_active, size: 18),
-              label: const Text('Enable Notifications'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.orange[700],
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+    if (!_isAuthenticated) return const SizedBox.shrink();
+    return const NotificationPermissionCard(
+      dismissedPrefsKey: 'notification_widget_dismissed',
+      title: 'Stay in the loop!',
+      message:
+          'Enabling notifications allows you to get updates here when people '
+          'vote or comment on your subscribed questions.',
+      enabledSnackBarMessage:
+          "Notifications enabled! You'll now receive activity updates.",
+      deniedSnackBarMessage:
+          'Enable notifications in your device settings to receive activity '
+          'updates.',
     );
   }
 
@@ -537,13 +401,6 @@ class _ActivityScreenState extends State<ActivityScreen> {
     // Navigate based on notification type
     if (notification.questionId != null) {
       await _navigateToQuestion(notification.questionId!);
-    } else if (notification.suggestionId != null) {
-      // Navigate to suggestion - keeping the original route navigation for now
-      // TODO: Update this to use proper suggestion navigation if available
-      Navigator.pushNamed(
-        context, 
-        '/suggestion/${notification.suggestionId}',
-      );
     } else if (notification.type == 'system') {
       // For system notifications, show a dialogue with the full message
       _showSystemNotificationDialog(notification);

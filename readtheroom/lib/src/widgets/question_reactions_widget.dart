@@ -3,7 +3,10 @@
 
 import 'package:flutter/material.dart';
 import 'dart:math';
+import '../services/analytics_service.dart';
 import '../services/question_reactions_service.dart';
+import '../utils/reaction_logic.dart';
+import 'emoji_picker_sheet.dart';
 
 class QuestionReactionsWidget extends StatefulWidget {
   final String questionId;
@@ -13,6 +16,14 @@ class QuestionReactionsWidget extends StatefulWidget {
   final bool useDummyData;
   final EdgeInsetsGeometry? margin;
 
+  /// Compact mode (WP-D): no "Reactions" header, at most [compactLimit]
+  /// reactions, and nothing rendered while loading — for the home hero's
+  /// answered card, where the control is a footnote rather than a section.
+  final bool compact;
+
+  /// How many reactions compact mode shows (highest count first).
+  final int compactLimit;
+
   const QuestionReactionsWidget({
     Key? key,
     required this.questionId,
@@ -21,6 +32,8 @@ class QuestionReactionsWidget extends StatefulWidget {
     this.onReactionTap,
     this.useDummyData = false,
     this.margin,
+    this.compact = false,
+    this.compactLimit = 3,
   }) : super(key: key);
 
   @override
@@ -34,7 +47,10 @@ class _QuestionReactionsWidgetState extends State<QuestionReactionsWidget> {
   bool _isLoading = true;
   final _reactionsService = QuestionReactionsService();
 
-  static const List<String> _availableReactions = ['❤️', '🤔', '😡', '😂', '🤯'];
+  /// One-tap chips at the top of the picker — the pre-WP-D fixed set, kept as a
+  /// shortcut now that the sheet offers the whole emoji keyboard.
+  static const List<String> _quickReactions =
+      QuestionReactionsService.quickReactions;
 
   @override
   void initState() {
@@ -82,7 +98,7 @@ class _QuestionReactionsWidgetState extends State<QuestionReactionsWidget> {
     final random = Random();
     
     // Generate random reaction counts
-    for (final reaction in _availableReactions) {
+    for (final reaction in _quickReactions) {
       // 60% chance of having this reaction, with 0-25 count
       if (random.nextDouble() > 0.4) {
         _reactionCounts[reaction] = random.nextInt(26);
@@ -90,14 +106,17 @@ class _QuestionReactionsWidgetState extends State<QuestionReactionsWidget> {
     }
     
     // User has reacted to 20% of available reactions
-    for (final reaction in _availableReactions) {
+    for (final reaction in _quickReactions) {
       if (random.nextDouble() > 0.8 && _reactionCounts.containsKey(reaction)) {
         _userReactions.add(reaction);
       }
     }
   }
 
-  Future<void> _handleReactionTap(String reaction) async {
+  /// [emojiSource] records which control produced the tap for analytics:
+  /// `chip` (an existing reaction chip) or, from the sheet, `quick` / `picker`.
+  Future<void> _handleReactionTap(String reaction,
+      {String emojiSource = 'chip'}) async {
     if (_isProcessing) return;
 
     setState(() {
@@ -163,6 +182,14 @@ class _QuestionReactionsWidgetState extends State<QuestionReactionsWidget> {
         widget.onReactionTap!(reaction, isAdding);
       }
 
+      // Server accepted it, so this is a real reaction (the optimistic update
+      // above can still be rolled back below).
+      AnalyticsService().trackReaction(
+        added: isAdding,
+        emojiSource: emojiSource,
+        questionId: widget.questionId,
+      );
+
     } catch (e) {
       print('Error updating reaction: $e');
       
@@ -190,97 +217,70 @@ class _QuestionReactionsWidgetState extends State<QuestionReactionsWidget> {
     }
   }
 
-  List<String> _getUnusedReactions() {
-    return _availableReactions.where((reaction) => 
-      !_reactionCounts.containsKey(reaction) || _reactionCounts[reaction]! <= 0
-    ).toList();
-  }
+  /// Glyph box shared by the reaction chips and the add chip, so every chip in
+  /// the row is the same height whatever is inside it (an emoji's line box is
+  /// taller than an 18pt icon's).
+  static const double _chipGlyphHeight = 20;
 
   Widget _buildAddReactionButton() {
     return GestureDetector(
       onTap: _showReactionPicker,
       child: Container(
-        padding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        // Same padding, radius and border as a count-less reaction chip.
+        padding: EdgeInsets.symmetric(horizontal: 6, vertical: 6),
         decoration: BoxDecoration(
           color: Colors.transparent,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(20),
           border: Border.all(
             color: Colors.grey.withOpacity(0.3),
             width: 1,
           ),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.add,
+        child: SizedBox(
+          height: _chipGlyphHeight,
+          child: Center(
+            widthFactor: 1,
+            child: Icon(
+              Icons.add_reaction_outlined,
               size: 18,
               color: Colors.grey[600],
             ),
-            SizedBox(width: 2),
-            Icon(
-              Icons.mood,
-              size: 18,
-              color: Colors.grey[600],
-            ),
-          ],
+          ),
         ),
       ),
     );
   }
 
-  void _showReactionPicker() {
-    final unusedReactions = _getUnusedReactions();
-    if (unusedReactions.isEmpty) return;
-
-    showModalBottomSheet(
+  /// Reaction picker: the five original emoji as one-tap chips, then the full
+  /// emoji keyboard (WP-D / decision D8 — any emoji, not a fixed set).
+  ///
+  /// The sheet itself lives in [EmojiPickerSheet] so the chat overlay's
+  /// reactions (WP-F) reuse the same control instead of a second copy that can
+  /// drift. Behaviour here is unchanged: pick, validate, apply.
+  Future<void> _showReactionPicker() async {
+    final emoji = await EmojiPickerSheet.show(
       context: context,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) => Container(
-        padding: EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Add a reaction',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            SizedBox(height: 16),
-            Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: unusedReactions.map((reaction) {
-                return GestureDetector(
-                  onTap: () {
-                    Navigator.of(context).pop();
-                    _handleReactionTap(reaction);
-                  },
-                  child: Container(
-                    padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).primaryColor.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: Theme.of(context).primaryColor.withOpacity(0.3),
-                        width: 1,
-                      ),
-                    ),
-                    child: Text(
-                      reaction,
-                      style: TextStyle(fontSize: 20),
-                    ),
-                  ),
-                );
-              }).toList(),
-            ),
-            SizedBox(height: 16),
-          ],
+      highlighted: _userReactions,
+      quickPicks: _quickReactions,
+      onRejected: (_) => _showRejectedEmoji(),
+    );
+    if (emoji == null || !mounted) return;
+    // The sheet returns only the emoji, so "was it a quick pick" is read back
+    // off the quick list rather than threading a second return value through.
+    _handleReactionTap(emoji,
+        emojiSource: _quickReactions.contains(emoji) ? 'quick' : 'picker');
+  }
+
+  void _showRejectedEmoji() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text(
+          'That one can\'t be used as a reaction.',
+          style: TextStyle(color: Colors.white),
         ),
+        backgroundColor: Theme.of(context).primaryColor,
+        duration: const Duration(seconds: 2),
       ),
     );
   }
@@ -313,9 +313,15 @@ class _QuestionReactionsWidgetState extends State<QuestionReactionsWidget> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              reaction,
-              style: TextStyle(fontSize: 16),
+            SizedBox(
+              height: _chipGlyphHeight,
+              child: Center(
+                widthFactor: 1,
+                child: Text(
+                  reaction,
+                  style: TextStyle(fontSize: 16, height: 1.0),
+                ),
+              ),
             ),
             if (showCount) ...[
               SizedBox(width: 4),
@@ -338,8 +344,10 @@ class _QuestionReactionsWidgetState extends State<QuestionReactionsWidget> {
 
   @override
   Widget build(BuildContext context) {
-    // Show loading state
     if (_isLoading) {
+      // Compact mode stays silent until the counts land — a spinner in the
+      // hero's answered card reads as a broken section.
+      if (widget.compact) return SizedBox.shrink();
       return Container(
         margin: widget.margin ?? EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         child: Row(
@@ -371,12 +379,35 @@ class _QuestionReactionsWidgetState extends State<QuestionReactionsWidget> {
       );
     }
 
-    // Only show if there are reactions or user can add reactions
-    final hasReactions = _reactionCounts.isNotEmpty;
-    final canAddReactions = true; // Could be based on authentication
+    // Highest count first; compact mode caps the row and always keeps the
+    // user's own reaction visible (see utils/reaction_logic.dart).
+    final shown = widget.compact
+        ? topReactions(
+            _reactionCounts,
+            limit: widget.compactLimit,
+            alwaysInclude: _userReactions,
+          )
+        : topReactions(_reactionCounts, limit: _reactionCounts.length + 1);
 
-    if (!hasReactions && !canAddReactions) {
-      return SizedBox.shrink();
+    final chips = <Widget>[
+      ...shown.map((tally) => _buildReactionButton(tally.emoji)),
+      // The picker offers every emoji now, so the add affordance is always up.
+      _buildAddReactionButton(),
+    ];
+
+    if (widget.compact) {
+      return Container(
+        margin: widget.margin ?? EdgeInsets.zero,
+        // Right-aligned (2026-09-19): the row hugs the right edge and the add
+        // button, last in the list, lands in the thumb-side corner.
+        child: Wrap(
+          alignment: WrapAlignment.end,
+          spacing: 6,
+          runSpacing: 6,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: chips,
+        ),
+      );
     }
 
     return Container(
@@ -384,42 +415,33 @@ class _QuestionReactionsWidgetState extends State<QuestionReactionsWidget> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (hasReactions || canAddReactions) ...[
-            Row(
-              children: [
-                Icon(
-                  Icons.mood,
-                  size: 16,
-                  color: Theme.of(context).primaryColor,
+          Row(
+            children: [
+              Icon(
+                Icons.mood,
+                size: 16,
+                color: Theme.of(context).primaryColor,
+              ),
+              SizedBox(width: 6),
+              Text(
+                'Reactions',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 16,
                 ),
-                SizedBox(width: 6),
-                Text(
-                  'Reactions',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 16,
-                  ),
-                ),
-              ],
-            ),
-            SizedBox(height: 8),
-            Wrap(
+              ),
+            ],
+          ),
+          SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: Wrap(
+              alignment: WrapAlignment.end,
               spacing: 8,
               runSpacing: 6,
-              children: [
-                // Show reactions that have been used (have counts > 0), sorted by count descending
-                ...(_reactionCounts.entries
-                    .where((entry) => entry.value > 0)
-                    .toList()
-                    ..sort((a, b) => b.value.compareTo(a.value)))
-                    .map((entry) => _buildReactionButton(entry.key))
-                    .toList(),
-                // Show + button for unused reactions
-                if (_getUnusedReactions().isNotEmpty)
-                  _buildAddReactionButton(),
-              ],
+              children: chips,
             ),
-          ],
+          ),
         ],
       ),
     );

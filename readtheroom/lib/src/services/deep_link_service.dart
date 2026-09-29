@@ -12,15 +12,17 @@ import '../screens/answer_text_screen.dart';
 import '../screens/multiple_choice_results_screen.dart';
 import '../screens/approval_results_screen.dart';
 import '../screens/text_results_screen.dart';
-import '../screens/suggestion_detail_screen.dart';
-import '../screens/room_details_screen.dart';
-import '../screens/join_room_screen.dart';
+import '../screens/join_beta_screen.dart';
 import '../screens/main_screen.dart';
-import '../models/room.dart';
+import '../utils/friend_logic.dart';
+import '../utils/main_tab_requests.dart';
+import '../widgets/authentication_dialog.dart';
+import '../widgets/friend_chat_overlay.dart';
+import 'analytics_service.dart';
+import 'friend_service.dart';
 import 'user_service.dart';
 import 'question_service.dart';
-import 'room_event_service.dart';
-import '../widgets/qotd_overlay.dart';
+import 'results_service.dart';
 
 // Helper class to track pending deep links
 class _PendingDeepLink {
@@ -166,30 +168,86 @@ class DeepLinkService {
       print('Deep link: URI pathSegments: ${uri.pathSegments}');
       print('Deep link: URI pathSegments length: ${uri.pathSegments.length}');
 
+      // Friend links are claimed before the question routing below.
+      // Both `https://readtheroom.site/friend/{token}` (scanned QR, shared
+      // link) and `readtheroom://friend/{token}` (custom-scheme fallback) are
+      // recognised; parseFriendToken also validates the token's shape, so a
+      // malformed link falls through to the generic error rather than
+      // reaching the RPC. See networks-update-design §5.2 / §7.
+      final friendToken = parseFriendToken(uri.toString());
+      if (friendToken != null) {
+        print('Deep link: friend link received');
+        // Only the routing category — never the token, which is a credential.
+        AnalyticsService().trackDeepLinkOpened('friend_token');
+        await _handleFriendLink(context, friendToken);
+        return;
+      }
+
       String? questionId;
-      String? suggestionId;
-      String? roomId;
       String? contentType;
       
-      // Handle custom scheme URIs like readtheroom://question/{id} or readtheroom://suggestion/{id}
-      // In this case, 'question'/'suggestion' becomes the host and the ID is in the path
+      // Handle custom scheme URIs like readtheroom://question/{id}. In this
+      // case 'question' becomes the host and the ID is in the path. The
+      // retired `suggestion` host is still recognised (below) so an old link
+      // or push lands somewhere sensible instead of erroring.
       if (uri.scheme == 'readtheroom') {
-        // Handle home or QOTD link - show QOTD overlay
-        // Streak widgets use readtheroom://qotd/overlay
-        // QOTD widgets use readtheroom://qotd/{id}
-        // Legacy streak widgets use readtheroom://home
-        if (uri.host == 'home' || uri.host == 'qotd') {
-          print('Deep link: ${uri.host} link received, showing QOTD overlay');
+        // Widget taps just open the app (owner decision 2026-09-19): every
+        // `readtheroom://home` and `readtheroom://qotd[/...]` link lands on
+        // home, where the Question of the Day already sits at the top. The
+        // widgets now ship `readtheroom://home`; the `qotd/overlay` and
+        // `qotd/{id}` forms are still recognised because widgets rendered by
+        // an older build keep their old URL until the OS refreshes them.
+        // Nothing else uses the `qotd` host: pushes navigate by questionId in
+        // NotificationService, shared links use `question/{id}`.
+        final isWidgetOpen = uri.host == 'qotd';
+        if (uri.host == 'home' || isWidgetOpen) {
+          print('Deep link: host-only ${uri.host} link received, routing to home');
+          // The widgets tag themselves (`?src=qotd_widget|streak_widget`) so
+          // widget opens stay countable now that they share the home link; a
+          // tapped QOTD push arrives as `?src=qotd_push` (owner decision
+          // 2026-09-22: the Drop opens home, not the question).
+          final src = uri.queryParameters['src'];
+          final kind = (src == 'qotd_widget' ||
+                  src == 'streak_widget' ||
+                  src == 'qotd_push')
+              ? src!
+              : (uri.host == 'home' ? 'home' : 'qotd_widget');
+          AnalyticsService().trackDeepLinkOpened(kind);
+          // Review 2026-09-22 A4: home is the surface the Drop now lands on,
+          // and it is never told how it was opened. `qotd_home_viewed` reads
+          // this once.
+          AppEntry.record(kind);
           Future.delayed(const Duration(milliseconds: 800), () {
             final ctx = _activeContext;
             if (ctx != null && ctx.mounted) {
-              QotdOverlay.checkAndShow(ctx);
+              Navigator.of(ctx).popUntil((route) => route.isFirst);
             }
+            // "Home" means the home tab, not whichever tab the app was
+            // backgrounded on. No-op when no MainScreen is mounted.
+            MainTabRequests.instance.goTo(MainTab.home);
           });
           return;
         }
 
-        if (uri.host == 'question' || uri.host == 'q') {
+        // WP-F: `readtheroom://friend/{userId}` opens the Community tab and
+        // that friend's chat overlay — where every lick / forward / reaction
+        // push lands. It cannot collide with the WP-E friend *token* link
+        // above: `parseFriendToken` only matches 32 hex characters, and a user
+        // id is a dashed uuid, so a token was already claimed before we got
+        // here. `readtheroom://community` (what WP-E's request pushes carry)
+        // lands on the tab with nothing opened.
+        if (uri.host == 'friend' && uri.pathSegments.isNotEmpty) {
+          AnalyticsService().trackDeepLinkOpened('friend_chat');
+          await _handleFriendChatLink(context, uri.pathSegments[0]);
+          return;
+        }
+        if (uri.host == 'community') {
+          AnalyticsService().trackDeepLinkOpened('community');
+          _landOnCommunityTab(context);
+          return;
+        }
+
+        if (uri.host == 'question' || uri.host == 'q' || uri.host == 'qotd') {
           contentType = 'question';
           if (uri.pathSegments.isNotEmpty) {
             questionId = uri.pathSegments[0];
@@ -197,35 +255,25 @@ class DeepLinkService {
             questionId = uri.path.startsWith('/') ? uri.path.substring(1) : uri.path;
           }
         } else if (uri.host == 'suggestion' || uri.host == 's') {
+          // Retired: still detected so old links land on Join the beta.
           contentType = 'suggestion';
-          if (uri.pathSegments.isNotEmpty) {
-            suggestionId = uri.pathSegments[0];
-          } else if (uri.path.isNotEmpty) {
-            suggestionId = uri.path.startsWith('/') ? uri.path.substring(1) : uri.path;
-          }
         } else if (uri.host == 'room') {
+          // Retired: still detected so old links show the retirement dialog.
           contentType = 'room';
-          if (uri.pathSegments.isNotEmpty) {
-            roomId = uri.pathSegments[0];
-          } else if (uri.path.isNotEmpty) {
-            roomId = uri.path.startsWith('/') ? uri.path.substring(1) : uri.path;
-          }
         } else {
           // Unrecognized readtheroom:// host (e.g. widget tap with empty/unknown host)
           print('Deep link: Unrecognized readtheroom:// host: "${uri.host}", ignoring');
           return;
         }
       } else if (uri.pathSegments.length >= 2) {
-        // Handle regular URLs like https://readtheroom.site/question/{id} or https://readtheroom.site/suggestion/{id}
+        // Handle regular URLs like https://readtheroom.site/question/{id}
         if (uri.pathSegments[0] == 'question' || uri.pathSegments[0] == 'q') {
           contentType = 'question';
           questionId = uri.pathSegments[1];
         } else if (uri.pathSegments[0] == 'suggestion' || uri.pathSegments[0] == 's') {
           contentType = 'suggestion';
-          suggestionId = uri.pathSegments[1];
         } else if (uri.pathSegments[0] == 'room') {
           contentType = 'room';
-          roomId = uri.pathSegments[1];
         }
       } else if (uri.path.isNotEmpty) {
         // Fallback: manually parse the path
@@ -239,10 +287,8 @@ class DeepLinkService {
             questionId = segments[1];
           } else if (segments[0] == 'suggestion' || segments[0] == 's') {
             contentType = 'suggestion';
-            suggestionId = segments[1];
           } else if (segments[0] == 'room') {
             contentType = 'room';
-            roomId = segments[1];
           }
         }
       }
@@ -257,33 +303,29 @@ class DeepLinkService {
         
         print('Deep link: Extracted question ID: $questionId');
         final isQotd = uri.scheme == 'readtheroom' && uri.host == 'qotd';
+        AnalyticsService().trackDeepLinkOpened(isQotd ? 'qotd' : 'question');
         await _handleQuestionLink(context, questionId, isQotd: isQotd);
         return;
       }
       
-      // Handle suggestion links
+      // Handle suggestion links — public suggestions were removed, so an old
+      // link or a stale push must not error out. Land on Join the beta, which
+      // is where feedback goes now.
       if (contentType == 'suggestion') {
-        if (suggestionId == null || suggestionId.isEmpty || suggestionId == 'null' || suggestionId == 'undefined') {
-          print('Deep link: No valid suggestion ID found in URI: $uri (suggestionId: $suggestionId)');
-          _showErrorSnackBar(context, 'Invalid suggestion link.');
-          return;
-        }
-        
-        print('Deep link: Extracted suggestion ID: $suggestionId');
-        await _handleSuggestionLink(context, suggestionId);
+        print('Deep link: suggestion link received but public suggestions are retired: $uri');
+        // `suggestion` left the vocabulary with public suggestions; a stale
+        // link now counts as `unknown` (review 2026-09-22 §4.3).
+        AnalyticsService().trackDeepLinkOpened('unknown');
+        _landOnJoinBeta(context);
         return;
       }
       
-      // Handle room links
+      // Handle room links — Rooms has been retired (Phase 1 removal).
+      // Old/stale QR codes and share links still point at /room/{id};
+      // show an info dialog instead of crashing or navigating.
       if (contentType == 'room') {
-        if (roomId == null || roomId.isEmpty || roomId == 'null' || roomId == 'undefined') {
-          print('Deep link: No valid room ID found in URI: $uri (roomId: $roomId)');
-          _showErrorSnackBar(context, 'Invalid room link.');
-          return;
-        }
-        
-        print('Deep link: Extracted room ID: $roomId');
-        await _handleRoomLink(context, roomId);
+        print('Deep link: Room link received but Rooms is retired: $uri');
+        _showRoomsRetiredDialog(context);
         return;
       }
 
@@ -302,48 +344,12 @@ class DeepLinkService {
   Future<void> _handleQuestionLink(BuildContext context, String questionId, {bool isQotd = false}) async {
     print('Deep link: Handling question link for ID: $questionId (isQotd: $isQotd)');
 
-    // Fetch the question details (and trending feed in parallel for QOTD)
+    // Fetch the question details.
     print('Deep link: Fetching question details for ID: $questionId');
 
-    FeedContext? feedContext;
-    Map<String, dynamic>? question;
-
-    if (isQotd) {
-      // Fetch QOTD question and trending feed in parallel
-      final questionService = QuestionService();
-      final results = await Future.wait([
-        _fetchQuestion(questionId),
-        questionService.fetchOptimizedFeed(
-          feedType: 'trending',
-          limit: 50,
-          useCache: false,
-        ).catchError((_) => <Map<String, dynamic>>[]),
-      ]);
-
-      question = results[0] as Map<String, dynamic>?;
-      final trendingQuestions = results[1] as List<Map<String, dynamic>>;
-
-      if (question != null && trendingQuestions.isNotEmpty) {
-        // Deduplicate: remove QOTD from trending if present
-        final deduped = trendingQuestions
-            .where((q) => q['id']?.toString() != questionId)
-            .toList();
-
-        final combinedQuestions = <Map<String, dynamic>>[question, ...deduped];
-
-        feedContext = FeedContext(
-          feedType: 'trending',
-          filters: {},
-          questions: combinedQuestions,
-          currentQuestionIndex: 0,
-          originalQuestionId: questionId,
-          originalQuestionIndex: 0,
-        );
-        print('Deep link: Built FeedContext with QOTD + ${deduped.length} trending questions');
-      }
-    } else {
-      question = await _fetchQuestion(questionId);
-    }
+    // v1.3: QOTD deep links route directly by id (home IS the QOTD now).
+    // No trending prefetch / FeedContext — swipe context is null.
+    final question = await _fetchQuestion(questionId);
 
     if (question == null) {
       print('Deep link: Question not found for ID: $questionId');
@@ -372,161 +378,241 @@ class DeepLinkService {
     // Navigate to appropriate screen
     if (hasAnswered) {
       print('Deep link: User has already answered, navigating to results screen');
-      await _navigateToResultsScreen(context, question, feedContext: feedContext);
+      await _navigateToResultsScreen(context, question);
     } else {
       print('Deep link: User has not answered, navigating to answer screen');
-      await _navigateToAnswerScreen(context, question, feedContext: feedContext);
+      await _navigateToAnswerScreen(context, question, entrySource: isQotd ? 'qotd' : 'deeplink');
     }
   }
 
-  /// Handle suggestion deep link
-  Future<void> _handleSuggestionLink(BuildContext context, String suggestionId) async {
-    print('Deep link: Handling suggestion link for ID: $suggestionId');
-    
-    // Fetch the suggestion details
-    print('Deep link: Fetching suggestion details for ID: $suggestionId');
-    final suggestion = await _fetchSuggestion(suggestionId);
-    if (suggestion == null) {
-      print('Deep link: Suggestion not found for ID: $suggestionId');
-      _showErrorSnackBar(context, 'Suggestion not found or may have been removed.');
+  /// Handle a friend QR / share link: `…/friend/{token}`.
+  ///
+  /// Authenticated → redeem the token (an instantly accepted pair, §5.2) and
+  /// land on the Community tab with a success SnackBar.
+  ///
+  /// Guest → every friend RPC is granted to `authenticated` only, so the token
+  /// is stashed and the existing sign-in prompt is shown; the redeem is retried
+  /// from its `onComplete`. `FriendService` also drains the stash on the next
+  /// auth event, which covers a user who dismisses the prompt here and signs in
+  /// later through onboarding.
+  Future<void> _handleFriendLink(BuildContext context, String token) async {
+    FriendService friendService;
+    try {
+      friendService = Provider.of<FriendService>(context, listen: false);
+    } catch (e) {
+      print('Deep link: FriendService unavailable: $e');
+      _showErrorSnackBar(context, 'Could not open that friend link.');
       return;
     }
-    
-    print('Deep link: Successfully fetched suggestion');
 
-    // Navigate to suggestion detail screen
-    try {
-      await Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (context) => SuggestionDetailScreen(
-            suggestion: suggestion,
-            fromSearch: true, // Mark as coming from external link
+    if (!friendService.isAuthenticated) {
+      print('Deep link: friend link received while a guest — stashing token');
+      await friendService.stashQrToken(token);
+      if (!context.mounted) return;
+      await AuthenticationDialog.show(
+        context,
+        customMessage: 'To add a friend, you need to authenticate as a real '
+            'person first. Your friend request is saved until you do.',
+        onComplete: () {
+          // Fire-and-forget: the dialog's completion callback is synchronous.
+          _redeemAndLand(_activeContext ?? context, friendService, token);
+        },
+      );
+      return;
+    }
+
+    // A friend link can arrive from anywhere — a web page can redirect to
+    // it without the user tapping anything — and redeeming it creates an
+    // accepted friendship. Ask first. (The in-app scanner is an intentional
+    // scan and does not come through here.)
+    if (!context.mounted) return;
+    final confirmed = await _confirmFriendLink(context);
+    if (confirmed != true) {
+      print('Deep link: friend link declined');
+      return;
+    }
+
+    final ctx = _activeContext ?? context;
+    if (!ctx.mounted) return;
+    await _redeemAndLand(ctx, friendService, token);
+  }
+
+  Future<bool?> _confirmFriendLink(BuildContext context) {
+    return showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Add a friend?'),
+        content: const Text(
+          'This link adds you as friends with the person who shared it. '
+          'Friends can see your handle and message you. Only continue if you '
+          'trust where the link came from.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
           ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Add friend'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _redeemAndLand(
+    BuildContext context,
+    FriendService friendService,
+    String token,
+  ) async {
+    final result = await friendService.addFriendViaQr(token);
+    await friendService.clearStashedQrToken();
+
+    final ctx = _activeContext ?? context;
+    if (!ctx.mounted) return;
+
+    if (!result.success) {
+      _showErrorSnackBar(ctx, result.message);
+      return;
+    }
+
+    final handle = result.friend?.displayHandle ?? 'your new friend';
+    _landOnCommunityTab(ctx);
+
+    // Let the tab switch settle before the SnackBar, so it is attached to the
+    // ScaffoldMessenger that survives the navigation.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final current = _activeContext;
+      if (current == null || !current.mounted) return;
+      ScaffoldMessenger.of(current).hideCurrentSnackBar();
+      ScaffoldMessenger.of(current).showSnackBar(
+        SnackBar(
+          content: Text(
+            result.alreadyFriends
+                ? "You're already friends with $handle 🦎"
+                : "You're friends with $handle now 🦎",
+            style: const TextStyle(color: Colors.white),
+          ),
+          backgroundColor: Theme.of(current).primaryColor,
+          duration: const Duration(seconds: 3),
         ),
       );
-      
-      print('Deep link: Successfully navigated to suggestion detail screen');
-    } catch (e) {
-      print('Deep link: Error navigating to suggestion screen: $e');
-      _showErrorSnackBar(context, 'Error loading suggestion. Please try again.');
-    }
+    });
   }
 
-  /// Handle room deep link
-  Future<void> _handleRoomLink(BuildContext context, String roomId) async {
-    print('Deep link: Handling room link for ID: $roomId');
-    
-    // Check if user is already a member of the room
-    final userId = _supabase.auth.currentUser?.id;
-    bool isUserMember = false;
-    
-    if (userId != null) {
-      try {
-        final membershipResponse = await _supabase
-            .from('room_members')
-            .select('id')
-            .eq('room_id', roomId)
-            .eq('user_id', userId)
-            .maybeSingle();
-        
-        isUserMember = membershipResponse != null;
-        print('Deep link: User is${isUserMember ? '' : ' not'} already a room member');
-      } catch (e) {
-        print('Deep link: Error checking room membership: $e');
-      }
+  /// `readtheroom://friend/{userId}` — the Community tab, plus that friend's
+  /// chat overlay (§7). Notification taps for licks, forwards and reactions all
+  /// arrive here.
+  ///
+  /// If the id is not an accepted friend (unfriended since the push, blocked,
+  /// or a stale notification) we land on the tab and stop, per the WP-F brief —
+  /// opening a chat with someone who is no longer a friend would be a dead end
+  /// whose every control fails.
+  Future<void> _handleFriendChatLink(
+      BuildContext context, String rawUserId) async {
+    final userId = rawUserId.trim();
+    if (userId.isEmpty) return;
+
+    FriendService friendService;
+    try {
+      friendService = Provider.of<FriendService>(context, listen: false);
+    } catch (e) {
+      print('Deep link: FriendService unavailable: $e');
+      _landOnCommunityTab(context);
+      return;
     }
 
-    try {
-      if (isUserMember) {
-        // Fetch room details for navigation
-        final room = await _fetchRoom(roomId);
-        if (room != null) {
-          // User is already a member, navigate directly to room details
-          await _navigateToRoomDetails(context, room);
-        } else {
-          _showErrorSnackBar(context, 'Room not found or may have been removed.');
-        }
-      } else {
-        // Navigate to JoinRoomScreen with pre-filled room ID
-        print('Deep link: Navigating to JoinRoomScreen with pre-filled room ID: $roomId');
-        final joinedRoom = await Navigator.of(context).push<Room>(
-          MaterialPageRoute(
-            builder: (context) => JoinRoomScreen(prefilledRoomId: roomId),
-          ),
-        );
-        
-        if (joinedRoom != null) {
-          print('Deep link: Room joined successfully via deep link: ${joinedRoom.name}');
-          // Notify other widgets that a room was joined
-          RoomEventService().notifyRoomJoined(joinedRoom);
-        }
-        print('Deep link: Successfully navigated to JoinRoomScreen');
-      }
-    } catch (e) {
-      print('Deep link: Error handling room link: $e');
-      _showErrorSnackBar(context, 'Error accessing room. Please try again.');
+    if (!friendService.isAuthenticated) {
+      _landOnCommunityTab(context);
+      return;
     }
+
+    var friend = friendService.friendById(userId);
+    if (friend == null || !friend.isAccepted) {
+      // A cold start from a notification can beat the first get_friends().
+      await friendService.load();
+      friend = friendService.friendById(userId);
+    }
+
+    final ctx = _activeContext ?? context;
+    if (!ctx.mounted) return;
+    _landOnCommunityTab(ctx);
+
+    if (friend == null || !friend.isAccepted) return;
+    final target = friend;
+
+    // Let the tab switch settle before the sheet, so the overlay is pushed on
+    // the navigator that survives the navigation.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final current = _activeContext;
+      if (current == null || !current.mounted) return;
+      FriendChatOverlay.show(current, target);
+    });
   }
 
+  /// Opens a question the way a deep link would: the existing smart routing
+  /// decides answer screen vs results from whether the viewer has answered.
+  ///
+  /// Public so the chat overlay can hand a tapped forward to exactly the same
+  /// path a notification tap takes — a forwarded question must not behave
+  /// differently from a shared link. Note that, like every deep link, this
+  /// clears the navigation stack, so callers presenting a sheet should dismiss
+  /// it first.
+  Future<void> openQuestion(BuildContext context, String questionId) {
+    _activeContext = context;
+    return _handleQuestionLink(context, questionId);
+  }
 
-  /// Navigate to room details screen
-  Future<void> _navigateToRoomDetails(BuildContext context, Map<String, dynamic> roomData) async {
+  /// Clears the stack and lands on Join the beta — where a retired
+  /// `readtheroom://suggestion/{id}` link now goes.
+  void _landOnJoinBeta(BuildContext context) {
     try {
-      final room = Room.fromJson(roomData);
-      
-      await Navigator.of(context).push(
+      Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(
-          builder: (context) => RoomDetailsScreen(room: room),
+          builder: (_) => const JoinBetaScreen(source: 'deep_link'),
         ),
+        (route) => false,
       );
-      
-      print('Deep link: Successfully navigated to room details screen');
     } catch (e) {
-      print('Deep link: Error navigating to room details: $e');
-      _showErrorSnackBar(context, 'Error opening room. Please try again.');
+      print('Deep link: could not navigate to Join the beta: $e');
     }
   }
 
-  /// Fetch suggestion details from database
-  Future<Map<String, dynamic>?> _fetchSuggestion(String suggestionId) async {
+  /// Clears the stack and lands on the Community tab.
+  void _landOnCommunityTab(BuildContext context) {
     try {
-      final response = await _supabase
-          .from('suggestions')
-          .select('*')
-          .eq('id', suggestionId)
-          .maybeSingle();
-
-      return response;
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(
+          builder: (_) => const MainScreen(initialIndex: kCommunityTabIndex),
+        ),
+        (route) => false,
+      );
     } catch (e) {
-      print('Error fetching suggestion: $e');
-      return null;
+      print('Deep link: could not navigate to Community tab: $e');
     }
   }
 
-  /// Fetch room details from database
-  Future<Map<String, dynamic>?> _fetchRoom(String roomId) async {
-    try {
-      final response = await _supabase
-          .from('rooms')
-          .select('*')
-          .eq('id', roomId)
-          .maybeSingle();
-
-      if (response == null) return null;
-
-      // Add member count
-      final memberCount = await _supabase
-          .from('room_members')
-          .select()
-          .eq('room_id', roomId);
-      
-      response['member_count'] = memberCount.length;
-
-      return response;
-    } catch (e) {
-      print('Error fetching room: $e');
-      return null;
-    }
+  /// Show an info dialog when an old Rooms link/QR is opened.
+  /// Rooms was removed in Phase 1; DB objects are dropped in Phase 2.
+  void _showRoomsRetiredDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Rooms has been retired'),
+        content: const Text(
+          'Rooms is no longer part of Read the Room. We\'re replacing it '
+          'with Friends in an upcoming update, so this link no longer opens '
+          'a room. Thanks for your patience!',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Fetch question details from database
@@ -573,7 +659,7 @@ class DeepLinkService {
 
 
   /// Navigate to appropriate answer screen based on question type
-  Future<void> _navigateToAnswerScreen(BuildContext context, Map<String, dynamic> question, {FeedContext? feedContext}) async {
+  Future<void> _navigateToAnswerScreen(BuildContext context, Map<String, dynamic> question, {FeedContext? feedContext, String entrySource = 'deeplink'}) async {
     final questionType = question['type'] as String;
     final questionId = question['id'] as String;
 
@@ -585,13 +671,13 @@ class DeepLinkService {
       Widget screen;
       switch (questionType.toLowerCase()) {
         case 'multiple_choice':
-          screen = AnswerMultipleChoiceScreen(question: question, feedContext: feedContext);
+          screen = AnswerMultipleChoiceScreen(question: question, feedContext: feedContext, entrySource: entrySource);
           break;
         case 'approval_rating':
-          screen = AnswerApprovalScreen(question: question, feedContext: feedContext);
+          screen = AnswerApprovalScreen(question: question, feedContext: feedContext, entrySource: entrySource);
           break;
         case 'text':
-          screen = AnswerTextScreen(question: question, feedContext: feedContext);
+          screen = AnswerTextScreen(question: question, feedContext: feedContext, entrySource: entrySource);
           break;
         default:
           _showErrorSnackBar(context, 'Unknown question type: $questionType');
@@ -623,16 +709,12 @@ class DeepLinkService {
     }
   }
 
-  /// Fetch total response count for a question (all response types)
+    /// Fetch total response count for a question (all response types)
   Future<int> _fetchResponseCount(String questionId) async {
     try {
-      final response = await _supabase
-          .from('responses')
-          .select()
-          .eq('question_id', questionId);
-
-      print('Deep link: Found ${response?.length ?? 0} total responses');
-      return response?.length ?? 0;
+      final count = await ResultsService().fetchTotalCount(questionId);
+      print('Deep link: Found $count total responses');
+      return count;
     } catch (e) {
       print('Error fetching response count: $e');
       return 0;
@@ -648,17 +730,21 @@ class DeepLinkService {
       // Fetch responses/results for this question
       Widget screen;
       switch (questionType.toLowerCase()) {
-        case 'multiple_choice':
-          final responses = await _fetchMultipleChoiceResponses(questionId, question);
+                case 'multiple_choice':
+          final results = await ResultsService()
+              .fetchResults(questionId, questionType: 'multiple_choice');
           // Update the question's vote count based on actual responses
-          question['votes'] = responses.length;
-          screen = MultipleChoiceResultsScreen(question: question, responses: responses, feedContext: feedContext);
+          question['votes'] = results.total;
+          screen = MultipleChoiceResultsScreen(
+              question: question, results: results, feedContext: feedContext);
           break;
         case 'approval_rating':
-          final responses = await _fetchApprovalResponses(questionId);
+          final results = await ResultsService()
+              .fetchResults(questionId, questionType: 'approval_rating');
           // Update the question's vote count based on actual responses
-          question['votes'] = responses.length;
-          screen = ApprovalResultsScreen(question: question, responses: responses, feedContext: feedContext);
+          question['votes'] = results.total;
+          screen = ApprovalResultsScreen(
+              question: question, results: results, feedContext: feedContext);
           break;
         case 'text':
           // For text questions, we need to fetch the response count separately since TextResultsScreen loads its own data
@@ -696,70 +782,12 @@ class DeepLinkService {
     }
   }
 
-  /// Fetch multiple choice responses for a question
-  Future<List<Map<String, dynamic>>> _fetchMultipleChoiceResponses(String questionId, Map<String, dynamic> question) async {
-    try {
-      // Fetch responses from database with country information
-      final response = await _supabase
-          .from('responses')
-          .select('''
-            option_id,
-            created_at,
-            countries!responses_country_code_fkey(country_name_en),
-            question_options!responses_option_id_fkey(option_text)
-          ''')
-          .eq('question_id', questionId)
-          .not('option_id', 'is', null);
-
-      print('Deep link: Fetched ${response?.length ?? 0} multiple choice responses');
-      return response?.map((r) => {
-        'answer': r['question_options']?['option_text'] ?? 'Unknown Option',
-        'country': r['countries']?['country_name_en'] ?? 'Unknown',
-        'created_at': r['created_at'],
-      }).toList().cast<Map<String, dynamic>>() ?? [];
-    } catch (e) {
-      print('Error fetching multiple choice responses: $e');
-      return [];
-    }
-  }
-
-  /// Fetch approval responses for a question
-  Future<List<Map<String, dynamic>>> _fetchApprovalResponses(String questionId) async {
-    try {
-      // Fetch approval responses from database
-      final response = await _supabase
-          .from('responses')
-          .select('''
-            score,
-            created_at,
-            countries!responses_country_code_fkey(country_name_en)
-          ''')
-          .eq('question_id', questionId)
-          .not('score', 'is', null);
-
-      print('Deep link: Fetched ${response?.length ?? 0} approval responses');
-      return response?.map((r) => {
-        'answer': (r['score'] as int).toDouble() / 100.0, // Convert to -1 to 1 range
-        'country': r['countries']?['country_name_en'] ?? 'Unknown',
-        'created_at': r['created_at'],
-      }).toList().cast<Map<String, dynamic>>() ?? [];
-    } catch (e) {
-      print('Error fetching approval responses: $e');
-      return [];
-    }
-  }
-
   /// Fetch text response count for a question
   Future<int> _fetchTextResponseCount(String questionId) async {
     try {
-      final response = await _supabase
-          .from('responses')
-          .select()
-          .eq('question_id', questionId)
-          .not('text_response', 'is', null);
-
-      print('Deep link: Found ${response?.length ?? 0} text responses');
-      return response?.length ?? 0;
+      final count = await ResultsService().fetchTextCount(questionId);
+      print('Deep link: Found $count text responses');
+      return count;
     } catch (e) {
       print('Error fetching text response count: $e');
       return 0;
@@ -783,18 +811,8 @@ class DeepLinkService {
     return 'https://readtheroom.site/question/$questionId';
   }
 
-  /// Generate share link for a room
-  static String generateRoomShareLink(String roomId) {
-    return 'https://readtheroom.site/room/$roomId';
-  }
-
   /// Generate fallback link for unsupported platforms
   static String generateFallbackLink(String questionId) {
     return 'readtheroom://question/$questionId';
-  }
-  
-  /// Generate room fallback link for unsupported platforms
-  static String generateRoomFallbackLink(String roomId) {
-    return 'readtheroom://room/$roomId';
   }
 } 

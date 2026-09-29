@@ -81,7 +81,9 @@ class QuestionCard extends StatelessWidget {
       'question_id': questionId,
       'question_type': question['type'] ?? 'unknown',
       'category': question['category'] ?? 'unknown',
-      'share_method': 'native_share',
+      // `method`, matching `share_initiated.method`, so total share volume is
+      // one query rather than a union (review 2026-09-22 §4.2).
+      'method': 'native_share',
     });
 
     final shareLink = DeepLinkService.generateQuestionShareLink(questionId);

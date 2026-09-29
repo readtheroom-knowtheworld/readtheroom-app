@@ -4,14 +4,12 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
-import 'dart:math' as Math;
 import 'dart:io';
 import 'package:flutter/foundation.dart';
-import '../models/category.dart' as app_category;
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'results_service.dart';
 import '../services/notification_service.dart';
 import '../services/question_service.dart';
-import '../services/comment_service.dart';
 import '../services/location_service.dart';
 import '../services/passkeys_service.dart';
 import '../services/device_id_provider.dart';
@@ -20,11 +18,13 @@ import '../services/startup_cache_service.dart';
 import '../services/analytics_service.dart';
 import '../services/congratulations_service.dart';
 import '../services/achievement_service.dart';
-import '../services/streak_reminder_service.dart';
-import '../services/qotd_reminder_service.dart';
 import '../services/home_widget_service.dart';
+import '../services/app_review_service.dart';
+import '../services/post_answer_prompts.dart';
 import '../widgets/notification_bell.dart';
+import '../utils/streak_logic.dart' as streak_logic;
 import 'question_service.dart' show StreakUpdateEvent;
+import 'network_service.dart' show isMissingRpc;
 
 class UserService extends ChangeNotifier {
   static const String _answeredKey = 'answered_questions';
@@ -34,19 +34,25 @@ class UserService extends ChangeNotifier {
   static const String _reportedKey = 'reported_questions';
   static const String _reportedReasonsKey = 'reported_question_reasons';
   static const String _dismissedKey = 'dismissed_questions';
+  // Day-stamped credits earned by asking (posting) a question. Same store
+  // family as answered questions; feeds streak derivation (QOTD-first).
+  static const String _askedStreakCreditsKey = 'asked_streak_credits';
   static const String _userIdKey = 'user_id';
-  static const String _enabledQuestionTypesKey = 'enabled_question_types';
   static const String _notifyResponsesKey = 'notify_responses';
   static const String _notifyQOTDKey = 'notify_qotd';
-  static const String _notifyStreakRemindersKey = 'notify_streak_reminders';
-  static const String _streakReminderTimeKey = 'streak_reminder_time';
-  static const String _qotdReminderTimeKey = 'qotd_reminder_time';
+
+  /// Master toggle for friend-graph pushes (WP-F). Defaults to true, matching
+  /// `notification_settings.friend_events_enabled`'s own default — a friend
+  /// request that never arrives is worse than one that does.
+  static const String _notifyFriendEventsKey = 'notify_friend_events';
   static const String _showNSFWKey = 'showNSFWContent';
   static const String _boostLocalActivityKey = 'boost_local_activity';
-  static const String _enabledCategoriesKey = 'enabled_categories';
   static const String _notificationPermissionShownKey = 'notification_permission_shown';
-  static const String _qotdClickCountKey = 'qotd_click_count';
-  static const String _votedSuggestionsKey = 'voted_suggestions';
+  // WP-A: timestamp of the most recent notification ask, so a declined
+  // pre-prompt can be re-asked after a week. The legacy bool above is kept
+  // (and still written) for backward compatibility with pre-v1.3.1 installs.
+  static const String _notificationPermissionLastAskedAtKey = 'notification_permission_last_asked_at';
+  static const String _notificationPermissionGrantedInAppKey = 'notification_permission_granted_in_app';
   static const String _hasEverEnabledNSFWKey = 'hasEverEnabledNSFW';
   static const String _locationHistoryKey = 'location_history';
   static const String _pendingLocationSwitchKey = 'pending_location_switch';
@@ -71,14 +77,10 @@ class UserService extends ChangeNotifier {
   Map<String, dynamic>? get cachedEngagementRanking => _cachedEngagementRanking;
   static const Duration _engagementRankingCacheDuration = Duration(minutes: 30); // Cache for 30 minutes
 
-  // Define all available question types
-  static const List<Map<String, dynamic>> allQuestionTypes = [
-    {'id': 'approval_rating', 'name': 'Approval', 'icon': Icons.thumbs_up_down},
-    {'id': 'multiple_choice', 'name': 'Choice', 'icon': Icons.check_box},
-    {'id': 'text', 'name': 'Text', 'icon': Icons.text_fields},
-  ];
-
   List<Map<String, dynamic>> _answeredQuestions = [];
+  // Day-stamped streak credits earned by asking a question. Shape per entry:
+  // {'timestamp': iso8601}. Combined with counting answers to derive streaks.
+  List<Map<String, dynamic>> _askedStreakCredits = [];
   List<Map<String, dynamic>> _postedQuestions = [];
   List<Map<String, dynamic>> _savedQuestions = [];
   List<String> _reportedQuestionIds = [];
@@ -89,23 +91,15 @@ class UserService extends ChangeNotifier {
   String? _userLocation;
   bool _notifyResponses = false;
   bool _notifyQOTD = true;
-  bool _notifyStreakReminders = false;
-  TimeOfDay _streakReminderTime = TimeOfDay(hour: 18, minute: 0); // Default to 6 PM
-  TimeOfDay _qotdReminderTime = TimeOfDay(hour: 19, minute: 30); // Default to 7:30 PM
+  bool _notifyFriendEvents = true;
   bool _showNSFWContent = false;
   bool _hasEverEnabledNSFW = false; // Track if user has ever enabled NSFW in settings
   bool _hideAnsweredQuestions = false;
   bool _boostLocalActivity = true;
   bool _notificationPermissionShown = false;
-  int _qotdClickCount = 0;
-  List<String> _enabledCategories = app_category.Category.allCategories.map((c) => c.name).toList();
-  List<String> _enabledQuestionTypes = [];
+  DateTime? _notificationPermissionLastAskedAt;
+  bool _notificationPermissionGrantedInApp = false;
   String? _userId;
-
-  // Suggestions management
-  List<Map<String, dynamic>> _suggestions = [];
-  Set<String> _votedSuggestions = {};
-  bool _suggestionsLoaded = false;
 
   // Generation preference
   String? _generation;
@@ -130,19 +124,6 @@ class UserService extends ChangeNotifier {
   
   // Startup cache service for enhanced caching during initialization
   final _startupCache = StartupCacheService();
-
-  // Static variable to track temporary filter across screens
-  static String? _temporaryCategoryFilter;
-  
-  // Static method to check if there's a temporary category filter active
-  static bool hasTemporaryCategoryFilter() {
-    return _temporaryCategoryFilter != null;
-  }
-  
-  // Static method to set temporary category filter
-  static void setTemporaryCategoryFilter(String? categoryName) {
-    _temporaryCategoryFilter = categoryName;
-  }
 
   UserService() {
     _loadData();
@@ -170,21 +151,27 @@ class UserService extends ChangeNotifier {
   }
 
   List<Map<String, dynamic>> get answeredQuestions => _answeredQuestions;
+
+  /// Day-stamped credits earned by asking (posting) a question. Exposed so
+  /// streak derivation can combine both credit sources (QOTD-first §Streak).
+  List<Map<String, dynamic>> get askedStreakCredits => _askedStreakCredits;
   List<Map<String, dynamic>> get postedQuestions => _postedQuestions;
   List<Map<String, dynamic>> get savedQuestions => _savedQuestions;
   String? get userLocation => _userLocation;
   bool get notifyResponses => _notifyResponses;
   bool get notifyQOTD => _notifyQOTD;
-  bool get notifyStreakReminders => _notifyStreakReminders;
-  TimeOfDay get streakReminderTime => _streakReminderTime;
-  TimeOfDay get qotdReminderTime => _qotdReminderTime;
+  bool get notifyFriendEvents => _notifyFriendEvents;
   bool get showNSFWContent => _showNSFWContent;
   bool get hideAnsweredQuestions => _hideAnsweredQuestions;
   bool get boostLocalActivity => _boostLocalActivity;
   bool get notificationPermissionShown => _notificationPermissionShown;
-  List<String> get enabledCategories => _enabledCategories;
-  List<String> get enabledQuestionTypes => _enabledQuestionTypes;
-  List<Map<String, dynamic>> get suggestions => _suggestions;
+
+  /// When the notification pre-prompt was last shown (null = never recorded).
+  DateTime? get notificationPermissionLastAskedAt => _notificationPermissionLastAskedAt;
+
+  /// Whether the user accepted the in-app pre-prompt at least once — the signal
+  /// that stops the weekly re-ask.
+  bool get notificationPermissionGrantedInApp => _notificationPermissionGrantedInApp;
   bool get hasEverEnabledNSFW => _hasEverEnabledNSFW;
   
   // Location history getters
@@ -214,6 +201,7 @@ class UserService extends ChangeNotifier {
     _prefs = await SharedPreferences.getInstance();
     _userId = _prefs.getString(_userIdKey);
     _loadQuestions(_answeredKey, _answeredQuestions);
+    _loadQuestions(_askedStreakCreditsKey, _askedStreakCredits);
     _loadQuestions(_postedKey, _postedQuestions);
     _loadQuestions(_savedKey, _savedQuestions);
     _hideAnsweredQuestions = _prefs.getBool(_hideAnsweredKey) ?? false;
@@ -236,84 +224,28 @@ class UserService extends ChangeNotifier {
     // Load all user preference settings
     _notifyResponses = _prefs.getBool(_notifyResponsesKey) ?? false;
     _notifyQOTD = _prefs.getBool(_notifyQOTDKey) ?? true;
-    _notifyStreakReminders = _prefs.getBool(_notifyStreakRemindersKey) ?? false;
-    
-    // Load streak reminder time (default to 6 PM if not set)
-    final savedReminderHour = _prefs.getInt(_streakReminderTimeKey + '_hour') ?? 18;
-    final savedReminderMinute = _prefs.getInt(_streakReminderTimeKey + '_minute') ?? 0;
-    _streakReminderTime = TimeOfDay(hour: savedReminderHour, minute: savedReminderMinute);
+    _notifyFriendEvents = _prefs.getBool(_notifyFriendEventsKey) ?? true;
 
-    // Load QOTD reminder time (default to 7:30 PM if not set)
-    final savedQotdHour = _prefs.getInt(_qotdReminderTimeKey + '_hour') ?? 19;
-    final savedQotdMinute = _prefs.getInt(_qotdReminderTimeKey + '_minute') ?? 30;
-    _qotdReminderTime = TimeOfDay(hour: savedQotdHour, minute: savedQotdMinute);
     _showNSFWContent = _prefs.getBool(_showNSFWKey) ?? false;
     _hasEverEnabledNSFW = _prefs.getBool(_hasEverEnabledNSFWKey) ?? _showNSFWContent;
     _boostLocalActivity = _prefs.getBool(_boostLocalActivityKey) ?? true;
     _notificationPermissionShown = _prefs.getBool(_notificationPermissionShownKey) ?? false;
-    _qotdClickCount = _prefs.getInt(_qotdClickCountKey) ?? 0;
+    _notificationPermissionGrantedInApp =
+        _prefs.getBool(_notificationPermissionGrantedInAppKey) ?? false;
+    final lastAskedRaw = _prefs.getString(_notificationPermissionLastAskedAtKey);
+    _notificationPermissionLastAskedAt =
+        lastAskedRaw == null ? null : DateTime.tryParse(lastAskedRaw);
+    // Backfill for installs that predate the timestamp: they were asked at some
+    // unknown point, so stamp the upgrade moment and start their week now
+    // (never retro-trigger an immediate re-ask on update day).
+    if (_notificationPermissionShown && _notificationPermissionLastAskedAt == null) {
+      _notificationPermissionLastAskedAt = DateTime.now();
+      _prefs.setString(_notificationPermissionLastAskedAtKey,
+          _notificationPermissionLastAskedAt!.toIso8601String());
+    }
 
     // Load location history
     _loadLocationHistory();
-    
-    // Load enabled categories
-    final savedCategories = _prefs.getStringList(_enabledCategoriesKey);
-    if (savedCategories != null) {
-      _enabledCategories = List<String>.from(savedCategories);
-      
-      // Check for new categories and re-enable all topics when new ones are found
-      final allCategoryNames = app_category.Category.allCategories.map((c) => c.name).toList();
-      final newCategories = allCategoryNames.where((name) => !_enabledCategories.contains(name)).toList();
-      
-      if (newCategories.isNotEmpty) {
-        // When new categories are detected (app update), re-enable all topics
-        // This ensures users see questions from all topics including the new ones
-        _enabledCategories = allCategoryNames;
-        _prefs.setStringList(_enabledCategoriesKey, _enabledCategories);
-        print('New categories detected (${newCategories.join(", ")}), re-enabled all topics for better visibility');
-      }
-    } else {
-      // Default to all categories enabled
-      _enabledCategories = app_category.Category.allCategories.map((c) => c.name).toList();
-      _prefs.setStringList(_enabledCategoriesKey, _enabledCategories);
-    }
-    
-    // Check authentication status
-    final supabase = Supabase.instance.client;
-    final isAuthenticated = supabase.auth.currentUser != null;
-    
-    // Load enabled question types from preferences
-    final enabledTypes = _prefs.getStringList(_enabledQuestionTypesKey);
-    if (enabledTypes != null) {
-      _enabledQuestionTypes = List<String>.from(enabledTypes);
-      
-      // If user is authenticated and text questions aren't enabled, enable them by default
-      if (isAuthenticated && !_enabledQuestionTypes.contains('text')) {
-        _enabledQuestionTypes.add('text');
-        _prefs.setStringList(_enabledQuestionTypesKey, _enabledQuestionTypes);
-      }
-      
-      // If user is not authenticated, ensure text questions are disabled
-      if (!isAuthenticated && _enabledQuestionTypes.contains('text')) {
-        _enabledQuestionTypes.remove('text');
-        _prefs.setStringList(_enabledQuestionTypesKey, _enabledQuestionTypes);
-      }
-    } else {
-      // Set default question types based on authentication
-      _enabledQuestionTypes = allQuestionTypes
-          .where((type) => type['id'] != 'text' || isAuthenticated)
-          .map((t) => t['id'] as String)
-          .toList();
-      
-      // Save the initial state
-      _prefs.setStringList(_enabledQuestionTypesKey, _enabledQuestionTypes);
-    }
-    
-    // Load voted suggestions from local storage
-    final votedSuggestions = _prefs.getStringList(_votedSuggestionsKey);
-    if (votedSuggestions != null) {
-      _votedSuggestions = Set<String>.from(votedSuggestions);
-    }
 
     // Load rated questions from local storage
     final ratedQuestions = _prefs.getStringList(_ratedQuestionsKey);
@@ -329,10 +261,6 @@ class UserService extends ChangeNotifier {
     // Load generation preference
     _generation = _prefs.getString(_generationKey);
 
-    // Defer feedback loading to improve startup performance
-    // Suggestions/feedback will be loaded lazily when needed
-    print('=== SUGGESTIONS DEBUG: UserService initialization (skipping feedback loading for faster startup) ===');
-    
     // Pre-load engagement ranking since UserScreen loads on startup (needed for city info)
     print('USER SERVICE: Pre-loading engagement ranking...');
     try {
@@ -343,7 +271,7 @@ class UserService extends ChangeNotifier {
       // Don't fail initialization if this fails
     }
     
-    print('SUGGESTIONS: UserService initialization completed (feedback will be loaded on-demand)');
+    print('USER SERVICE: initialization completed');
     
     _isInitialized = true;
     
@@ -362,119 +290,16 @@ class UserService extends ChangeNotifier {
     // Build user properties
     final properties = {
       'is_authenticated': isAuthenticated,
-      'notifications_enabled': _notifyResponses || _notifyQOTD || _notifyStreakReminders,
+      'notifications_enabled': _notifyResponses || _notifyQOTD,
       'qotd_subscribed': _notifyQOTD,
-      'streak_reminders_enabled': _notifyStreakReminders,
       'nsfw_enabled': _showNSFWContent,
       'boost_local_activity': _boostLocalActivity,
-      'enabled_question_types': _enabledQuestionTypes,
-      'enabled_categories': _enabledCategories,
       'total_questions_answered': _answeredQuestions.length,
       'total_questions_posted': _postedQuestions.length,
       'hide_answered_questions': _hideAnsweredQuestions,
     };
     
     await analytics.setUserProperties(properties);
-  }
-
-  Future<void> _loadFeedbackFromDatabase() async {
-    print('=== SUGGESTIONS DEBUG: Starting _loadFeedbackFromDatabase() ===');
-    try {
-      final _supabase = Supabase.instance.client;
-      
-      print('SUGGESTIONS: Querying suggestions table...');
-      
-      // Get suggestions with vote counts using a more efficient approach
-      final response = await _supabase
-          .from('suggestions')
-          .select('*')
-          .order('created_at', ascending: false);
-      
-      print('SUGGESTIONS: Suggestions query completed. Found ${response?.length ?? 0} suggestions');
-          
-                if (response != null) {
-        print('SUGGESTIONS: Processing ${response.length} suggestions from database');
-        
-        // Get all suggestion IDs to query votes efficiently
-        final suggestionIds = response.map((item) => item['id']).toList();
-        print('SUGGESTIONS: Getting vote counts for ${suggestionIds.length} suggestion IDs');
-        
-        // Get all votes for these suggestions in one query
-        final allVotes = await _supabase
-            .from('suggestion_votes')
-            .select('suggestion_id')
-            .inFilter('suggestion_id', suggestionIds);
-        
-        print('SUGGESTIONS: Retrieved ${allVotes?.length ?? 0} total votes from database');
-        
-        // Get all comments for these suggestions in one query
-        final allComments = await _supabase
-            .from('comments')
-            .select('suggestion_id')
-            .inFilter('suggestion_id', suggestionIds);
-        
-        print('SUGGESTIONS: Retrieved ${allComments?.length ?? 0} total comments from database');
-        
-        // Count votes per suggestion
-        final voteCountsMap = <String, int>{};
-        // Count comments per suggestion
-        final commentCountsMap = <String, int>{};
-        if (allVotes != null) {
-          for (final vote in allVotes) {
-            final suggestionId = vote['suggestion_id'].toString();
-            voteCountsMap[suggestionId] = (voteCountsMap[suggestionId] ?? 0) + 1;
-          }
-        }
-        
-        if (allComments != null) {
-          for (final comment in allComments) {
-            final suggestionId = comment['suggestion_id'].toString();
-            commentCountsMap[suggestionId] = (commentCountsMap[suggestionId] ?? 0) + 1;
-          }
-        }
-        
-        print('SUGGESTIONS: Vote counts map created with ${voteCountsMap.length} entries');
-        print('SUGGESTIONS: Comment counts map created with ${commentCountsMap.length} entries');
-        
-        // Convert to our format with vote counts and comment counts
-        _suggestions = response.map((item) {
-          final suggestionId = item['id'].toString();
-          final voteCount = voteCountsMap[suggestionId] ?? 0;
-          final commentCount = commentCountsMap[suggestionId] ?? 0;
-          
-          return {
-            'id': suggestionId,
-            'text': item['suggestion'],
-            'votes': voteCount,
-            'comment_count': commentCount,
-            'timestamp': item['created_at'],
-            'userId': item['user_id'],
-          };
-        }).toList();
-        
-        print('SUGGESTIONS: Successfully loaded ${_suggestions.length} suggestions with vote counts');
-      } else {
-        print('SUGGESTIONS: No suggestions found in database response');
-        _suggestions = [];
-      }
-    } catch (e) {
-      print('SUGGESTIONS ERROR: Failed to load suggestions from database: $e');
-      // If database load fails, try to load from local storage
-      final String? jsonString = _prefs.getString('suggestions');
-      if (jsonString != null) {
-        print('SUGGESTIONS: Loading from local storage fallback');
-        final List<dynamic> decoded = json.decode(jsonString);
-        _suggestions = decoded.map((item) => Map<String, dynamic>.from(item)).toList();
-        print('SUGGESTIONS: Loaded ${_suggestions.length} suggestions from local storage');
-      } else {
-        print('SUGGESTIONS: No local storage fallback available');
-        _suggestions = [];
-      }
-    }
-    
-    // Mark suggestions as loaded
-    _suggestionsLoaded = true;
-    print('SUGGESTIONS: _loadFeedbackFromDatabase() completed. Total: ${_suggestions.length}');
   }
 
   void _loadQuestions(String key, List<Map<String, dynamic>> targetList) {
@@ -491,48 +316,86 @@ class UserService extends ChangeNotifier {
     await _prefs.setString(key, jsonString);
   }
 
-  Future<void> addAnsweredQuestion(Map<String, dynamic> question, {BuildContext? context}) async {
+  Future<void> addAnsweredQuestion(Map<String, dynamic> question, {BuildContext? context, String? answer}) async {
     if (!_answeredQuestions.any((q) => q['id'] == question['id'])) {
       // Calculate previous streak before adding the question
       final previousStreak = _calculateCurrentAnswerStreak(_answeredQuestions);
       final wasStreakExtendedToday = _hasExtendedStreakToday(_answeredQuestions);
-      
-      _answeredQuestions.add(question);
+
+      // Build the record to persist. Stamp a timestamp if the caller passed a
+      // raw server map (which carries `created_at`, not `timestamp`) so the
+      // streak math — which keys off `timestamp` — always sees this answer.
+      // This is caller-proof: it fixes the historical QOTD-overlay bug where
+      // overlay answers never counted (the overlay passed a timestamp-less map).
+      final record = Map<String, dynamic>.from(question);
+      record['timestamp'] ??= DateTime.now().toIso8601String();
+
+      // Only answering the effective QOTD (real QOTD or its NSFW fallback)
+      // credits the streak. Archive / feed / deep-link answers store false.
+      final questionId = record['id']?.toString() ?? '';
+      final countsForStreak = QuestionService().isEffectiveQotd(questionId);
+      record['counts_for_streak'] = countsForStreak;
+
+      // The notification pre-prompt is owed after a QOTD answer, from EVERY
+      // path: the home hero, the full answer screens (Archive / deep link /
+      // search), a discussion comment, and the onboarding replay. This is the
+      // one choke point they all reach, but it has no BuildContext — so it only
+      // records the debt; `PostAnswerPrompts.maybeShow` drains it from whichever
+      // surface is visible afterwards. See `post_answer_prompts.dart`.
+      if (countsForStreak) {
+        try {
+          await PostAnswerPrompts.markQotdAnswered();
+        } catch (e) {
+          print('Error recording post-answer notification prompt: $e');
+        }
+      }
+
+      // Optionally persist the user's answer text/value if the caller provided
+      // one (plumbing for the QOTD-first "your answer" surfaces).
+      if (answer != null) {
+        record['answer'] = answer;
+      }
+
+      _answeredQuestions.add(record);
       await _saveQuestions(_answeredKey, _answeredQuestions);
-      
+
       // Calculate new streak after adding the question
       final newStreak = _calculateCurrentAnswerStreak(_answeredQuestions);
       final isStreakExtendedToday = _hasExtendedStreakToday(_answeredQuestions);
-      
+
       // Only trigger animation when streak is actually extended for the day AND previous streak was 1+
       if (!wasStreakExtendedToday && isStreakExtendedToday && previousStreak >= 1) {
         print('Streak extended! Previous: $previousStreak, New: $newStreak');
-        StreakUpdateEvent.notifyStreakExtended(previousStreak, newStreak);
+        // Held, not fired: PostAnswerPrompts.maybeShow (which every QOTD answer
+        // reaches — see markQotdAnswered above) plays it unless the
+        // notification dialog or the first-answerer celebration takes the slot.
+        if (countsForStreak) {
+          PostAnswerPrompts.holdStreakCelebration(previousStreak, newStreak);
+        } else {
+          StreakUpdateEvent.notifyStreakExtended(previousStreak, newStreak);
+        }
       } else if (previousStreak == 0) {
         print('First streak answer (0->1), no animation triggered');
       } else if (wasStreakExtendedToday) {
         print('Streak already extended today, no animation triggered');
       }
-      
-      // Handle streak reminder cancellation when user answers
-      // Pass the user's custom reminder time and current streak for personalized messages
-      try {
-        final streakReminderService = StreakReminderService();
-        await streakReminderService.onQuestionAnswered(_streakReminderTime, newStreak);
-      } catch (e) {
-        print('Error handling streak reminder after answering question: $e');
-        // Don't let this error interrupt the normal flow
-      }
 
-      // Update home screen widget with new streak data
+      // Update home screen widget with new streak data (strict value — reflects
+      // whether the day genuinely has credit, not a hardcoded true).
       try {
         await HomeWidgetService().updateWidget(
           streakCount: newStreak,
-          hasExtendedToday: true,
+          hasExtendedToday: isStreakExtendedToday,
         );
       } catch (e) {
         print('Error updating home widget after answering question: $e');
         // Don't let this error interrupt the normal flow
+      }
+
+      // Sync the (possibly-changed) streak to the server, non-blocking, only
+      // when this accrual actually counted.
+      if (countsForStreak) {
+        syncStreakToServer();
       }
 
       // Update QOTD widget if the answered question is the QOTD (Android only)
@@ -591,8 +454,51 @@ class UserService extends ChangeNotifier {
         }
       }
       
+      // Native app-store review prompt. This method is the one choke point
+      // every answer surface passes through, so it is the only hook needed.
+      // Fire-and-forget and self-rationing (2nd answer, then weekly, 3/year):
+      // see AppReviewService / utils/app_review_logic.dart.
+      AppReviewService().scheduleMaybeRequestReview(answeredCount: _answeredQuestions.length);
+
       notifyListeners();
     }
+  }
+
+  /// Record that the user asked (posted) a question today, granting a
+  /// day-stamped streak credit. A day with an asked-credit extends the streak
+  /// exactly like answering the effective QOTD does (QOTD-first §Streak rule).
+  Future<void> addStreakCreditForAsking() async {
+    // Streak state BEFORE the credit lands.
+    final previousStreak = _calculateCurrentAnswerStreak(_answeredQuestions);
+    final wasStreakExtendedToday = _hasExtendedStreakToday(_answeredQuestions);
+
+    _askedStreakCredits.add({'timestamp': DateTime.now().toIso8601String()});
+    await _saveQuestions(_askedStreakCreditsKey, _askedStreakCredits);
+
+    // Streak state AFTER the credit lands.
+    final newStreak = _calculateCurrentAnswerStreak(_answeredQuestions);
+    final isStreakExtendedToday = _hasExtendedStreakToday(_answeredQuestions);
+
+    // Same celebration conditions as answering.
+    if (!wasStreakExtendedToday && isStreakExtendedToday && previousStreak >= 1) {
+      print('Streak extended by asking! Previous: $previousStreak, New: $newStreak');
+      StreakUpdateEvent.notifyStreakExtended(previousStreak, newStreak);
+    }
+
+    // Update home screen widget with new streak data.
+    try {
+      await HomeWidgetService().updateWidget(
+        streakCount: newStreak,
+        hasExtendedToday: isStreakExtendedToday,
+      );
+    } catch (e) {
+      print('Error updating home widget after asking a question: $e');
+    }
+
+    // Sync streak to server, non-blocking.
+    syncStreakToServer();
+
+    notifyListeners();
   }
 
   // Remove a question from answered questions (useful if submission failed)
@@ -646,9 +552,11 @@ class UserService extends ChangeNotifier {
   // Add methods to clear data if needed
   Future<void> clearAllData() async {
     _answeredQuestions.clear();
+    _askedStreakCredits.clear();
     _postedQuestions.clear();
     _savedQuestions.clear();
     await _prefs.remove(_answeredKey);
+    await _prefs.remove(_askedStreakCreditsKey);
     await _prefs.remove(_postedKey);
     await _prefs.remove(_savedKey);
     notifyListeners();
@@ -659,7 +567,7 @@ class UserService extends ChangeNotifier {
     notifyListeners();
   }
 
-  void setNotifyResponses(bool value) async {
+  Future<void> setNotifyResponses(bool value) async {
     _notifyResponses = value;
     _prefs.setBool(_notifyResponsesKey, value);
     
@@ -676,71 +584,44 @@ class UserService extends ChangeNotifier {
     notifyListeners();
   }
 
-  void setNotifyQOTD(bool value) async {
+  /// Friend requests, acceptances, licks, forwards and reactions (WP-F).
+  ///
+  /// Unlike the other toggles this one has no FCM topic of its own — friend
+  /// pushes ride the personal `user_{id}` topic — so the server-side
+  /// `notification_settings.friend_events_enabled` flag is what actually
+  /// suppresses them. Per-friend muting stays where it is, on the friendship
+  /// row (WP-E).
+  Future<void> setNotifyFriendEvents(bool value) async {
+    _notifyFriendEvents = value;
+    _prefs.setBool(_notifyFriendEventsKey, value);
+
+    final notificationService = NotificationService();
+    await notificationService.setFriendEventsEnabled(value);
+
+    notifyListeners();
+  }
+
+  Future<void> setNotifyQOTD(bool value) async {
     _notifyQOTD = value;
     _prefs.setBool(_notifyQOTDKey, value);
 
-    // Handle FCM subscription
+    // Handle FCM subscription. Nothing is scheduled locally any more: the Drop
+    // arrives at the server's random minute and is shown on arrival, so the
+    // `qotd` topic subscription is the whole switch.
     final notificationService = NotificationService();
-    // Handle local QOTD reminder scheduling
-    final qotdReminderService = QOTDReminderService();
     if (value) {
       await notificationService.subscribeToQOTD();
-      await qotdReminderService.setRemindersEnabled(true, _qotdReminderTime);
-      print('QOTD notifications enabled - FCM topic subscribed, local reminders scheduled');
+      print('QOTD notifications enabled - FCM topic subscribed');
     } else {
       await notificationService.unsubscribeFromQOTD();
-      await qotdReminderService.setRemindersEnabled(false);
-      print('QOTD notifications disabled - FCM topic unsubscribed, local reminders cancelled');
+      print('QOTD notifications disabled - FCM topic unsubscribed');
     }
+    // Keep the server row in step. QOTD push is topic-based, so `qotd_enabled`
+    // does not gate delivery today — but it is the column every other surface
+    // (and any future per-user send) reads, and it was never written by the
+    // client at all.
+    await notificationService.setQotdEnabled(value);
 
-    notifyListeners();
-  }
-
-  void setNotifyStreakReminders(bool value) async {
-    _notifyStreakReminders = value;
-    _prefs.setBool(_notifyStreakRemindersKey, value);
-    
-    // Handle streak reminder scheduling
-    final streakReminderService = StreakReminderService();
-    await streakReminderService.setRemindersEnabled(value, _streakReminderTime);
-    
-    if (value) {
-      print('Streak reminders enabled');
-    } else {
-      print('Streak reminders disabled');
-    }
-    
-    notifyListeners();
-  }
-
-  void setStreakReminderTime(TimeOfDay time) async {
-    _streakReminderTime = time;
-    await _prefs.setInt(_streakReminderTimeKey + '_hour', time.hour);
-    await _prefs.setInt(_streakReminderTimeKey + '_minute', time.minute);
-    
-    // If reminders are enabled, reschedule with the new time
-    if (_notifyStreakReminders) {
-      final streakReminderService = StreakReminderService();
-      await streakReminderService.setRemindersEnabled(true, _streakReminderTime); // This will reschedule with new time
-    }
-    
-    print('Streak reminder time set to ${time.hour}:${time.minute.toString().padLeft(2, '0')}');
-    notifyListeners();
-  }
-
-  void setQotdReminderTime(TimeOfDay time) async {
-    _qotdReminderTime = time;
-    await _prefs.setInt(_qotdReminderTimeKey + '_hour', time.hour);
-    await _prefs.setInt(_qotdReminderTimeKey + '_minute', time.minute);
-
-    // If QOTD is enabled, reschedule with the new time
-    if (_notifyQOTD) {
-      final qotdReminderService = QOTDReminderService();
-      await qotdReminderService.setRemindersEnabled(true, _qotdReminderTime);
-    }
-
-    print('QOTD reminder time set to ${time.hour}:${time.minute.toString().padLeft(2, '0')}');
     notifyListeners();
   }
 
@@ -771,43 +652,22 @@ class UserService extends ChangeNotifier {
     notifyListeners();
   }
 
-  void toggleCategory(String categoryName) {
-    if (_enabledCategories.contains(categoryName)) {
-      _enabledCategories.remove(categoryName);
-    } else {
-      _enabledCategories.add(categoryName);
+  /// Whether [questionId] is in the locally persisted answered list, read
+  /// straight from SharedPreferences so context-less callers (the home-screen
+  /// widget refresh on resume and on a QOTD push) can ask without a
+  /// UserService instance. The server cannot answer this: `responses` is
+  /// anonymous and has no user column (DBarchitecture.md).
+  static Future<bool> hasAnsweredLocally(String questionId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_answeredKey);
+      if (raw == null) return false;
+      final decoded = json.decode(raw);
+      if (decoded is! List) return false;
+      return decoded.any((q) => q is Map && q['id']?.toString() == questionId);
+    } catch (_) {
+      return false;
     }
-    _prefs.setStringList(_enabledCategoriesKey, _enabledCategories);
-    notifyListeners();
-  }
-
-  // Enable all categories
-  void enableAllCategories() {
-    _enabledCategories = app_category.Category.allCategories.map((c) => c.name).toList();
-    _prefs.setStringList(_enabledCategoriesKey, _enabledCategories);
-    notifyListeners();
-  }
-
-  // Toggle question type preference
-  void toggleQuestionType(String typeId) {
-    if (_enabledQuestionTypes.contains(typeId)) {
-      // Only remove if it's not the last enabled type
-      if (_enabledQuestionTypes.length > 1) {
-        _enabledQuestionTypes.remove(typeId);
-      }
-    } else {
-      _enabledQuestionTypes.add(typeId);
-    }
-    
-    // Save to preferences
-    _prefs.setStringList(_enabledQuestionTypesKey, _enabledQuestionTypes);
-    
-    notifyListeners();
-  }
-
-  // Check if a question type is enabled
-  bool isQuestionTypeEnabled(String typeId) {
-    return _enabledQuestionTypes.contains(typeId);
   }
 
   // Helper method to check if a question has been answered
@@ -891,85 +751,6 @@ class UserService extends ChangeNotifier {
     return _dismissedQuestionIds.contains(questionId);
   }
 
-  void addSuggestion(Map<String, dynamic> suggestion) {
-    final _supabase = Supabase.instance.client;
-    
-    // Check if user is authenticated
-    if (_supabase.auth.currentUser == null) {
-      print('Error: User must be authenticated to submit suggestions');
-      return;
-    }
-    
-    // Remove the ID from the suggestion as it will be generated by the database
-    final suggestionToSubmit = Map<String, dynamic>.from(suggestion);
-    suggestionToSubmit.remove('id');
-    
-    // Add to local list first for immediate feedback
-    _suggestions.insert(0, suggestion);
-    notifyListeners();
-    
-    // Submit to database
-    _submitSuggestionToDatabase(suggestionToSubmit).then((databaseId) {
-      if (databaseId != null) {
-        // Update the local suggestion with the database ID
-        suggestion['id'] = databaseId;
-        notifyListeners();
-      }
-    });
-  }
-
-  Future<String?> _submitSuggestionToDatabase(Map<String, dynamic> suggestion) async {
-    try {
-      final _supabase = Supabase.instance.client;
-      
-      // Get the current user's ID
-      final user = _supabase.auth.currentUser;
-      if (user == null) {
-        print('Error: User must be authenticated to submit suggestions');
-        return null;
-      }
-      
-      // Create the suggestion record
-      final suggestionData = {
-        'suggestion': suggestion['text'],
-        'user_id': user.id, // Use the authenticated user's UUID
-        'created_at': suggestion['timestamp'],
-      };
-      
-      // Insert into Supabase and get the response with the new ID
-      final response = await _supabase
-          .from('suggestions')
-          .insert(suggestionData)
-          .select()
-          .single();
-          
-      if (response != null) {
-        print('Suggestion submitted to database successfully with ID: ${response['id']}');
-        
-        // Auto-subscribe suggestion author
-        try {
-          final commentService = CommentService();
-          await commentService.autoSubscribeToSuggestion(response['id'], user.id, 'author');
-          print('✅ Auto-subscribed suggestion author to suggestion ${response['id']}');
-        } catch (e) {
-          print('❌ Error auto-subscribing suggestion author: $e');
-          // Don't fail suggestion creation if subscription fails
-        }
-        
-        return response['id'].toString();
-      }
-      return null;
-    } catch (e) {
-      print('Error submitting suggestion to database: $e');
-      // Continue with local storage even if database submission fails
-      return null;
-    }
-  }
-
-  bool hasVotedSuggestion(String suggestionId) {
-    return _votedSuggestions.contains(suggestionId);
-  }
-
   // Question rating tracking methods
   bool hasRatedQuestion(String questionId) {
     return _ratedQuestions.contains(questionId);
@@ -995,314 +776,6 @@ class UserService extends ChangeNotifier {
     notifyListeners();
   }
 
-  // Check if user has actually voted in the database (for debugging/sync)
-  Future<bool> hasVotedSuggestionInDatabase(String suggestionId) async {
-    try {
-      final _supabase = Supabase.instance.client;
-      final user = _supabase.auth.currentUser;
-      
-      if (user == null) {
-        return false; // Not authenticated, can't have voted
-      }
-      
-      final vote = await _supabase
-          .from('suggestion_votes')
-          .select('id')
-          .eq('suggestion_id', suggestionId)
-          .eq('user_id', user.id)
-          .maybeSingle();
-          
-      return vote != null;
-    } catch (e) {
-      print('ERROR: Failed to check vote status in database: $e');
-      return false;
-    }
-  }
-
-  // Vote on a suggestion - returns true if successful, false if authentication required
-  Future<bool> voteSuggestion(String suggestionId) async {
-    final _supabase = Supabase.instance.client;
-    final user = _supabase.auth.currentUser;
-    
-    if (user == null) {
-      print('DEBUG: Authentication required for voting');
-      return false; // Signal that authentication is required
-    }
-    
-    print('DEBUG: User voting for suggestion $suggestionId');
-    
-    try {
-      // Add vote to database first
-      await _addVoteToDatabase(suggestionId);
-      
-      // Update local vote count for immediate UI feedback
-      final suggestion = _suggestions.firstWhere((s) => s['id'] == suggestionId);
-      final oldVotes = suggestion['votes'] ?? 0;
-      suggestion['votes'] = oldVotes + 1;
-      _votedSuggestions.add(suggestionId);
-      
-      print('DEBUG: Updated local vote count from $oldVotes to ${suggestion['votes']}');
-      
-      // Persist voted suggestions to local storage
-      _prefs.setStringList(_votedSuggestionsKey, _votedSuggestions.toList());
-      
-      notifyListeners();
-      
-      print('DEBUG: Vote submission completed for suggestion $suggestionId');
-      return true;
-    } catch (e) {
-      print('ERROR: Vote submission failed: $e');
-      
-      // Check if this is a duplicate vote error (user already voted)
-      if (e.toString().contains('duplicate key value violates unique constraint')) {
-        print('DEBUG: User has already voted for this suggestion');
-        // Update local state to reflect they have voted
-        if (!_votedSuggestions.contains(suggestionId)) {
-          _votedSuggestions.add(suggestionId);
-          _prefs.setStringList(_votedSuggestionsKey, _votedSuggestions.toList());
-          notifyListeners();
-        }
-        return true; // Don't show authentication error for duplicate votes
-      }
-      
-      return false; // Show authentication error for other failures
-    }
-  }
-
-  // Remove vote from suggestion - returns true if successful, false if authentication required
-  Future<bool> removeVoteSuggestion(String suggestionId) async {
-    final _supabase = Supabase.instance.client;
-    final user = _supabase.auth.currentUser;
-    
-    if (user == null) {
-      print('DEBUG: Authentication required for removing vote');
-      return false; // Signal that authentication is required
-    }
-    
-    print('DEBUG: User removing vote for suggestion $suggestionId');
-    
-    // Check local vs database state for debugging
-    final localHasVoted = _votedSuggestions.contains(suggestionId);
-    final dbHasVoted = await hasVotedSuggestionInDatabase(suggestionId);
-    print('DEBUG: Vote state check - Local: $localHasVoted, Database: $dbHasVoted');
-    
-    if (!dbHasVoted) {
-      print('DEBUG: No vote found in database to remove, but updating local state');
-      // Update local state to match database
-      _votedSuggestions.remove(suggestionId);
-      _prefs.setStringList(_votedSuggestionsKey, _votedSuggestions.toList());
-      notifyListeners();
-      return true; // Consider this successful since the desired state is achieved
-    }
-    
-    try {
-      // Remove vote from database first
-      await _removeVoteFromDatabase(suggestionId);
-      
-      // Update local vote count
-      final suggestion = _suggestions.firstWhere((s) => s['id'] == suggestionId);
-      final oldVotes = suggestion['votes'] ?? 0;
-      suggestion['votes'] = Math.max(0, oldVotes - 1); // Prevent negative votes
-      _votedSuggestions.remove(suggestionId);
-      
-      print('DEBUG: Updated local vote count from $oldVotes to ${suggestion['votes']}');
-      
-      // Persist voted suggestions to local storage
-      _prefs.setStringList(_votedSuggestionsKey, _votedSuggestions.toList());
-      
-      notifyListeners();
-      
-      print('DEBUG: Vote removal completed for suggestion $suggestionId');
-      return true;
-    } catch (e) {
-      print('ERROR: Remove vote failed: $e');
-      return false;
-    }
-  }
-
-  Future<void> _addVoteToDatabase(String suggestionId) async {
-    try {
-      final _supabase = Supabase.instance.client;
-      final user = _supabase.auth.currentUser;
-      
-      if (user == null) {
-        throw Exception('User must be authenticated to vote');
-      }
-      
-      print('DEBUG: Adding vote for suggestion $suggestionId by user ${user.id}');
-      
-      // Prepare vote data with user_id (no location data needed)
-      final voteData = {
-        'suggestion_id': suggestionId,
-        'user_id': user.id,
-      };
-      
-      print('DEBUG: Vote data to insert: $voteData');
-      
-      // Add vote to suggestion_votes table
-      final response = await _supabase
-          .from('suggestion_votes')
-          .insert(voteData)
-          .select();
-          
-      print('SUCCESS: Added vote to database for suggestion $suggestionId');
-      print('DEBUG: Database response: $response');
-    } catch (e) {
-      print('ERROR: Failed to add vote to database for suggestion $suggestionId: $e');
-      print('ERROR: Exception details: ${e.toString()}');
-      rethrow; // Re-throw to handle in calling method
-    }
-  }
-
-  Future<void> _removeVoteFromDatabase(String suggestionId) async {
-    try {
-      final _supabase = Supabase.instance.client;
-      final user = _supabase.auth.currentUser;
-      
-      if (user == null) {
-        throw Exception('User must be authenticated to remove vote');
-      }
-      
-      print('DEBUG: Attempting to delete vote for suggestion $suggestionId by user ${user.id}');
-      
-      // First, check if the vote exists
-      final existingVote = await _supabase
-          .from('suggestion_votes')
-          .select('id')
-          .eq('suggestion_id', suggestionId)
-          .eq('user_id', user.id)
-          .maybeSingle();
-          
-      if (existingVote == null) {
-        print('DEBUG: No vote found to delete - user has not voted for this suggestion');
-        return; // No vote to delete
-      }
-      
-      // Remove the user's vote for this suggestion
-      final response = await _supabase
-          .from('suggestion_votes')
-          .delete()
-          .eq('suggestion_id', suggestionId)
-          .eq('user_id', user.id)
-          .select();
-          
-      if (response.isNotEmpty) {
-        print('SUCCESS: Successfully deleted vote for suggestion $suggestionId');
-      } else {
-        print('WARNING: Delete operation returned empty response');
-      }
-    } catch (e) {
-      print('ERROR: Failed to remove vote from database: $e');
-      rethrow; // Re-throw to handle in calling method
-    }
-  }
-
-  // Public method to ensure suggestions are loaded (for preloading before navigation)
-  Future<void> ensureSuggestionsLoaded() async {
-    if (!_suggestionsLoaded || _suggestions.isEmpty) {
-      print('=== SUGGESTIONS DEBUG: ensureSuggestionsLoaded() - loading suggestions ===');
-      await _loadFeedbackFromDatabase();
-      notifyListeners();
-    } else {
-      print('=== SUGGESTIONS DEBUG: ensureSuggestionsLoaded() - suggestions already loaded (${_suggestions.length}) ===');
-    }
-  }
-
-  // Public method to refresh feedback from database
-  Future<void> refreshFeedback() async {
-    print('=== SUGGESTIONS DEBUG: refreshFeedback() called ===');
-    _suggestionsLoaded = false; // Reset flag to allow reload
-    await _loadFeedbackFromDatabase();
-    print('SUGGESTIONS: refreshFeedback() completed, calling notifyListeners()');
-    notifyListeners();
-  }
-
-  /// Get suggestions by their IDs (for linked suggestions)
-  Future<List<Map<String, dynamic>>> getSuggestionsByIds(List<String> suggestionIds) async {
-    if (suggestionIds.isEmpty) {
-      return [];
-    }
-    
-    final _supabase = Supabase.instance.client;
-    
-    try {
-      print('SUGGESTIONS: Fetching suggestions by IDs: $suggestionIds');
-      
-      // Fetch suggestions data
-      final suggestionsResponse = await _supabase
-          .from('suggestions')
-          .select('*')
-          .inFilter('id', suggestionIds);
-      
-      // Fetch vote counts for these suggestions
-      final votesResponse = await _supabase
-          .from('suggestion_votes')
-          .select('suggestion_id')
-          .inFilter('suggestion_id', suggestionIds);
-      
-      // Fetch comment counts for these suggestions
-      final commentsResponse = await _supabase
-          .from('comments')
-          .select('suggestion_id')
-          .inFilter('suggestion_id', suggestionIds);
-      
-      // Create vote counts map
-      final Map<String, int> voteCountsMap = {};
-      for (final vote in votesResponse) {
-        final suggestionId = vote['suggestion_id'].toString();
-        voteCountsMap[suggestionId] = (voteCountsMap[suggestionId] ?? 0) + 1;
-      }
-      
-      // Create comment counts map
-      final Map<String, int> commentCountsMap = {};
-      for (final comment in commentsResponse) {
-        final suggestionId = comment['suggestion_id'].toString();
-        commentCountsMap[suggestionId] = (commentCountsMap[suggestionId] ?? 0) + 1;
-      }
-      
-      List<Map<String, dynamic>> suggestions = [];
-      
-      for (final suggestion in suggestionsResponse) {
-        final suggestionId = suggestion['id'].toString();
-        final voteCount = voteCountsMap[suggestionId] ?? 0;
-        final commentCount = commentCountsMap[suggestionId] ?? 0;
-        
-        final suggestionData = {
-          'id': suggestionId,
-          'suggestion': suggestion['suggestion'],
-          'text': suggestion['suggestion'], // Maintain compatibility
-          'votes': voteCount,
-          'comment_count': commentCount,
-          'timestamp': suggestion['created_at'],
-          'created_at': suggestion['created_at'],
-          'user_id': suggestion['user_id'],
-        };
-        
-        suggestions.add(suggestionData);
-      }
-      
-      print('SUGGESTIONS: Successfully fetched ${suggestions.length} suggestions by IDs');
-      return suggestions;
-    } catch (e) {
-      print('Error fetching suggestions by IDs: $e');
-      return [];
-    }
-  }
-
-  // Test method to force refresh suggestions bypassing cache
-  Future<void> forceRefreshSuggestions() async {
-    print('=== SUGGESTIONS DEBUG: FORCE REFRESH - clearing cache ===');
-    // Clear local storage cache
-    await _prefs.remove('suggestions');
-    _suggestions.clear();
-    _suggestionsLoaded = false; // Reset flag to allow reload
-    
-    // Force reload from database
-    await _loadFeedbackFromDatabase();
-    print('SUGGESTIONS: Force refresh completed');
-    notifyListeners();
-  }
-
   // Handle authentication state changes
   Future<void> onAuthStateChanged([dynamic guestTrackingService]) async {
     final supabase = Supabase.instance.client;
@@ -1316,8 +789,12 @@ class UserService extends ChangeNotifier {
       final user = supabase.auth.currentUser!;
       await analytics.identifyUser(
         user.id, 
+        // PRIVACY (review 2026-09-19 P0-2): no email, no display name, no
+        // handle. The F-Droid consent slide promises "No names, emails, or
+        // device fingerprints" (analytics_consent_slide.dart), and PostHog is
+        // not where an address belongs. Only the two aggregate facts a cohort
+        // split needs travel.
         {
-          'email': user.email,
           'is_authenticated': true,
           'auth_provider': user.appMetadata['provider'] ?? 'unknown',
         },
@@ -1341,24 +818,6 @@ class UserService extends ChangeNotifier {
       print('User authenticated - migrating guest-viewed questions to answered list');
       await _migrateGuestViewedQuestions(guestTrackingService);
     }
-    
-    // Update question type preferences based on new auth state
-    if (isAuthenticated && !_enabledQuestionTypes.contains('text')) {
-      // User just signed in - enable text questions by default
-      _enabledQuestionTypes.add('text');
-      await _prefs.setStringList(_enabledQuestionTypesKey, _enabledQuestionTypes);
-      print('Enabled text questions for authenticated user');
-      notifyListeners();
-    } else if (!isAuthenticated && _enabledQuestionTypes.contains('text')) {
-      // User just signed out - disable text questions
-      _enabledQuestionTypes.remove('text');
-      await _prefs.setStringList(_enabledQuestionTypesKey, _enabledQuestionTypes);
-      print('Disabled text questions for unauthenticated user');
-      notifyListeners();
-    }
-    
-    // Note: Feedback/suggestions are now loaded only when explicitly requested
-    // (when user visits feedback screen) to improve startup performance
   }
 
   /// Migrate guest-viewed questions to authenticated user's answered list
@@ -1550,7 +1009,6 @@ class UserService extends ChangeNotifier {
     
     try {
       // Query comments table to get questions where user has commented
-      // Only get comments on questions (not suggestions)
       final commentsResponse = await Supabase.instance.client
           .from('comments')
           .select('question_id')
@@ -1740,25 +1198,9 @@ class UserService extends ChangeNotifier {
       
       if (questionIds.isEmpty) return;
       
-      // Get fresh vote counts from database in batch
-      final _supabase = Supabase.instance.client;
-      final responsesResponse = await _supabase
-          .from('responses')
-          .select('question_id')
-          .inFilter('question_id', questionIds);
-
-      // Count responses per question
-      final Map<String, int> voteCounts = {};
-      if (responsesResponse != null && responsesResponse is List) {
-        for (final response in responsesResponse) {
-          if (response != null && response is Map<String, dynamic>) {
-            final questionId = response['question_id']?.toString();
-            if (questionId != null && questionId.isNotEmpty) {
-              voteCounts[questionId] = (voteCounts[questionId] ?? 0) + 1;
-            }
-          }
-        }
-      }
+            // Get fresh vote counts from the batched results RPC
+      final Map<String, int> voteCounts =
+          await ResultsService().fetchVoteCounts(questionIds);
       
       // Update vote counts in the questions list
       int updatedCount = 0;
@@ -1795,6 +1237,19 @@ class UserService extends ChangeNotifier {
   void setNotificationPermissionShown(bool shown) {
     _notificationPermissionShown = shown;
     _prefs.setBool(_notificationPermissionShownKey, shown);
+    notifyListeners();
+  }
+
+  /// Record that the notification pre-prompt (or the Settings nudge that
+  /// replaces it when the OS permission is denied) was just shown. Writes both
+  /// the legacy bool and the WP-A timestamp the re-ask gate reads.
+  Future<void> recordNotificationPermissionAsked({DateTime? at}) async {
+    final stamp = at ?? DateTime.now();
+    _notificationPermissionShown = true;
+    _notificationPermissionLastAskedAt = stamp;
+    await _prefs.setBool(_notificationPermissionShownKey, true);
+    await _prefs.setString(
+        _notificationPermissionLastAskedAtKey, stamp.toIso8601String());
     notifyListeners();
   }
 
@@ -1845,15 +1300,28 @@ class UserService extends ChangeNotifier {
               .single();
 
           if (response != null) {
-            // Get total user count separately (same as app drawer platform stats)
-            final totalUsersResponse = await _supabase
-                .from('users')
-                .select('id')
-                .count(CountOption.exact);
-            
+            // Get total user count separately (same as app drawer platform
+            // stats). A client count of `users` rows sees only the caller's
+            // own row, so it asks get_platform_user_count() instead, and only
+            // falls back to the count query where that RPC is undeployed.
+            int totalUsers = 0;
+            try {
+              final raw = await _supabase.rpc('get_platform_user_count');
+              totalUsers = raw is num ? raw.toInt() : 0;
+            } catch (e) {
+              if (!isMissingRpc(e)) rethrow;
+              AnalyticsService()
+                  .trackRpcNotDeployedOnce('get_platform_user_count');
+              final totalUsersResponse = await _supabase
+                  .from('users')
+                  .select('id')
+                  .count(CountOption.exact);
+              totalUsers = totalUsersResponse.count;
+            }
+
             final result = {
               'rank': response['rank'] as int? ?? 0,
-              'totalUsers': totalUsersResponse.count ?? 0, // Actual total user count
+              'totalUsers': totalUsers, // Actual total user count
               'totalChameleons': response['total_chameleons'] as int? ?? 0, // Users who posted questions
               'userEngagement': response['engagement_score'] as int? ?? 0,
               'camoQuality': (response['camo_quality'] as num?)?.toDouble() ?? 0.0,
@@ -1899,54 +1367,94 @@ class UserService extends ChangeNotifier {
     return Map<String, dynamic>.from(result);
   }
 
-  // Method to check if we should show the notification permission dialog
-  // Only shows after the 2nd QOTD click attempt (not the first)
+  // Whether the one-time notification permission ask is still pending.
+  //
+  // NOTE: this is only the *first-ask* half of the decision. The full rule —
+  // first ask vs weekly re-ask vs stay quiet, and in-app dialog vs Settings
+  // deep link — lives in `utils/post_answer_prompt_logic.dart` and is performed
+  // by `PostAnswerPrompts`. Prefer those; this getter is kept because the
+  // Settings screen and older call sites read it.
   bool shouldShowNotificationPermissionDialog() {
-    // If already shown, don't show again
-    if (_notificationPermissionShown) {
-      return false;
-    }
-
-    // Increment click count
-    _qotdClickCount++;
-    _prefs.setInt(_qotdClickCountKey, _qotdClickCount);
-
-    // Show on 2nd click or later (not the first)
-    return _qotdClickCount >= 2;
+    return !_notificationPermissionShown;
   }
 
   // Method to call when notification permissions are granted
   Future<void> onNotificationPermissionsGranted() async {
-    // Enable both notification types when permissions are granted
-    setNotifyQOTD(true);
-    setNotifyResponses(true);
-    
-    // Also subscribe to the FCM topics
-    try {
-      final notificationService = NotificationService();
-      await notificationService.subscribeToQOTD();
-      await notificationService.subscribeToQuestionActivity();
-      print('UserService: Both notification types enabled and subscribed after permission grant');
-    } catch (e) {
-      print('UserService: Error subscribing to topics after permission grant: $e');
-    }
+    // Accepting the pre-prompt retires the weekly re-ask (WP-A).
+    _notificationPermissionGrantedInApp = true;
+    await _prefs.setBool(_notificationPermissionGrantedInAppKey, true);
+
+    // Enable both notification types when permissions are granted. These are
+    // now awaited: each setter already does its own FCM topic subscription and
+    // server `notification_settings` write, so the separate subscribe calls
+    // that used to follow were duplicates racing the setters.
+    await setNotifyQOTD(true);
+    await setNotifyResponses(true);
+    print('UserService: Both notification types enabled and subscribed after permission grant');
   }
 
   // Method to call when notification permissions are denied
   Future<void> onNotificationPermissionsDenied() async {
-    // Disable both notification types when permissions are denied
-    setNotifyQOTD(false);
-    setNotifyResponses(false);
-    
-    // Also unsubscribe from the FCM topics
+    // Declining keeps the user eligible for one re-ask a week later (WP-A).
+    _notificationPermissionGrantedInApp = false;
+    await _prefs.setBool(_notificationPermissionGrantedInAppKey, false);
+
+    // Disable both notification types when permissions are denied. As above,
+    // the setters own the topic unsubscribe and the server write.
+    await setNotifyQOTD(false);
+    await setNotifyResponses(false);
+    print('UserService: Both notification types disabled and unsubscribed after permission denial');
+  }
+
+  /// Re-applies the stored notification preferences to the FCM topics and the
+  /// server `notification_settings` row.
+  ///
+  /// Needed because the OS permission can change outside the app: a user who
+  /// declined, then turned notifications on in the system Settings app, comes
+  /// back with prefs that say "on" but no topic subscriptions (the grant
+  /// happened while the app was backgrounded, and nothing re-ran). The Settings
+  /// screen calls this on resume; it is idempotent, so calling it when nothing
+  /// changed is harmless.
+  Future<void> resyncNotificationState() async {
     try {
       final notificationService = NotificationService();
-      await notificationService.unsubscribeFromQOTD();
-      await notificationService.unsubscribeFromQuestionActivity();
-      print('UserService: Both notification types disabled and unsubscribed after permission denial');
+      if (_notifyQOTD) {
+        await notificationService.subscribeToQOTD();
+      } else {
+        await notificationService.unsubscribeFromQOTD();
+      }
+      await notificationService.setQotdEnabled(_notifyQOTD);
+
+      if (_notifyResponses) {
+        await notificationService.subscribeToQuestionActivity();
+      } else {
+        await notificationService.unsubscribeFromQuestionActivity();
+      }
+      await notificationService.setFriendEventsEnabled(_notifyFriendEvents);
+      // Nothing local left to re-assert: the QOTD reminder was retired with the
+      // Drop and the streak reminder with it, so every category above is a
+      // server/topic write.
+      print('UserService: notification state re-synced');
     } catch (e) {
-      print('UserService: Error unsubscribing from topics after permission denial: $e');
+      print('UserService: error re-syncing notification state: $e');
     }
+  }
+
+  /// Debug-only: forgets that the notification prompt was ever shown, so the
+  /// post-answer first ask can be retested on a device that has already seen it.
+  ///
+  /// Clears the legacy bool, the WP-A timestamp, the in-app-granted flag and any
+  /// owed post-answer prompt. Does NOT touch the OS permission — that can only
+  /// be reset by deleting the app (or, on the simulator, erasing it).
+  Future<void> resetNotificationPromptState() async {
+    _notificationPermissionShown = false;
+    _notificationPermissionLastAskedAt = null;
+    _notificationPermissionGrantedInApp = false;
+    await _prefs.remove(_notificationPermissionShownKey);
+    await _prefs.remove(_notificationPermissionLastAskedAtKey);
+    await _prefs.remove(_notificationPermissionGrantedInAppKey);
+    await PostAnswerPrompts.clearOwed();
+    notifyListeners();
   }
 
   // Get current user's engagement score using the same filtering as the counter display
@@ -2240,72 +1748,26 @@ class UserService extends ChangeNotifier {
     return cityName;
   }
 
-  // Calculate current answer streak
+  // Calculate current answer streak.
+  //
+  // Delegates to the pure [streak_logic.calculateAnswerStreak], combining
+  // counting answers (effective-QOTD answers, plus grandfathered legacy
+  // records) with asked-question credits. A day counts if any counting answer
+  // OR any asked-credit lands on it (QOTD-first §Streak rule).
   int _calculateCurrentAnswerStreak(List<Map<String, dynamic>> questions) {
-    if (questions.isEmpty) return 0;
-    
-    // Get current date (today) and normalize to start of day
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    
-    // Group questions by date
-    final Map<DateTime, List<Map<String, dynamic>>> questionsByDate = {};
-    
-    for (final question in questions) {
-      try {
-        final timestamp = question['timestamp'];
-        if (timestamp != null) {
-          final date = DateTime.parse(timestamp);
-          final dateKey = DateTime(date.year, date.month, date.day);
-          questionsByDate.putIfAbsent(dateKey, () => []);
-          questionsByDate[dateKey]!.add(question);
-        }
-      } catch (e) {
-        print('Error parsing timestamp: $e');
-        continue;
-      }
-    }
-    
-    // Calculate streak starting from today
-    int streak = 0;
-    DateTime checkDate = today;
-    
-    // Check if user had activity today, if not, start from yesterday
-    if (!questionsByDate.containsKey(today)) {
-      checkDate = today.subtract(Duration(days: 1));
-    }
-    
-    // Count consecutive days with at least one activity
-    while (questionsByDate.containsKey(checkDate)) {
-      streak++;
-      checkDate = checkDate.subtract(Duration(days: 1));
-    }
-    
-    return streak;
+    return streak_logic.calculateAnswerStreak(
+      questions,
+      askedCredits: _askedStreakCredits,
+    );
   }
 
-  // Check if user has answered any question today (extended their streak)
+  // Whether the streak has already been extended today, from either credit
+  // source (counting answer or asked-question credit).
   bool _hasExtendedStreakToday(List<Map<String, dynamic>> questions) {
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    
-    for (final question in questions) {
-      try {
-        final timestamp = question['timestamp'];
-        if (timestamp != null) {
-          final date = DateTime.parse(timestamp);
-          final questionDate = DateTime(date.year, date.month, date.day);
-          if (questionDate.isAtSameMomentAs(today)) {
-            return true;
-          }
-        }
-      } catch (e) {
-        print('Error parsing timestamp: $e');
-        continue;
-      }
-    }
-    
-    return false;
+    return streak_logic.hasExtendedStreakToday(
+      questions,
+      askedCredits: _askedStreakCredits,
+    );
   }
 
   /// Sync the user's current streak to the server and get their rank

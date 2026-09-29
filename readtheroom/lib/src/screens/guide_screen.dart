@@ -6,7 +6,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import 'package:posthog_flutter/posthog_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -14,7 +13,14 @@ import '../services/analytics_service.dart';
 import '../services/location_service.dart';
 
 class GuideScreen extends StatefulWidget {
-  const GuideScreen({Key? key}) : super(key: key);
+  /// When true, the guide will not redirect an unauthenticated / location-less
+  /// user back into onboarding. Set this when opening the guide from within the
+  /// onboarding flow (e.g. the "Read the full guide" link on the welcome slide)
+  /// so it can be browsed without bouncing back to onboarding.
+  final bool suppressOnboardingRedirect;
+
+  const GuideScreen({Key? key, this.suppressOnboardingRedirect = false})
+      : super(key: key);
 
   @override
   _GuideScreenState createState() => _GuideScreenState();
@@ -35,12 +41,19 @@ class _GuideScreenState extends State<GuideScreen> {
     
     // Track guide screen opened
     AnalyticsService().trackGuideOpened('main_menu');
-    Posthog().screen(screenName: 'Guide Screen');
+    // Routed through the service so the opt-out and the F-Droid consent slide
+    // apply (review 2026-09-19 P0-3). A raw `Posthog()` call outside
+    // `analytics_service.dart` bypasses both — asserted by a test.
+    AnalyticsService().trackScreenView('Guide Screen');
   }
 
   void _checkOnboardingStatus() async {
     if (!mounted) return;
-    
+
+    // When the guide is opened from within onboarding, don't bounce the user
+    // back into onboarding — they're already there.
+    if (widget.suppressOnboardingRedirect) return;
+
     try {
       final prefs = await SharedPreferences.getInstance();
       final onboardingCompleted = prefs.getBool('onboarding_completed') ?? false;
@@ -134,26 +147,10 @@ class _GuideScreenState extends State<GuideScreen> {
   Widget build(BuildContext context) {
     return Consumer<LocationService>(
       builder: (context, locationService, child) {
-        final isAuthenticated = Supabase.instance.client.auth.currentUser != null;
-        final hasLocation = locationService.hasLocation;
-        final canSkip = isAuthenticated && hasLocation;
-        
         return Scaffold(
           appBar: AppBar(
             title: Text('Guide'),
             centerTitle: false,
-            actions: canSkip ? [
-              TextButton(
-                onPressed: () => _skipGuide(),
-                child: Text(
-                  'Skip',
-                  style: TextStyle(
-                    color: Theme.of(context).primaryColor,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ] : null,
           ),
       body: Builder(
         builder: (context) => GestureDetector(
@@ -308,6 +305,154 @@ class _GuideScreenState extends State<GuideScreen> {
 
               SizedBox(height: 24),
 
+              // How It Works Section (one daily question + voting + maps)
+              _buildSection(
+                context,
+                icon: Icons.how_to_vote,
+                title: 'How It Works',
+                children: [
+                  Text(
+                    'Every day, the whole world answers one question.',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      height: 1.4,
+                    ),
+                  ),
+                  SizedBox(height: 16),
+                  Text(
+                    'Question types',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).primaryColor,
+                    ),
+                  ),
+                  SizedBox(height: 12),
+                  _buildNavigationItem(
+                    context,
+                    icon: Icons.check_box,
+                    title: 'Pick One',
+                    description: 'Multiple choice — choose a single option.',
+                  ),
+                  _buildNavigationItem(
+                    context,
+                    icon: Icons.thumbs_up_down,
+                    title: 'Thumbs?',
+                    description: 'Approval rating — slide from disagree to agree.',
+                  ),
+                  _buildNavigationItem(
+                    context,
+                    icon: Icons.text_fields,
+                    title: 'Discussion',
+                    description: 'Open text — share your thoughts in words.',
+                  ),
+                  SizedBox(height: 16),
+                  Text(
+                    'Vote & map the world',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).primaryColor,
+                    ),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    'Everyone votes on behalf of the cities and countries they are a part of. When enough responses are collected, we visualize how different regions and generations feel in real-time.',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      height: 1.4,
+                    ),
+                  ),
+                ],
+              ),
+
+              SizedBox(height: 24),
+
+              // Privacy Section
+              _buildSection(
+                context,
+                icon: Icons.shield_outlined,
+                title: 'Privacy First',
+                children: [
+                  Text(
+                    'We\'re all anonymous here — just like a chameleon, you\'ll be hiding in plain sight!',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      height: 1.4,
+                    ),
+                  ),
+                  SizedBox(height: 16),
+                  _buildNavigationItem(
+                    context,
+                    icon: Icons.security,
+                    title: 'Anonymous Responses',
+                    description: 'Your votes are never linked to an identity.',
+                  ),
+                  _buildNavigationItem(
+                    context,
+                    icon: Icons.phone_android,
+                    title: 'Local Processing',
+                    description: 'Most data stays on your device.',
+                  ),
+                  _buildNavigationItem(
+                    context,
+                    icon: Icons.no_accounts,
+                    title: 'No Personal Data',
+                    description: 'We don\'t collect personal information.',
+                  ),
+                  _buildNavigationItem(
+                    context,
+                    icon: Icons.code,
+                    title: 'Open Source',
+                    description: 'Our code is publicly available on GitHub.',
+                  ),
+                  SizedBox(height: 12),
+                  RichText(
+                    text: TextSpan(
+                      style: Theme.of(context).textTheme.bodyMedium,
+                      children: [
+                        TextSpan(text: 'Read our full '),
+                        WidgetSpan(
+                          child: GestureDetector(
+                            onTap: () => _launchURL('https://readtheroom.site/privacy/', linkName: 'privacy_policy'),
+                            child: Text(
+                              'privacy policy',
+                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                color: Theme.of(context).primaryColor,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
+                        TextSpan(text: '.'),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+
+              SizedBox(height: 24),
+
+              // Community Values Section
+              _buildSection(
+                context,
+                icon: Icons.favorite_outline,
+                title: 'Community Values',
+                children: [
+                  Text(
+                    'We\'re trying to be nice and curious here. So please no doxxing, harassment, or abuse.',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      height: 1.4,
+                    ),
+                  ),
+                  SizedBox(height: 16),
+                  _buildGuideline(context, '🎯', 'Be Curious', 'Ask thoughtful questions'),
+                  SizedBox(height: 12),
+                  _buildGuideline(context, '🌈', 'Be Colorful', 'Embrace diverse perspectives'),
+                  SizedBox(height: 12),
+                  _buildGuideline(context, '😎', 'Be Cool', 'Stay respectful and kind'),
+                  SizedBox(height: 12),
+                  _buildGuideline(context, '🚫', 'Zero Tolerance', 'For harassment, abuse, or incitement of violence'),
+                ],
+              ),
+
+              SizedBox(height: 24),
+
               // Navigation Section
               _buildSection(
                 context,
@@ -318,82 +463,22 @@ class _GuideScreenState extends State<GuideScreen> {
                     context,
                     icon: Icons.today,
                     title: 'Question of the Day',
-                    description: 'A popular question gets featured so we can all share our thoughts.',
+                    description: 'Answer it on your home screen to immediately see the world\'s results.',
                   ),
                   _buildNavigationItem(
                     context,
                     icon: Icons.create,
-                    title: 'Posting Questions',
-                    description: 'Choose your audience: Globe, Country, or City. Tag other countries with @countryname in the description.',
+                    title: 'Asking Questions',
+                    description: 'Ask away, your question joins the pool of upcoming Questions of the Day. Located at the bottom of the home screen.',
+                  ),
+                  _buildNavigationItem(
+                    context,
+                    icon: Icons.inventory_2_outlined,
+                    title: 'The Archive',
+                    description: 'Every question ever asked, answerable any time. Located at the bottom of the home screen.',
                   ),
                 ],
               ),
-
-              SizedBox(height: 24),
-
-              // Category Toggles Section
-              _buildSection(
-                context,
-                icon: Icons.tune,
-                title: 'Customized Feeds',
-                children: [
-                  // Categories subsection
-                  SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.category,
-                        size: 20,
-                        color: Theme.of(context).primaryColor,
-                      ),
-                      SizedBox(width: 8),
-                      Text(
-                        'Topic Filtering',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                          color: Theme.of(context).primaryColor,
-                        ),
-                      ),
-                    ],
-                  ),
-                  SizedBox(height: 8),
-                  Text(
-                    'You can tailor your feed by toggling different categories on or off — just tap the filter icon to choose the topics you want to see.',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      height: 1.4,
-                    ),
-                  ),
-                  SizedBox(height: 12),
-                  _buildCategoryState(
-                    context,
-                    icon: Icons.tune,
-                    state: 'All topics enabled',
-                    description: 'Filled icon with a colored background',
-                    bgColor: Theme.of(context).primaryColor,
-                    iconColor: Colors.white,
-                  ),
-                  SizedBox(height: 8),
-                  _buildCategoryState(
-                    context,
-                    icon: Icons.tune,
-                    state: 'Custom topic selection',
-                    description: 'Only the topics you enable will be displayed in the feed.',
-                    bgColor: Theme.of(context).primaryColor.withOpacity(0.1),
-                    iconColor: Theme.of(context).primaryColor,
-                  ),
-                  SizedBox(height: 8),
-                  _buildCategoryState(
-                    context,
-                    icon: Icons.tune,
-                    state: 'Exploring a single topic',
-                    description: 'The topic being explored will be shown in place of the question of the day, the filter can be swiped away to exit back into your normal feed.',
-                    bgColor: Colors.grey.withOpacity(0.1),
-                    iconColor: Colors.grey,
-                  ),
-                  
-                ],
-              ),
-
 
               SizedBox(height: 24),
 
@@ -450,7 +535,7 @@ class _GuideScreenState extends State<GuideScreen> {
                       Icon(Icons.menu, size: 16, color: Colors.grey[600]),
                       SizedBox(width: 4),
                       Text(
-                        'Sidebar → Feedback.',
+                        'Sidebar → Join the beta.',
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
                     ],
@@ -463,9 +548,9 @@ class _GuideScreenState extends State<GuideScreen> {
                     ),
                   ),
                   SizedBox(height: 8),
-                  _buildBulletPoint('Submit suggestions for app improvements'),
-                  _buildBulletPoint('Vote and comment on suggestions'),
-                  _buildBulletPoint('Connect with our development team'),
+                  _buildBulletPoint('Join the TestFlight or Play beta'),
+                  _buildBulletPoint('Email the development team directly'),
+                  _buildBulletPoint('Connect with us on social media'),
                   SizedBox(height: 8),
                   Text(
                     'Help us shape the future of Read the Room.',
@@ -486,7 +571,7 @@ class _GuideScreenState extends State<GuideScreen> {
                 children: [
                   Center(
                     child: Text(
-                      'Support us? Toss a follow <3',
+                      'Support us? Toss a follow!',
                       style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                         fontWeight: FontWeight.w500,
                         height: 1.4,
@@ -524,7 +609,7 @@ class _GuideScreenState extends State<GuideScreen> {
                     child: ElevatedButton.icon(
                       onPressed: () => _launchAppStore(),
                       icon: Icon(Icons.star_rate),
-                      label: Text('Please rate us on the app store <3'),
+                      label: Text('Leave a review'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Theme.of(context).primaryColor,
                         foregroundColor: Colors.white,
@@ -682,24 +767,12 @@ class _GuideScreenState extends State<GuideScreen> {
     );
   }
 
-  Widget _buildCategoryState(BuildContext context, {required IconData icon, required String state, required String description, required Color bgColor, required Color iconColor}) {
+  Widget _buildGuideline(BuildContext context, String emoji, String title, String description) {
     return Row(
       children: [
-        Container(
-          width: 24,
-          height: 24,
-          decoration: BoxDecoration(
-            color: bgColor,
-            shape: BoxShape.circle,
-            border: Border.all(
-              color: iconColor.withOpacity(0.3),
-            ),
-          ),
-          child: Icon(
-            icon,
-            color: iconColor,
-            size: 14,
-          ),
+        Text(
+          emoji,
+          style: TextStyle(fontSize: 24),
         ),
         SizedBox(width: 12),
         Expanded(
@@ -707,8 +780,8 @@ class _GuideScreenState extends State<GuideScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                state,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                title,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -716,7 +789,6 @@ class _GuideScreenState extends State<GuideScreen> {
                 description,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Colors.grey[600],
-                  height: 1.3,
                 ),
               ),
             ],
@@ -873,27 +945,5 @@ class _GuideScreenState extends State<GuideScreen> {
         ),
       ],
     );
-  }
-
-  Future<void> _skipGuide() async {
-    try {
-      // Mark guide as completed (same logic as onboarding completion)
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('guide_completed', true);
-      await prefs.setString('guide_completed_at', DateTime.now().toIso8601String());
-      
-      // Track guide skip event
-      AnalyticsService().trackEvent('guide_skipped', {
-        'source': 'guide_screen',
-        'time_spent_seconds': _screenOpenTime != null 
-            ? DateTime.now().difference(_screenOpenTime!).inSeconds 
-            : 0,
-      });
-      
-      // Navigate to main feed (home screen)
-      Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
-    } catch (e) {
-      print('Error skipping guide: $e');
-    }
   }
 }

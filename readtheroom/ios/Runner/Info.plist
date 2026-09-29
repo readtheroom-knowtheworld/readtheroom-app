@@ -80,6 +80,14 @@
 	<key>FirebaseAppDelegateProxyEnabled</key>
 	<false/>
 
+	<!-- Camera: the in-app friend-QR scanner (mobile_scanner, WP-E). The
+	     camera is used only while the scanner screen is open and no image is
+	     ever stored or uploaded — only the scanned token is read. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Read the Room uses the camera to scan a friend's QR code so you can add them. Nothing is photographed, stored or uploaded.</string>
+
+	<!-- Covers every path on the domain, so /friend/{token} needs no change
+	     here (unlike Android, which lists one pathPrefix per link type). -->
 	<key>com.apple.developer.associated-domains</key>
 	<array>
 		<string>applinks:readtheroom.site</string>
@@ -99,7 +107,7 @@
 	<key>com.posthog.posthog.CAPTURE_APPLICATION_LIFECYCLE_EVENTS</key>
 	<true/>
 	<key>com.posthog.posthog.DEBUG</key>
-	<true/>
+	<false/>
 
 	<key>LSApplicationQueriesSchemes</key>
 	<array>

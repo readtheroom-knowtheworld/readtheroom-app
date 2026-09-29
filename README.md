@@ -7,9 +7,8 @@ An anonymous social Q&A platform where anyone can ask questions and see how the 
 - **Question types** — Multiple choice, approval rating, and free text
 - **Location-based results** — See how answers break down by country on interactive choropleth maps
 - **Question of the Day** — Daily featured question with answer streaks
-- **Rooms** — Private spaces for groups to ask and answer questions together
+- **Friends** — Add friends by QR code or handle, chat, and see how your circle answered
 - **Categories** — Filter by topic (pop culture, philosophy, politics, and more)
-- **Suggestions** — Community-driven question ideas with voting
 - **Comments** — Discuss results with lizzy votes (🦎 upvotes)
 - **Passkey authentication** — Passwordless sign-in via WebAuthn/FIDO2
 - **Push notifications** — Question activity alerts, QotD reminders, streak nudges
@@ -51,14 +50,32 @@ readtheroom/
 
 ## Getting Started
 
+Requires Flutter SDK 3.x. The app has **no built-in backend**: you need your own
+Supabase project and Firebase project (PostHog is optional). Nothing in this
+repository points at the production service.
+
+1. **Build-time config.** Copy `.env.example` to `.env` and fill in your
+   Supabase URL and anon (publishable) key. The app refuses to start without
+   them. Never use a service-role or secret key in a client build.
+2. **Firebase.** Generate your own configs with the FlutterFire CLI
+   (`flutterfire configure` inside `readtheroom/`). This creates
+   `lib/firebase_options.dart`, `android/app/google-services.json` and
+   `ios/Runner/GoogleService-Info.plist`, all git-ignored.
+3. **iOS native config (optional).** Copy
+   `readtheroom/ios/Flutter/Secrets.xcconfig.example` to `Secrets.xcconfig`
+   for the widgets and background fetch.
+4. **Android release signing (optional).** Copy
+   `readtheroom/android/key.properties.example` to `key.properties`.
+
 ```bash
 cd readtheroom
 flutter pub get
 flutter analyze
-flutter run
+flutter run --dart-define-from-file=../.env
 ```
 
-Requires Flutter SDK 3.x. You'll need your own Supabase project, Firebase project, and PostHog instance to run a full local build.
+iOS signing, the app group and associated domains are tied to the maintainer's
+Apple team; change the bundle identifier and team in Xcode to run on a device.
 
 ## Contributing
 

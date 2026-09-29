@@ -296,13 +296,6 @@ class _ActivityDropdownState extends State<ActivityDropdown> {
     // Navigate based on notification type
     if (notification.questionId != null) {
       await _navigateToQuestion(notification.questionId!);
-    } else if (notification.suggestionId != null) {
-      // Navigate to suggestion - keeping the original route navigation for now
-      // TODO: Update this to use proper suggestion navigation if available
-      Navigator.pushNamed(
-        context, 
-        '/suggestion/${notification.suggestionId}',
-      );
     } else if (notification.type == 'system') {
       // For system notifications, show a dialogue with the full message
       _showSystemNotificationDialog(notification);

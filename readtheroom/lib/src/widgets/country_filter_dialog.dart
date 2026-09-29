@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import 'package:flutter/material.dart';
-import '../services/room_service.dart';
+import '../models/question_results.dart';
 import '../utils/generation_utils.dart';
+import '../utils/network_breakdown.dart';
 
 class CountryFilterDialog extends StatefulWidget {
   final Map<String, Map<String, dynamic>> countryResponses;
@@ -15,13 +16,18 @@ class CountryFilterDialog extends StatefulWidget {
   final Map<String, double>? countryAverages; // Only for approval questions
   final List<String>? questionOptions; // Only for multiple choice questions
   final Map<String, String?>? countryMostPopular; // Only for multiple choice questions
-  final List<Map<String, dynamic>>? allResponses; // All responses for room counting
-  final int? myNetworkResponseCount; // Accurate My Network response count from service
-  final Map<String, int>? roomResponseCounts; // Accurate room response counts from service
-  final Map<String, String>? roomNames; // Room ID to name mapping
   final Map<String, Map<String, dynamic>>? generationResponses; // Generation response data
   final Map<String, double>? generationAverages; // Only for approval questions
   final Map<String, String?>? generationMostPopular; // Only for multiple choice questions
+
+  /// The viewer's own network as a slice, or null when there is none to offer —
+  /// the row is drawn ONLY when this is non-null, so a gated or undeployed
+  /// network leaves the dialog exactly as it was before the feature existed.
+  final ResultsBreakdown? networkBreakdown;
+
+  /// The remainder the server withheld from the network count, which turns the
+  /// row's count into "N+" just like the aggregate card.
+  final int networkHidden;
 
   const CountryFilterDialog({
     Key? key,
@@ -34,13 +40,11 @@ class CountryFilterDialog extends StatefulWidget {
     this.countryAverages,
     this.questionOptions,
     this.countryMostPopular,
-    this.allResponses,
-    this.myNetworkResponseCount,
-    this.roomResponseCounts,
-    this.roomNames,
     this.generationResponses,
     this.generationAverages,
     this.generationMostPopular,
+    this.networkBreakdown,
+    this.networkHidden = 0,
   }) : super(key: key);
 
   static Future<String?> show({
@@ -53,13 +57,11 @@ class CountryFilterDialog extends StatefulWidget {
     Map<String, double>? countryAverages,
     List<String>? questionOptions,
     Map<String, String?>? countryMostPopular,
-    List<Map<String, dynamic>>? allResponses,
-    int? myNetworkResponseCount,
-    Map<String, int>? roomResponseCounts,
-    Map<String, String>? roomNames,
     Map<String, Map<String, dynamic>>? generationResponses,
     Map<String, double>? generationAverages,
     Map<String, String?>? generationMostPopular,
+    ResultsBreakdown? networkBreakdown,
+    int networkHidden = 0,
   }) {
     return showDialog<String?>(
       context: context,
@@ -72,13 +74,11 @@ class CountryFilterDialog extends StatefulWidget {
         countryAverages: countryAverages,
         questionOptions: questionOptions,
         countryMostPopular: countryMostPopular,
-        allResponses: allResponses,
-        myNetworkResponseCount: myNetworkResponseCount,
-        roomResponseCounts: roomResponseCounts,
-        roomNames: roomNames,
         generationResponses: generationResponses,
         generationAverages: generationAverages,
         generationMostPopular: generationMostPopular,
+        networkBreakdown: networkBreakdown,
+        networkHidden: networkHidden,
         onCountrySelected: (country) => Navigator.of(context).pop(country),
       ),
     );
@@ -91,10 +91,6 @@ class CountryFilterDialog extends StatefulWidget {
 class _CountryFilterDialogState extends State<CountryFilterDialog> {
   String _searchQuery = '';
   late List<MapEntry<String, Map<String, dynamic>>> _sortedCountries;
-  List<dynamic> _userRooms = [];
-  bool _isLoadingRooms = true;
-  Map<String, int> _roomResponseCounts = {};
-  int _myNetworkResponseCount = 0;
 
   @override
   void initState() {
@@ -105,124 +101,13 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
         final bTotal = b.value['total'] as int? ?? 0;
         return bTotal.compareTo(aTotal); // Sort by response count, descending
       });
-    
-    // Use the passed My Network count if available, otherwise calculate from allResponses
-    if (widget.myNetworkResponseCount != null) {
-      _myNetworkResponseCount = widget.myNetworkResponseCount!;
-    }
-    
-    _loadUserRooms();
   }
-
-  Future<void> _loadUserRooms() async {
-    try {
-      // Use passed data if available for instant display
-      if (widget.roomResponseCounts != null && widget.roomNames != null) {
-        final roomCounts = widget.roomResponseCounts!;
-        final networkTotal = widget.myNetworkResponseCount ?? 0;
-        
-        // Create room data from passed information
-        final roomsData = roomCounts.entries.map((entry) {
-          final roomId = entry.key;
-          final roomName = widget.roomNames![roomId] ?? 'Room';
-          return {
-            'id': roomId,
-            'name': roomName,
-            'member_count': 5, // Assume unlocked since it has responses
-            'is_unlocked': true,
-            'response_count': entry.value,
-          };
-        }).toList();
-        
-        if (mounted) {
-          setState(() {
-            _userRooms = roomsData;
-            _roomResponseCounts = roomCounts;
-            _myNetworkResponseCount = networkTotal;
-            _isLoadingRooms = false;
-          });
-        }
-      } else {
-        // Fallback to fetching rooms if data not provided
-        final roomService = RoomService();
-        final rooms = await roomService.getUserRooms();
-        
-        // Use passed room response counts if available, otherwise calculate from allResponses
-        final roomCounts = <String, int>{};
-        int networkTotal = 0;
-        
-        if (widget.roomResponseCounts != null) {
-          // Use the accurate counts passed from the service
-          roomCounts.addAll(widget.roomResponseCounts!);
-        } else if (widget.allResponses != null) {
-          // Fallback to calculating from allResponses (less accurate)
-          for (final response in widget.allResponses!) {
-            final roomId = response['room_id'] as String?;
-            if (roomId != null) {
-              roomCounts[roomId] = (roomCounts[roomId] ?? 0) + 1;
-              networkTotal++;
-            }
-          }
-        }
-      
-      if (mounted) {
-        setState(() {
-          _userRooms = rooms.map((room) => {
-            'id': room.id,
-            'name': room.name,
-            'member_count': room.memberCount,
-            'is_unlocked': room.isUnlocked,
-          }).toList();
-          _roomResponseCounts = roomCounts;
-          // Only update My Network count if it wasn't passed as parameter
-          if (widget.myNetworkResponseCount == null) {
-            _myNetworkResponseCount = networkTotal;
-          }
-          _isLoadingRooms = false;
-        });
-      }
-      } // Close the else block
-    } catch (e) {
-      print('Error loading user rooms: $e');
-      if (mounted) {
-        setState(() {
-          _isLoadingRooms = false;
-        });
-      }
-    }
-  }
-
-  bool get _hasActiveUnlockedRoom {
-    return _userRooms.any((room) => room['is_unlocked'] == true);
-  }
-
-  bool get _hasEnoughNetworkResponses {
-    return _myNetworkResponseCount >= 5;
-  }
-
-  bool get _shouldShowMyNetwork {
-    return _hasActiveUnlockedRoom && _hasEnoughNetworkResponses;
-  }
-
-  bool get _shouldShowMyNetworkGreyed {
-    return _hasActiveUnlockedRoom && !_hasEnoughNetworkResponses;
-  }
-
-  String get _myNetworkSnackbarMessage {
-    if (!_hasActiveUnlockedRoom) {
-      return 'Create or join a room to build your network!';
-    } else if (!_hasEnoughNetworkResponses) {
-      return 'Too few responses from your network (need 5+)';
-    }
-    return '';
-  }
-
 
   // Color mapping for approval questions (matches approval results screen)
   Color _getColorForValue(double value) {
     // Normalize the value from -1 to 1 range to 0 to 1 range
     final normalizedValue = (value + 1) / 2;
-    
+
     if (normalizedValue < 0.2) {
       return Colors.red;
     } else if (normalizedValue < 0.4) {
@@ -242,7 +127,7 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
     if (option == null || option == 'TIE') {
       return Colors.grey[400]!;
     }
-    
+
     final colors = [
       Colors.blue,
       Colors.red,
@@ -253,7 +138,7 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
       Colors.pink,
       Colors.indigo,
     ];
-    
+
     // Find the index of this option in the list of options
     if (widget.questionOptions != null) {
       final index = widget.questionOptions!.indexOf(option);
@@ -261,7 +146,7 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
         return colors[index % colors.length];
       }
     }
-    
+
     // If option not found, use a default color
     return Colors.grey[400]!;
   }
@@ -272,8 +157,19 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
       return _getGlobalColor(responseCount);
     }
 
-    // Handle My Network option specially - always use primary color
-    if (countryName == 'My Network') {
+    // My Network — coloured by what the network said, exactly like a country
+    // row: the approval average, or the most-popular option.
+    if (isNetworkFilter(countryName)) {
+      final network = widget.networkBreakdown;
+      if (network != null) {
+        if (widget.questionType == 'approval' && network.average != null) {
+          return _getColorForValue(network.average!);
+        }
+        if (widget.questionType == 'multiple_choice') {
+          final top = network.topOption;
+          return getColorForOption(top == 'TIE' ? null : top);
+        }
+      }
       return Theme.of(context).primaryColor;
     }
 
@@ -290,7 +186,7 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
       }
       return Theme.of(context).primaryColor;
     }
-    
+
     // For approval questions, use the average approval rating color
     if (widget.questionType == 'approval' && widget.countryAverages != null) {
       final average = widget.countryAverages![countryName];
@@ -298,16 +194,16 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
         return _getColorForValue(average);
       }
     }
-    
+
     // For multiple choice questions, use the most popular option color
     if (widget.questionType == 'multiple_choice' && widget.countryMostPopular != null) {
       final mostPopular = widget.countryMostPopular![countryName];
       return getColorForOption(mostPopular);
     }
-    
+
     // For text questions or other question types, use response count based color with higher threshold
     final threshold = widget.questionType == 'text' ? 5 : 3;
-    return responseCount > threshold 
+    return responseCount > threshold
         ? Theme.of(context).primaryColor
         : Colors.grey[400]!;
   }
@@ -318,19 +214,19 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
       // Calculate weighted global average from country averages
       double totalWeightedValue = 0;
       int totalResponsesFromAverages = 0;
-      
+
       widget.countryAverages!.forEach((country, average) {
         final countryResponseCount = widget.countryResponses[country]?['total'] as int? ?? 0;
         totalWeightedValue += average * countryResponseCount;
         totalResponsesFromAverages += countryResponseCount;
       });
-      
+
       if (totalResponsesFromAverages > 0) {
         final globalAverage = totalWeightedValue / totalResponsesFromAverages;
         return _getColorForValue(globalAverage);
       }
     }
-    
+
     // For multiple choice questions, calculate global most popular option
     if (widget.questionType == 'multiple_choice' && widget.countryMostPopular != null && widget.questionOptions != null) {
       // Count total votes for each option across all countries
@@ -338,14 +234,14 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
       for (var option in widget.questionOptions!) {
         globalOptionCounts[option] = 0;
       }
-      
+
       widget.countryMostPopular!.forEach((country, mostPopular) {
         if (mostPopular != null && widget.countryResponses[country] != null) {
           final countryResponseCount = widget.countryResponses[country]!['total'] as int? ?? 0;
           globalOptionCounts[mostPopular] = (globalOptionCounts[mostPopular] ?? 0) + countryResponseCount;
         }
       });
-      
+
       if (globalOptionCounts.isNotEmpty) {
         // Find the globally most popular option
         final maxCount = globalOptionCounts.values.reduce((a, b) => a > b ? a : b);
@@ -353,14 +249,14 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
             .where((entry) => entry.value == maxCount)
             .map((entry) => entry.key)
             .first;
-            
+
         return getColorForOption(mostPopularGlobally);
       }
     }
-    
+
     // For text questions or other question types, use response count based color with higher threshold
     final threshold = widget.questionType == 'text' ? 5 : 3;
-    return totalResponses > threshold 
+    return totalResponses > threshold
         ? Theme.of(context).primaryColor
         : Colors.grey[400]!;
   }
@@ -378,7 +274,7 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
           Text('Filter Results'),
           SizedBox(height: 4),
           Text(
-            widget.questionTitle.length > 50 
+            widget.questionTitle.length > 50
                 ? '${widget.questionTitle.substring(0, 50)}...'
                 : widget.questionTitle,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -404,19 +300,28 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
               responseCount: totalResponsesGlobal,
               onTap: () => widget.onCountrySelected(null),
             ),
-            
-            // My Network option - directly under World
-            if (!_isLoadingRooms) ...[
-              _buildMyNetworkOption(),
-            ],
+
+            // My Network, under World — only when the server gave us one.
+            if (widget.networkBreakdown != null)
+              _buildCountryOption(
+                context: context,
+                countryName: kNetworkFilter,
+                displayName: kNetworkFilterLabel,
+                leading: Icons.hub_rounded,
+                subtitle:
+                    '${networkCountLabel(widget.networkBreakdown!.count, widget.networkHidden)} answers · $kNetworkFilterSubtitle',
+                isSelected: isNetworkFilter(widget.currentSelectedCountry),
+                responseCount: widget.networkBreakdown!.count,
+                onTap: () => widget.onCountrySelected(kNetworkFilter),
+              ),
 
             // Divider between fixed options and searchable content
             Divider(),
 
             SizedBox(height: 8),
 
-            // Search bar for rooms and countries
-            if (_sortedCountries.isNotEmpty || _userRooms.isNotEmpty) ...[
+            // Search bar for countries
+            if (_sortedCountries.isNotEmpty) ...[
               Padding(
                 padding: EdgeInsets.symmetric(horizontal: 8),
                 child: TextField(
@@ -438,16 +343,13 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
               SizedBox(height: 12),
             ],
 
-            // Scrollable list: Generations + Rooms + Countries
+            // Scrollable list: Generations + Countries
             Flexible(
               child: ListView(
                 shrinkWrap: true,
                 children: [
                   // Generations section
                   ..._buildGenerationsSection(totalResponsesGlobal),
-
-                  // Top 3 rooms with >5 responses
-                  ..._buildTopRoomsList(),
 
                   // Countries heading
                   if (_sortedCountries.isNotEmpty)
@@ -487,6 +389,8 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
     required bool isSelected,
     required int responseCount,
     required VoidCallback onTap,
+    String? displayName,
+    IconData? leading,
   }) {
     return InkWell(
       onTap: onTap,
@@ -495,7 +399,7 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
         padding: EdgeInsets.symmetric(vertical: 12, horizontal: 8),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(8),
-          color: isSelected 
+          color: isSelected
               ? Theme.of(context).primaryColor.withOpacity(0.1)
               : null,
         ),
@@ -508,6 +412,9 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
                 color: _getCountryColor(countryName, responseCount),
                 shape: BoxShape.circle,
               ),
+              child: leading == null
+                  ? null
+                  : Icon(leading, size: 12, color: Colors.white),
             ),
             SizedBox(width: 12),
             Expanded(
@@ -515,7 +422,8 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    countryName.startsWith('Gen:') ? getGenerationLabel(countryName.substring(4)) : countryName,
+                    displayName ??
+                        (countryName.startsWith('Gen:') ? getGenerationLabel(countryName.substring(4)) : countryName),
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
                       color: isSelected
                           ? Theme.of(context).primaryColor
@@ -534,91 +442,6 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
               ),
             ),
             if (isSelected)
-              Icon(
-                Icons.check_circle,
-                color: Theme.of(context).primaryColor,
-                size: 20,
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMyNetworkOption() {
-    final isEnabled = _shouldShowMyNetwork;
-    final isGreyed = _shouldShowMyNetworkGreyed;
-    final isVisible = isEnabled || isGreyed;
-    
-    if (!isVisible) return SizedBox.shrink();
-    
-    return InkWell(
-      onTap: isEnabled 
-        ? () => widget.onCountrySelected('My Network')
-        : () {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(_myNetworkSnackbarMessage),
-              backgroundColor: Colors.orange,
-              duration: Duration(seconds: 3),
-              behavior: SnackBarBehavior.floating,
-              margin: EdgeInsets.only(
-                bottom: 50,
-                left: 16,
-                right: 16,
-              ),
-              elevation: 100, // High elevation to ensure it appears above dialog
-            ),
-          );
-        },
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        padding: EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          color: widget.currentSelectedCountry == 'My Network' && isEnabled
-              ? Theme.of(context).primaryColor.withOpacity(0.1)
-              : null,
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 20,
-              height: 20,
-              decoration: BoxDecoration(
-                color: Theme.of(context).primaryColor, // Always use primary color
-                shape: BoxShape.circle,
-              ),
-            ),
-            SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'My Network',
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      color: isEnabled
-                        ? (widget.currentSelectedCountry == 'My Network'
-                            ? Theme.of(context).primaryColor 
-                            : null)
-                        : Colors.grey[500],
-                      fontWeight: widget.currentSelectedCountry == 'My Network' && isEnabled
-                        ? FontWeight.bold 
-                        : null,
-                    ),
-                  ),
-                  SizedBox(height: 2),
-                  Text(
-                    'Your room network',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: isEnabled ? Colors.grey[600] : Colors.grey[400],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (widget.currentSelectedCountry == 'My Network' && isEnabled)
               Icon(
                 Icons.check_circle,
                 color: Theme.of(context).primaryColor,
@@ -684,144 +507,23 @@ class _CountryFilterDialogState extends State<CountryFilterDialog> {
     ];
   }
 
-  List<Widget> _buildTopRoomsList() {
-    // Sort all rooms by response count (highest first)
-    final sortedRooms = List.from(_userRooms);
-    sortedRooms.sort((a, b) {
-      final aCount = _roomResponseCounts[a['id']] ?? 0;
-      final bCount = _roomResponseCounts[b['id']] ?? 0;
-      return bCount.compareTo(aCount);
-    });
-    
-    // Filter by search query and ONLY include rooms with 5+ responses
-    final filteredRooms = sortedRooms.where((room) {
-      final responseCount = _roomResponseCounts[room['id']] ?? 0;
-      final hasEnoughResponses = responseCount >= 5;
-      final matchesSearch = _searchQuery.isEmpty || 
-          room['name'].toString().toLowerCase().contains(_searchQuery.toLowerCase());
-      
-      return hasEnoughResponses && matchesSearch;
-    }).toList();
-    
-    // Take top 3 rooms with 5+ responses
-    final topRooms = filteredRooms.take(3).toList();
-    
-    return topRooms.map((room) {
-      final responseCount = _roomResponseCounts[room['id']] ?? 0;
-      
-      return _buildRoomOption(
-        context: context,
-        room: room,
-        responseCount: responseCount,
-        isEnabled: true, // All rooms shown here have 5+ responses
-        isSelected: widget.currentSelectedCountry == 'Room:${room['id']}',
-      );
-    }).toList();
-  }
-
-  Widget _buildRoomOption({
-    required BuildContext context,
-    required Map<String, dynamic> room,
-    required int responseCount,
-    required bool isEnabled,
-    required bool isSelected,
-  }) {
-    final roomId = 'Room:${room['id']}';
-    final roomName = room['name'].toString();
-    
-    return InkWell(
-      onTap: isEnabled 
-        ? () => widget.onCountrySelected(roomId)
-        : () {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Too few responses from this room (need 5+)'),
-              backgroundColor: Colors.orange,
-              duration: Duration(seconds: 3),
-              behavior: SnackBarBehavior.floating,
-              margin: EdgeInsets.only(
-                bottom: 50,
-                left: 16,
-                right: 16,
-              ),
-              elevation: 100, // High elevation to ensure it appears above dialog
-            ),
-          );
-        },
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        padding: EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          color: isSelected && isEnabled
-              ? Theme.of(context).primaryColor.withOpacity(0.1)
-              : null,
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 20,
-              height: 20,
-              decoration: BoxDecoration(
-                color: isEnabled 
-                  ? _getCountryColor(roomId, responseCount)
-                  : Colors.grey[400]!,
-                shape: BoxShape.circle,
-              ),
-            ),
-            SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    roomName,
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      color: isEnabled
-                        ? (isSelected ? Theme.of(context).primaryColor : null)
-                        : Colors.grey[500],
-                      fontWeight: isSelected && isEnabled ? FontWeight.bold : null,
-                    ),
-                  ),
-                  SizedBox(height: 2),
-                  Text(
-                    '$responseCount responses',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: isEnabled ? Colors.grey[600] : Colors.grey[400],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (isSelected && isEnabled)
-              Icon(
-                Icons.check_circle,
-                color: Theme.of(context).primaryColor,
-                size: 20,
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
   List<Widget> _buildTopCountriesList(int totalResponsesGlobal) {
     // Filter countries by search query
-    final filteredCountries = _searchQuery.isEmpty 
+    final filteredCountries = _searchQuery.isEmpty
         ? _sortedCountries
         : _sortedCountries.where((entry) {
             return entry.key.toLowerCase().contains(_searchQuery.toLowerCase());
           }).toList();
-    
+
     // Take top 5 countries
     final topCountries = filteredCountries.take(5).toList();
-    
+
     return topCountries.map((entry) {
       final countryName = entry.key;
       final data = entry.value;
       final total = data['total'] as int? ?? 0;
       final percentage = totalResponsesGlobal > 0 ? (total / totalResponsesGlobal * 100).round() : 0;
-      
+
       return _buildCountryOption(
         context: context,
         countryName: countryName,

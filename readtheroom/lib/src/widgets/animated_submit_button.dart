@@ -3,7 +3,44 @@
 
 import 'package:flutter/material.dart';
 
+/// Handle that lets callers fire an [AnimatedSubmitButton] programmatically —
+/// the tap-to-submit flows (MC option tap, approval slider release) need the
+/// button to *visibly* play its press + progress animation rather than
+/// duplicating it.
+///
+/// Usage: keep one per button (`final _c = AnimatedSubmitButtonController();`),
+/// pass it via `controller:`, dispose it with the State, and call
+/// `_c.trigger()` from the shortcut gesture. `trigger()` is a no-op when the
+/// button is disabled (`onPressed == null`), already loading, or unmounted, so
+/// taps during an in-flight submission are ignored for free.
+class AnimatedSubmitButtonController extends ChangeNotifier {
+  _AnimatedSubmitButtonState? _state;
+
+  void _attach(_AnimatedSubmitButtonState state) => _state = state;
+
+  void _detach(_AnimatedSubmitButtonState state) {
+    if (_state == state) _state = null;
+  }
+
+  /// Whether a trigger would currently do anything.
+  bool get canTrigger => _state?._canTrigger ?? false;
+
+  /// Play the press animation and invoke the button's `onPressed`, exactly as
+  /// if the user had tapped it.
+  void trigger() => _state?._triggerFromController();
+}
+
 class AnimatedSubmitButton extends StatefulWidget {
+  /// The height this button renders at, in both its enabled and loading
+  /// states, with the default padding (`EdgeInsets.symmetric(vertical:
+  /// 16)`) that every current call site uses and the standard 16px/w500
+  /// button text. The loading state is pinned to this same value (rather
+  /// than its own hardcoded number) so the button doesn't resize the moment
+  /// a submit starts, and anything placed beside the button on the same row
+  /// — e.g. [ShareWithCloseFriendsToggle] — should read this constant too,
+  /// rather than hardcoding a number, so the two never drift apart.
+  static const double height = 55.0;
+
   final VoidCallback? onPressed;
   final bool isLoading;
   final String buttonText;
@@ -11,6 +48,10 @@ class AnimatedSubmitButton extends StatefulWidget {
   final Color? backgroundColor;
   final Color? foregroundColor;
   final EdgeInsetsGeometry? padding;
+
+  /// Optional handle for programmatic triggering (see
+  /// [AnimatedSubmitButtonController]).
+  final AnimatedSubmitButtonController? controller;
 
   const AnimatedSubmitButton({
     Key? key,
@@ -21,6 +62,7 @@ class AnimatedSubmitButton extends StatefulWidget {
     this.backgroundColor,
     this.foregroundColor,
     this.padding,
+    this.controller,
   }) : super(key: key);
 
   @override
@@ -31,17 +73,32 @@ class _AnimatedSubmitButtonState extends State<AnimatedSubmitButton>
     with TickerProviderStateMixin {
   late AnimationController _progressController;
   late AnimationController _typewriterController;
+  late AnimationController _pressController;
   late Animation<double> _progressAnimation;
-  
+  late Animation<double> _pressScale;
+
   String _displayText = '';
   static const String _loadingMessage = 'Submitting answer...';
   static const Duration _animationDuration = Duration(seconds: 2);
   static const Duration _typewriterDelay = Duration(milliseconds: 80);
+  static const Duration _pressDuration = Duration(milliseconds: 110);
 
   @override
   void initState() {
     super.initState();
-    
+
+    widget.controller?._attach(this);
+
+    // Press feedback (also used when triggered programmatically, so a
+    // tap-to-submit gesture visibly "presses" the button).
+    _pressController = AnimationController(
+      duration: _pressDuration,
+      vsync: this,
+    );
+    _pressScale = Tween<double>(begin: 1.0, end: 0.96).animate(
+      CurvedAnimation(parent: _pressController, curve: Curves.easeOut),
+    );
+
     // Progress bar animation (3 seconds)
     _progressController = AnimationController(
       duration: _animationDuration,
@@ -67,15 +124,37 @@ class _AnimatedSubmitButtonState extends State<AnimatedSubmitButton>
 
   @override
   void dispose() {
+    widget.controller?._detach(this);
     _progressController.dispose();
     _typewriterController.dispose();
+    _pressController.dispose();
     super.dispose();
+  }
+
+  /// Whether [AnimatedSubmitButtonController.trigger] would do anything.
+  bool get _canTrigger =>
+      mounted && !widget.isLoading && widget.onPressed != null;
+
+  /// Play the press animation, then invoke `onPressed` — the programmatic
+  /// equivalent of a user tap. Ignored while a submission is in flight.
+  void _triggerFromController() {
+    if (!_canTrigger) return;
+    final onPressed = widget.onPressed!;
+    _pressController.forward().then((_) {
+      if (mounted) _pressController.reverse();
+    });
+    onPressed();
   }
 
   @override
   void didUpdateWidget(AnimatedSubmitButton oldWidget) {
     super.didUpdateWidget(oldWidget);
-    
+
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller?._detach(this);
+      widget.controller?._attach(this);
+    }
+
     if (widget.isLoading && !oldWidget.isLoading) {
       // Start loading animations
       _startLoadingAnimation();
@@ -112,6 +191,17 @@ class _AnimatedSubmitButtonState extends State<AnimatedSubmitButton>
 
   @override
   Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _pressScale,
+      builder: (context, child) => Transform.scale(
+        scale: _pressScale.value,
+        child: child,
+      ),
+      child: _buildButton(context),
+    );
+  }
+
+  Widget _buildButton(BuildContext context) {
     final theme = Theme.of(context);
     final isEnabled = widget.onPressed != null && !widget.isLoading;
     final backgroundColor = widget.backgroundColor ?? theme.primaryColor;
@@ -122,7 +212,7 @@ class _AnimatedSubmitButtonState extends State<AnimatedSubmitButton>
         animation: _progressAnimation,
         builder: (context, child) {
           return Container(
-            height: 48,
+            height: AnimatedSubmitButton.height,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(8),
               border: Border.all(color: backgroundColor.withOpacity(0.3)),
@@ -219,7 +309,7 @@ class _AnimatedSubmitButtonState extends State<AnimatedSubmitButton>
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(8),
         ),
-        minimumSize: Size(double.infinity, 48),
+        minimumSize: Size(double.infinity, AnimatedSubmitButton.height),
       ),
       child: Text(
         isEnabled ? widget.buttonText : widget.disabledText,

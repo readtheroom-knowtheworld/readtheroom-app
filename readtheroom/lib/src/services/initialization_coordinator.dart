@@ -3,6 +3,7 @@
 
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'analytics_service.dart';
 import 'request_deduplication_service.dart';
 
 /// Coordinates service initialization to prevent race conditions and duplicate work
@@ -66,6 +67,16 @@ class InitializationCoordinator {
       
       _isInitialized = true;
       print('✅ INIT COORDINATOR: All services initialized successfully');
+      // Review 2026-09-22 F2: the per-service durations were measured and then
+      // thrown away. Six service names is a closed, low-cardinality
+      // vocabulary, so "which service is the cold start" is one breakdown.
+      // Anonymous: a cold start is not something the user chose to do.
+      final slowest = slowestService();
+      AnalyticsService().trackEventAnonymous('app_started', {
+        'services_ms': totalServiceMillis(),
+        if (slowest != null) 'slowest_service': slowest,
+        if (slowest != null) 'slowest_ms': _serviceMillis[slowest],
+      });
     } catch (e) {
       print('❌ INIT COORDINATOR: Error during initialization: $e');
       throw e;
@@ -75,18 +86,41 @@ class InitializationCoordinator {
     }
   }
 
+  /// Milliseconds each service took, for `app_started` (F2).
+  final Map<String, int> _serviceMillis = <String, int>{};
+
+  /// Total milliseconds spent initialising services this launch.
+  int totalServiceMillis() =>
+      _serviceMillis.values.fold<int>(0, (sum, ms) => sum + ms);
+
+  /// The slowest service's name, or null when nothing has been measured.
+  String? slowestService() {
+    String? name;
+    var worst = -1;
+    _serviceMillis.forEach((key, ms) {
+      if (ms > worst) {
+        worst = ms;
+        name = key;
+      }
+    });
+    return name;
+  }
+
   /// Initialize a specific service and track its completion
   Future<void> _initializeServiceInOrder(String serviceName, Future<void> Function() initializeFunction) async {
     print('🔧 INIT COORDINATOR: Initializing $serviceName...');
     final startTime = DateTime.now();
-    
+
     try {
       await initializeFunction();
       _serviceInitializationStatus[serviceName] = true;
       final duration = DateTime.now().difference(startTime);
+      _serviceMillis[serviceName] = duration.inMilliseconds;
       print('✅ INIT COORDINATOR: $serviceName initialized in ${duration.inMilliseconds}ms');
     } catch (e) {
       _serviceInitializationStatus[serviceName] = false;
+      _serviceMillis[serviceName] =
+          DateTime.now().difference(startTime).inMilliseconds;
       print('❌ INIT COORDINATOR: Failed to initialize $serviceName: $e');
       rethrow;
     }

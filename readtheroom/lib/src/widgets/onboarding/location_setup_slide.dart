@@ -123,13 +123,27 @@ class _LocationSetupSlideState extends State<LocationSetupSlide> {
     }
 
     // Track completion
-    AnalyticsService().trackOnboardingStep('location_setup_completed', 12, {
-      'country': locationService.selectedCountry,
-      'city': locationService.selectedCity?['name'],
-      'has_city': locationService.selectedCity != null,
-      'generation': _selectedGeneration,
-      'triggered_from': widget.triggeredFrom ?? 'unknown',
-    });
+    // P1-4: canonical (`location_completed`, index 16) instead of a
+    // legacy-only `step_number: 12`. The place names are gone; whether a city
+    // was chosen is the fact the funnel needs.
+    AnalyticsService().trackOnboardingStepCanonical(
+      OnboardingStep.locationCompleted,
+      properties: {
+        'granularity': locationService.selectedCity != null ? 'city' : 'country',
+        'has_city': locationService.selectedCity != null,
+        'generation': _selectedGeneration,
+        'triggered_from': widget.triggeredFrom ?? 'unknown',
+      },
+    );
+
+    // Canonical §4.2 onboarding funnel: location + generation completed.
+    AnalyticsService().trackOnboardingStepCanonical(
+      OnboardingStep.locationCompleted,
+      properties: {
+        'has_city': locationService.selectedCity != null,
+        'triggered_from': widget.triggeredFrom ?? 'unknown',
+      },
+    );
 
     // Track generation selection
     if (_selectedGeneration != null) {
@@ -137,6 +151,10 @@ class _LocationSetupSlideState extends State<LocationSetupSlide> {
         'generation': _selectedGeneration,
         'source': 'onboarding',
       });
+      AnalyticsService().trackOnboardingStepCanonical(
+        OnboardingStep.generationCompleted,
+        properties: {'triggered_from': widget.triggeredFrom ?? 'unknown'},
+      );
     }
 
     print('🦎 LOCATION_SETUP: Calling widget.onComplete()');
@@ -174,7 +192,7 @@ class _LocationSetupSlideState extends State<LocationSetupSlide> {
 
         return OnboardingSlide(
           title: "Ready to get started?",
-          description: "Set up your location and generation so you can compare answers across cities and age groups.",
+          description: "Select your home city so we can compare answers across places.",
           showCurio: true,
           onNext: _isFullyCompleted ? _completeSetup : null,
           buttonText: "Let's go! 🚀",
@@ -205,7 +223,7 @@ class _LocationSetupSlideState extends State<LocationSetupSlide> {
                 ),
                 SizedBox(height: 16),
                 Text(
-                  'Your answers are tied to your city and generation — not to you.',
+                  "Every chameleon's vote is a vote on behalf of their city and generation.",
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: Colors.grey[600],
                   ),

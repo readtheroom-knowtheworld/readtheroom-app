@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../utils/reaction_logic.dart';
 
 class QuestionReactionsService {
   final _supabase = Supabase.instance.client;
-  
-  static const List<String> _availableReactions = ['❤️', '🤔', '😡', '😂', '🤯'];
+
+  /// The five reactions the picker still offers as one-tap chips. No longer an
+  /// allow-list: since WP-D (decision D8) any single emoji is storable, and the
+  /// guard below is a grapheme check rather than set membership.
+  static const List<String> quickReactions = ['❤️', '🤔', '😡', '😂', '🤯'];
 
   /// Get current reactions for a question
   Future<Map<String, dynamic>> getQuestionReactions(String questionId) async {
@@ -55,7 +59,9 @@ class QuestionReactionsService {
       throw Exception('User must be authenticated to react');
     }
 
-    if (!_availableReactions.contains(reactionType)) {
+    // reaction_type is a free-form text column; the only client-side rule is
+    // that it holds exactly one emoji grapheme (no words, no emoji strings).
+    if (!isSingleEmoji(reactionType)) {
       throw Exception('Invalid reaction type: $reactionType');
     }
 

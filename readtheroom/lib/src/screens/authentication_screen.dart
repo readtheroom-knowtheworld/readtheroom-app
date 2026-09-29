@@ -49,7 +49,10 @@ class _AuthenticationScreenState extends State<AuthenticationScreen> {
     _checkPasskeyAvailability();
     
     // Track authentication prompt viewed
-    AnalyticsService().trackOnboardingStep('auth_prompted', 2);
+    // P1-4: was a legacy-only `step_number: 2`, which matches nothing after
+    // the WP-C3 renumber. Canonical now — `auth_prompted` is index 11.
+    AnalyticsService()
+        .trackOnboardingStepCanonical(OnboardingStep.authPrompted);
   }
 
   Future<void> _checkPasskeyAvailability() async {
@@ -98,9 +101,10 @@ class _AuthenticationScreenState extends State<AuthenticationScreen> {
 
   Future<void> _signInWithGoogle() async {
     // Track auth method selection
-    await AnalyticsService().trackOnboardingStep('auth_selected', 3, {
-      'auth_method': 'google',
-    });
+    await AnalyticsService().trackOnboardingStepCanonical(
+      OnboardingStep.authAttempted,
+      properties: {'auth_method': 'google'},
+    );
     
     await _supabase.auth.signInWithOAuth(
       OAuthProvider.google,
@@ -110,9 +114,10 @@ class _AuthenticationScreenState extends State<AuthenticationScreen> {
 
   Future<void> _signInWithApple() async {
     // Track auth method selection
-    await AnalyticsService().trackOnboardingStep('auth_selected', 3, {
-      'auth_method': 'apple',
-    });
+    await AnalyticsService().trackOnboardingStepCanonical(
+      OnboardingStep.authAttempted,
+      properties: {'auth_method': 'apple'},
+    );
     
     await _supabase.auth.signInWithOAuth(
       OAuthProvider.apple,
@@ -122,9 +127,10 @@ class _AuthenticationScreenState extends State<AuthenticationScreen> {
 
   Future<void> _signInWithPasskey() async {
     // Track auth method selection
-    await AnalyticsService().trackOnboardingStep('auth_selected', 3, {
-      'auth_method': 'passkey',
-    });
+    await AnalyticsService().trackOnboardingStepCanonical(
+      OnboardingStep.authAttempted,
+      properties: {'auth_method': 'passkey'},
+    );
     
     try {
       if (_isPasskeyAvailable) {
@@ -834,7 +840,7 @@ class _AuthenticationScreenState extends State<AuthenticationScreen> {
                           ),
                           SizedBox(height: 16),
                           Text(
-                            'We do not collect or store your profile information, email, or any other personally identifying information.\n\nWe do not associate your votes with your device ID, only the questions you have posted and the suggestions you have given are associated with your anonymous device ID so that you can delete and modify them at any time.', 
+                            'We do not collect or store your profile information, email, or any other personally identifying information.\n\nWe do not associate your votes with your device ID, only the questions you have posted and the answers and comments you have left are associated with your anonymous device ID so that you can delete and modify them at any time.', 
                             style: TextStyle(
                               fontSize: 12,
                               color: Theme.of(context).textTheme.bodyMedium?.color,

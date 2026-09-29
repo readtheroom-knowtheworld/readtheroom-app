@@ -2,10 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 import '../services/question_rating_service.dart';
-import '../services/temporary_review_filter_notifier.dart';
-import '../services/temporary_category_filter_notifier.dart';
+import '../screens/search_screen.dart';
 
 class ReviewTagNavigation {
   static const chipLabels = {
@@ -50,16 +48,20 @@ class ReviewTagNavigation {
       // Dismiss loading dialog
       Navigator.of(context).pop();
 
-      // Clear any active category filter (mutually exclusive)
-      final categoryNotifier = Provider.of<TemporaryCategoryFilterNotifier>(context, listen: false);
-      categoryNotifier.setTemporaryCategoryFilter(null);
-
-      // Set review filter
-      final reviewNotifier = Provider.of<TemporaryReviewFilterNotifier>(context, listen: false);
-      reviewNotifier.setTemporaryReviewFilter(tagKey, questionIds: ids);
-
-      // Navigate back to home
-      Navigator.popUntil(context, (route) => route.isFirst);
+      // Push the Archive (evolved Search) with the review filter pre-applied.
+      // The Archive shows a dismissible "Review: <tag>" header and restricts its
+      // Unanswered queue / search results to these question ids client-side.
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => SearchScreen(
+            source: 'review_chip',
+            autofocus: false,
+            initialReviewTagFilter: tagKey,
+            initialReviewQuestionIds: ids.toList(),
+          ),
+        ),
+      );
     } catch (e) {
       if (!context.mounted) return;
       Navigator.of(context).pop(); // dismiss loading

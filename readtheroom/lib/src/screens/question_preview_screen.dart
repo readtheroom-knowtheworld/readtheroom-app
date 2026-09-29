@@ -8,7 +8,9 @@ import '../services/user_service.dart';
 import '../services/location_service.dart';
 import '../services/question_service.dart';
 import '../models/category.dart';
+import '../utils/approval_labels.dart';
 import '../utils/time_utils.dart';
+import '../widgets/approval_end_labels_row.dart';
 import '../widgets/question_type_badge.dart';
 import '../utils/category_navigation.dart';
 
@@ -22,6 +24,11 @@ class QuestionPreviewScreen extends StatefulWidget {
   final List<String>? mentionedCountries;
   final String targeting;
   final bool isPrivate;
+
+  /// Approval-question end labels as authored on the new-question screen
+  /// (WP-B). Defaults to "Disapprove" / "Approve".
+  final ApprovalLabels approvalLabels;
+
   final Future<String?> Function() onSubmit;
 
   const QuestionPreviewScreen({
@@ -35,6 +42,7 @@ class QuestionPreviewScreen extends StatefulWidget {
     this.mentionedCountries,
     required this.targeting,
     required this.isPrivate,
+    this.approvalLabels = ApprovalLabels.defaults,
     required this.onSubmit,
   }) : super(key: key);
 
@@ -366,13 +374,7 @@ class _QuestionPreviewScreenState extends State<QuestionPreviewScreen> {
                     ),
                     child: Column(
                       children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Icon(Icons.thumb_down, color: Colors.red),
-                            Icon(Icons.thumb_up, color: Colors.green),
-                          ],
-                        ),
+                        ApprovalEndLabelsRow(labels: widget.approvalLabels),
                         SizedBox(height: 8),
                         
                         // Custom slider with bin markers

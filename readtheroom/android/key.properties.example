@@ -1,0 +1,6 @@
+# Copy to key.properties (git-ignored) to sign release builds with your own
+# upload key. Without it, release builds are produced unsigned.
+storeFile=/absolute/path/to/your-upload-keystore.jks
+storePassword=
+keyAlias=upload
+keyPassword=

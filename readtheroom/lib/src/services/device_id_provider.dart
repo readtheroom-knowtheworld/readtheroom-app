@@ -7,6 +7,9 @@ import 'package:uuid/uuid.dart';
 import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../utils/passkey_device_lookup.dart';
+import 'analytics_service.dart';
+import 'network_service.dart' show isMissingRpc;
 
 class DeviceIdProvider {
   static const String _deviceIdKey = 'device_id';
@@ -38,15 +41,35 @@ class DeviceIdProvider {
       
       print('🔐 DeviceIdProvider: No stored ID found, checking if user exists with Android ID: $actualAndroidId');
       
-      // Check if a user exists in the database with this Android ID
+      // Check if a user exists in the database with this Android ID.
+      //
+      // This is a PRE-AUTH probe, so it goes through the exact-match RPC
+      // rather than a caller-filtered read of `users` — see
+      // lib/src/utils/passkey_device_lookup.dart. All it ever uses is "did a row come back",
+      // and any failure still means "no existing user", exactly as before.
       try {
         final supabase = Supabase.instance.client;
-        final existingUser = await supabase
-            .from('users')
-            .select('id, uuid, android_id')
-            .eq('android_id', actualAndroidId)
-            .maybeSingle();
-            
+        Object? existingUser;
+        try {
+          final raw = await supabase.rpc('find_passkey_user_for_device',
+              params: {
+                'p_device_id': actualAndroidId,
+                'p_platform': 'android',
+              });
+          existingUser = passkeyRowFromRpc(raw, fullyRegistered: null);
+        } catch (e) {
+          if (!isMissingRpc(e)) rethrow;
+          // The lookup RPC is not deployed in this project yet — fall back to
+          // the read this build shipped with.
+          AnalyticsService()
+              .trackRpcNotDeployedOnce('find_passkey_user_for_device');
+          existingUser = await supabase
+              .from('users')
+              .select('id, uuid, android_id')
+              .eq('android_id', actualAndroidId)
+              .maybeSingle();
+        }
+
         if (existingUser != null) {
           // Existing user found - use their Android ID for compatibility
           print('🔐 DeviceIdProvider: Found existing user with Android ID, using it for compatibility');

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import 'package:flutter/material.dart';
+import '../models/question_results.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -26,14 +27,18 @@ import '../utils/category_navigation.dart';
 import '../widgets/animated_submit_button.dart';
 import '../services/analytics_service.dart';
 import 'main_screen.dart';
+import '../widgets/send_to_friend_sheet.dart';
+import '../widgets/share_with_close_friends_toggle.dart';
 
 class AnswerMultipleChoiceScreen extends StatefulWidget {
   final Map<String, dynamic> question;
   final FeedContext? feedContext;
   final bool fromSearch;
   final bool fromUserScreen;
+  /// Where the answer flow was entered from — see [AnswerSource] vocabulary.
+  final String entrySource;
 
-  const AnswerMultipleChoiceScreen({Key? key, required this.question, this.feedContext, this.fromSearch = false, this.fromUserScreen = false}) : super(key: key);
+  const AnswerMultipleChoiceScreen({Key? key, required this.question, this.feedContext, this.fromSearch = false, this.fromUserScreen = false, this.entrySource = 'other'}) : super(key: key);
 
   @override
   _AnswerMultipleChoiceScreenState createState() => _AnswerMultipleChoiceScreenState();
@@ -42,7 +47,18 @@ class AnswerMultipleChoiceScreen extends StatefulWidget {
 class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen> {
   String? _selectedOption;
   bool _isSubmitting = false;
+
+  /// Per-answer close-friend flag for this answer (owner decision 2026-09-17).
+  /// Default ON, chosen above the options, sent with the submit and then frozen
+  /// onto the row — not a profile setting, so nothing loads or persists it.
+  bool _shareWithCloseFriends = true;
+  bool _answerSubmitted = false;
+  final DateTime _openedAt = DateTime.now();
   final ScrollController _scrollController = ScrollController();
+  // Lets an option tap fire the submit button so it visibly plays its press +
+  // progress animation (WP-A tap-to-submit) instead of duplicating it.
+  final AnimatedSubmitButtonController _submitButtonController =
+      AnimatedSubmitButtonController();
   bool _showQuestionInTitle = false;
 
   // Cache for options to avoid recomputation and hot reload issues
@@ -81,13 +97,40 @@ class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen>
   void initState() {
     super.initState();
     _setupScrollListener();
-    AnalyticsService().trackQuestionAnswerStarted(widget.question['type']?.toString() ?? 'multiple_choice');
+    AnalyticsService().trackQuestionAnswerStarted(
+      widget.question['type']?.toString() ?? 'multiple_choice',
+      source: widget.entrySource,
+    );
   }
 
   @override
   void dispose() {
+    // §4.2: answer abandoned if the screen is left without a successful submit.
+    if (!_answerSubmitted) {
+      AnalyticsService().trackQuestionAnswerAbandoned(
+        widget.question['type']?.toString() ?? 'multiple_choice',
+        DateTime.now().difference(_openedAt).inSeconds,
+        source: widget.entrySource,
+      );
+    }
     _scrollController.dispose();
+    _submitButtonController.dispose();
     super.dispose();
+  }
+
+  /// Tap-to-submit (WP-A): selecting an option immediately fires the submit
+  /// button via its controller, so the same submit path runs and the button
+  /// plays its press + progress animation. Taps during an in-flight submission
+  /// are ignored (both here and inside the controller).
+  void _selectAndSubmit(String option) {
+    if (_isSubmitting) return;
+    AppHaptics.lightImpact();
+    setState(() => _selectedOption = option);
+    // Let the setState land so the button's `onPressed` reflects the selection
+    // before we fire it.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _submitButtonController.trigger();
+    });
   }
 
   void _setupScrollListener() {
@@ -213,6 +256,7 @@ class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen>
         _selectedOption!,
         countryCode,
         locationService: locationService,
+        sharedWithCloseFriends: _shareWithCloseFriends,
       );
       final minAnimationFuture = Future.delayed(const Duration(seconds: 2));
 
@@ -265,6 +309,13 @@ class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen>
             _isSubmitting = false;
           });
         }
+        // Review 2026-09-22 C2: without this a failed answer is
+        // indistinguishable from a user who chose not to answer. The reason
+        // rides on the paired `rpc_failed` from `submit_response`.
+        AnalyticsService().trackAnswerSubmitFailed(
+          widget.question['type']?.toString() ?? 'multiple_choice',
+          source: widget.entrySource,
+        );
         return; // Don't continue with navigation if submission failed
       }
       
@@ -272,9 +323,12 @@ class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen>
       await userService.addAnsweredQuestion(answeredQuestion, context: context);
 
       // Track successful answer
+      _answerSubmitted = true;
       AnalyticsService().trackQuestionAnswered(
         widget.question['type']?.toString() ?? 'multiple_choice',
         'multiple_choice',
+        source: widget.entrySource,
+        sharedWithCloseFriends: _shareWithCloseFriends,
       );
 
       // Record that the user has answered this question to prevent duplicate voting
@@ -288,19 +342,19 @@ class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen>
 
       print('SUCCESS: Response submitted to database successfully');
       
-      // Now get the actual responses from the database
-      List<Map<String, dynamic>> responses = [];
-      
+      // Now get the results from the server (never the answers themselves)
+      QuestionResults answerResults;
+
       try {
-        // Try to get individual responses from API (not country-summarized)
         final questionId = widget.question['id'].toString();
-        final apiResponses = await questionService.getMultipleChoiceIndividualResponses(questionId);
-        
-        // Use API responses
-        responses = List<Map<String, dynamic>>.from(apiResponses);
-        print('SUCCESS: Loaded ${responses.length} individual responses from database');
+        answerResults = await questionService.fetchQuestionResults(
+          questionId,
+          questionType: 'multiple_choice',
+          forceRefresh: true,
+        );
+        print('SUCCESS: Loaded results for $questionId (${answerResults.total} answers)');
       } catch (e) {
-        print('ERROR: Error getting multiple choice responses: $e');
+        print('ERROR: Error getting multiple choice results: $e');
         // If we can't get responses, show error instead of fake data
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -321,18 +375,18 @@ class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen>
       if (mounted) {
         try {
           // Update the question's vote count to match actual valid responses
-          final updatedQuestion = Map<String, dynamic>.from(widget.question);
-          final validResponseCount = questionService.getValidResponseCount(widget.question['id'].toString());
-          updatedQuestion['votes'] = validResponseCount > 0 ? validResponseCount : responses.length;
+                    final updatedQuestion = Map<String, dynamic>.from(widget.question);
+          updatedQuestion['votes'] =
+              answerResults.answered > 0 ? answerResults.answered : answerResults.total;
           
           print('Updated vote count to match valid responses: ${updatedQuestion['votes']}');
           
           Navigator.pushReplacement(
             context,
             MaterialPageRoute(
-              builder: (context) => MultipleChoiceResultsScreen(
+                            builder: (context) => MultipleChoiceResultsScreen(
                 question: updatedQuestion,
-                responses: responses,
+                results: answerResults,
                 feedContext: widget.feedContext,
                 fromSearch: widget.fromSearch,
                 fromUserScreen: widget.fromUserScreen,
@@ -420,9 +474,11 @@ class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen>
     final questionId = widget.question['id']?.toString();
     if (questionId == null) return;
 
+    AnalyticsService().trackShareInitiated('question', method: 'system', questionId: questionId);
+
     final shareLink = DeepLinkService.generateQuestionShareLink(questionId);
     final questionTitle = widget.question['prompt'] ?? 'Check out this question';
-    
+
     final box = context.findRenderObject() as RenderBox?;
     Share.share(
       'Check out this question on Read the Room:\n\n$questionTitle\n$shareLink',
@@ -618,50 +674,6 @@ class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen>
                         ),
                       );
                     }
-                  }
-                },
-              );
-            },
-          ),
-          // Save/bookmark button
-          Consumer<UserService>(
-            builder: (context, userService, child) {
-              final isSaved = userService.savedQuestions
-                  .any((q) => q['id'] == widget.question['id']);
-              return IconButton(
-                icon: Icon(
-                  isSaved ? Icons.bookmark : Icons.bookmark_border,
-                  color: isSaved ? Theme.of(context).primaryColor : null,
-                ),
-                onPressed: () {
-                  if (isSaved) {
-                    userService.removeSavedQuestion(widget.question['id']);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Row(
-                          children: [
-                            Icon(Icons.bookmark_border, color: Colors.white, size: 20),
-                            SizedBox(width: 8),
-                            Text('Question removed from saved'),
-                          ],
-                        ),
-                        backgroundColor: Theme.of(context).primaryColor,
-                      ),
-                    );
-                  } else {
-                    userService.addSavedQuestion(widget.question);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Row(
-                          children: [
-                            Icon(Icons.bookmark, color: Colors.white, size: 20),
-                            SizedBox(width: 8),
-                            Text('Question saved'),
-                          ],
-                        ),
-                        backgroundColor: Theme.of(context).primaryColor,
-                      ),
-                    );
                   }
                 },
               );
@@ -989,10 +1001,7 @@ class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen>
                         : Colors.transparent,
                     borderRadius: BorderRadius.circular(8),
                     child: InkWell(
-                      onTap: () async {
-                        await AppHaptics.lightImpact();
-                        setState(() => _selectedOption = option);
-                      },
+                      onTap: () => _selectAndSubmit(option),
                       borderRadius: BorderRadius.circular(8),
                       child: Container(
                         padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -1009,9 +1018,8 @@ class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen>
                             Radio<String>(
                               value: option,
                               groupValue: _selectedOption,
-                              onChanged: (value) async {
-                                await AppHaptics.lightImpact();
-                                setState(() => _selectedOption = value);
+                              onChanged: (value) {
+                                if (value != null) _selectAndSubmit(value);
                               },
                             ),
                             Expanded(
@@ -1033,14 +1041,29 @@ class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen>
                 );
               }).toList(),
             SizedBox(height: 24),
-            AnimatedSubmitButton(
-              onPressed: (_isSubmitting || _options.isEmpty || wasViewedAsGuest) ? null : _submitAnswer,
-              isLoading: _isSubmitting,
-              buttonText: 'Submit Answer',
-              disabledText: wasViewedAsGuest ? 'Cannot Vote (Viewed as Guest)' : 'Submit Answer',
-              backgroundColor: wasViewedAsGuest ? Colors.grey : Theme.of(context).primaryColor,
-              foregroundColor: Colors.white,
-              padding: EdgeInsets.symmetric(vertical: 16),
+            // Submit + the per-answer close-friend choice on one row. Tapping an
+            // option submits at once, so the toggle is set BEFORE choosing; it
+            // renders nothing until the user has a close friend.
+            Row(
+              children: [
+                Expanded(
+                  child: AnimatedSubmitButton(
+                    controller: _submitButtonController,
+                    onPressed: (_isSubmitting || _options.isEmpty || wasViewedAsGuest) ? null : _submitAnswer,
+                    isLoading: _isSubmitting,
+                    buttonText: 'Submit Answer',
+                    disabledText: wasViewedAsGuest ? 'Cannot Vote (Viewed as Guest)' : 'Submit Answer',
+                    backgroundColor: wasViewedAsGuest ? Colors.grey : Theme.of(context).primaryColor,
+                    foregroundColor: Colors.white,
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                  ),
+                ),
+                ShareWithCloseFriendsToggle(
+                  value: _shareWithCloseFriends,
+                  enabled: !_isSubmitting,
+                  onChanged: (v) => setState(() => _shareWithCloseFriends = v),
+                ),
+              ],
             ),
             
             // Swipe to next indicator
@@ -1068,6 +1091,11 @@ class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen>
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
+                // WP-F: forward this question inside the app. Hides itself
+                // when the viewer has no accepted friends.
+                SendToFriendButton(
+                  questionId: widget.question['id']?.toString() ?? '',
+                ),
                 TextButton.icon(
                   icon: Icon(Icons.share),
                   label: Text('Share'),
@@ -1115,8 +1143,12 @@ class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen>
           if (index == 0) {
             Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
           } else if (index == 1) {
-            Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
-            // Navigate to search tab - this would need to be handled in main screen
+            // Navigate to community tab
+            Navigator.pushAndRemoveUntil(
+              context,
+              MaterialPageRoute(builder: (context) => MainScreen(initialIndex: 1)),
+              (route) => false,
+            );
           } else if (index == 2) {
             // Navigate to activity tab
             Navigator.pushAndRemoveUntil(
@@ -1133,7 +1165,7 @@ class _AnswerMultipleChoiceScreenState extends State<AnswerMultipleChoiceScreen>
         type: BottomNavigationBarType.fixed,
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
-          BottomNavigationBarItem(icon: Icon(Icons.search), label: 'Search'),
+          BottomNavigationBarItem(icon: Icon(Icons.groups_outlined), label: 'Community'),
           BottomNavigationBarItem(icon: Icon(Icons.notifications_outlined), label: 'Activity'),
           BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Me'),
         ],

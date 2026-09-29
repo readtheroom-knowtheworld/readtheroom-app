@@ -1,0 +1,3038 @@
+[
+ {
+  "prompt": "Does a straw have one hole or two?",
+  "description": "Topology has entered the chat.",
+  "type": "multiple_choice",
+  "options": [
+   "One",
+   "Two",
+   "Zero — it's all one surface"
+  ]
+ },
+ {
+  "prompt": "Pineapple belongs on pizza.",
+  "type": "approval_rating",
+  "low_label": "Keep it off",
+  "high_label": "Belongs on pizza"
+ },
+ {
+  "prompt": "When do you start eating at a group meal?",
+  "description": "The eternal etiquette question.",
+  "type": "multiple_choice",
+  "options": [
+   "The second it arrives",
+   "When one other has theirs",
+   "When everyone is served",
+   "When the host starts"
+  ]
+ },
+ {
+  "prompt": "Cereal is a soup.",
+  "description": "Structurally speaking.",
+  "type": "approval_rating",
+  "low_label": "Not soup",
+  "high_label": "Soup"
+ },
+ {
+  "prompt": "How full should a suitcase be?",
+  "type": "multiple_choice",
+  "options": [
+   "Room to spare",
+   "Comfortably full",
+   "Sitting on it to close",
+   "Time for a second bag"
+  ]
+ },
+ {
+  "prompt": "You should make your bed every morning.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Milk or cereal first?",
+  "type": "multiple_choice",
+  "options": [
+   "Cereal first",
+   "Milk first",
+   "No milk at all",
+   "Depends on the cereal"
+  ]
+ },
+ {
+  "prompt": "People can genuinely change.",
+  "description": "At their core, not just their habits.",
+  "type": "approval_rating",
+  "low_label": "They can't",
+  "high_label": "They can"
+ },
+ {
+  "prompt": "What's the best pizza topping?",
+  "type": "multiple_choice",
+  "options": [
+   "Pepperoni",
+   "Mushroom",
+   "Extra cheese",
+   "Veggies",
+   "Pineapple"
+  ]
+ },
+ {
+  "prompt": "Money can buy happiness.",
+  "description": "Up to a point, maybe.",
+  "type": "approval_rating",
+  "low_label": "It can't",
+  "high_label": "It can"
+ },
+ {
+  "prompt": "How do you like your eggs?",
+  "type": "multiple_choice",
+  "options": [
+   "Scrambled",
+   "Fried",
+   "Poached",
+   "Boiled",
+   "In an omelette",
+   "I don't"
+  ]
+ },
+ {
+  "prompt": "It's rude to be more than five minutes late.",
+  "type": "approval_rating",
+  "low_label": "Not rude",
+  "high_label": "Rude"
+ },
+ {
+  "prompt": "Which meal is the most important?",
+  "type": "multiple_choice",
+  "options": [
+   "Breakfast",
+   "Lunch",
+   "Dinner",
+   "The midnight snack"
+  ]
+ },
+ {
+  "prompt": "You should tell a friend if their partner is cheating.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What's the ideal number of close friends?",
+  "type": "multiple_choice",
+  "options": [
+   "One or two",
+   "Three to five",
+   "A big group",
+   "Still counting"
+  ]
+ },
+ {
+  "prompt": "Everyone is a little bit psychic.",
+  "type": "approval_rating",
+  "low_label": "Nobody is",
+  "high_label": "Everyone is"
+ },
+ {
+  "prompt": "Window or aisle seat?",
+  "type": "multiple_choice",
+  "options": [
+   "Window",
+   "Aisle",
+   "Middle if I must",
+   "Whatever's open"
+  ]
+ },
+ {
+  "prompt": "Free will is an illusion.",
+  "description": "No pressure.",
+  "type": "approval_rating",
+  "low_label": "It's real",
+  "high_label": "It's an illusion"
+ },
+ {
+  "prompt": "How early do you get to the airport?",
+  "type": "multiple_choice",
+  "options": [
+   "Cutting it close",
+   "An hour early",
+   "Two hours",
+   "I basically live there"
+  ]
+ },
+ {
+  "prompt": "It's fine to re-gift a present.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What's the worst chore?",
+  "type": "multiple_choice",
+  "options": [
+   "Dishes",
+   "Laundry",
+   "Vacuuming",
+   "Taking out trash",
+   "Cleaning the bathroom"
+  ]
+ },
+ {
+  "prompt": "You should always finish a book you start.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Best way to spend a day off?",
+  "type": "multiple_choice",
+  "options": [
+   "Sleep in",
+   "Go outside",
+   "See friends",
+   "Chores and errands",
+   "Nothing at all"
+  ]
+ },
+ {
+  "prompt": "Talking to yourself out loud is healthy.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Coffee or tea?",
+  "type": "multiple_choice",
+  "options": [
+   "Coffee",
+   "Tea",
+   "Both",
+   "Neither"
+  ]
+ },
+ {
+  "prompt": "The best day of the week is Saturday.",
+  "type": "approval_rating",
+  "low_label": "Another day",
+  "high_label": "Saturday"
+ },
+ {
+  "prompt": "Crunchy or smooth peanut butter?",
+  "type": "multiple_choice",
+  "options": [
+   "Crunchy",
+   "Smooth",
+   "Both have their place",
+   "Neither, thanks"
+  ]
+ },
+ {
+  "prompt": "Long-distance relationships are worth it.",
+  "type": "approval_rating",
+  "low_label": "Not worth it",
+  "high_label": "Worth it"
+ },
+ {
+  "prompt": "What time should the day start?",
+  "type": "multiple_choice",
+  "options": [
+   "Before 6",
+   "6 to 8",
+   "8 to 10",
+   "Whenever I wake up"
+  ]
+ },
+ {
+  "prompt": "It's okay to keep a secret from your best friend.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Shower in the morning or at night?",
+  "type": "multiple_choice",
+  "options": [
+   "Morning",
+   "Night",
+   "Both",
+   "Whenever"
+  ]
+ },
+ {
+  "prompt": "First impressions are usually right.",
+  "description": "In the first few seconds.",
+  "type": "approval_rating",
+  "low_label": "Usually wrong",
+  "high_label": "Usually right"
+ },
+ {
+  "prompt": "Which season is best?",
+  "type": "multiple_choice",
+  "options": [
+   "Spring",
+   "Summer",
+   "Autumn",
+   "Winter"
+  ]
+ },
+ {
+  "prompt": "You are the same person you were ten years ago.",
+  "description": "Same you, deep down?",
+  "type": "approval_rating",
+  "low_label": "Different person",
+  "high_label": "Same person"
+ },
+ {
+  "prompt": "Beach or mountains?",
+  "type": "multiple_choice",
+  "options": [
+   "Beach",
+   "Mountains",
+   "Both",
+   "Neither, city for me"
+  ]
+ },
+ {
+  "prompt": "Sleeping in on weekends is a good use of time.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you watch a series?",
+  "type": "multiple_choice",
+  "options": [
+   "One at a time",
+   "A few a night",
+   "Binge it all",
+   "Rewatch old favorites"
+  ]
+ },
+ {
+  "prompt": "Everyone lies at least once a day.",
+  "type": "approval_rating",
+  "low_label": "Not everyone",
+  "high_label": "Everyone"
+ },
+ {
+  "prompt": "What do you do with the bread crust?",
+  "description": "Toast, sandwich, pizza — all count.",
+  "type": "multiple_choice",
+  "options": [
+   "Eat it",
+   "Leave it",
+   "Depends on the bread",
+   "Fold it in"
+  ]
+ },
+ {
+  "prompt": "Pets understand more than we think.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How spicy do you like your food?",
+  "description": "Rate your heat tolerance.",
+  "type": "multiple_choice",
+  "options": [
+   "No spice",
+   "A little kick",
+   "Bring the heat",
+   "Beyond human limits"
+  ]
+ },
+ {
+  "prompt": "It's okay to cry in public.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Best comfort food?",
+  "type": "multiple_choice",
+  "options": [
+   "Pizza",
+   "Pasta",
+   "Fried food",
+   "Ice cream",
+   "Soup"
+  ]
+ },
+ {
+  "prompt": "Some things happen for a reason.",
+  "type": "approval_rating",
+  "low_label": "Just chance",
+  "high_label": "For a reason"
+ },
+ {
+  "prompt": "What's your texting punctuation style?",
+  "description": "A period can read as aggressive, apparently.",
+  "type": "multiple_choice",
+  "options": [
+   "Full punctuation",
+   "lowercase, no periods",
+   "Mostly emojis",
+   "One word at a time"
+  ]
+ },
+ {
+  "prompt": "Silence is more powerful than words.",
+  "type": "approval_rating",
+  "low_label": "Words win",
+  "high_label": "Silence wins"
+ },
+ {
+  "prompt": "How many alarms do you set?",
+  "type": "multiple_choice",
+  "options": [
+   "Just one",
+   "Two or three",
+   "A small army",
+   "None, I just wake up"
+  ]
+ },
+ {
+  "prompt": "You should reply to texts within a day.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What's the best way to say goodbye?",
+  "description": "At the end of a good night.",
+  "type": "multiple_choice",
+  "options": [
+   "A hug",
+   "A wave",
+   "A handshake",
+   "Just slip out quietly"
+  ]
+ },
+ {
+  "prompt": "It's fine to eat dessert before dinner.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Where's your phone at night?",
+  "type": "multiple_choice",
+  "options": [
+   "Under the pillow",
+   "On the nightstand",
+   "Across the room",
+   "Another room entirely"
+  ]
+ },
+ {
+  "prompt": "Nostalgia does more harm than good.",
+  "type": "approval_rating",
+  "low_label": "More good",
+  "high_label": "More harm"
+ },
+ {
+  "prompt": "What's your default walking speed?",
+  "type": "multiple_choice",
+  "options": [
+   "Leisurely stroll",
+   "Steady pace",
+   "Power walk",
+   "Late for everything"
+  ]
+ },
+ {
+  "prompt": "A messy desk means a creative mind.",
+  "type": "approval_rating",
+  "low_label": "Just messy",
+  "high_label": "Creative mind"
+ },
+ {
+  "prompt": "How do you organize a bookshelf?",
+  "description": "It reveals more than you'd think.",
+  "type": "multiple_choice",
+  "options": [
+   "By color",
+   "By size",
+   "By genre",
+   "Alphabetical",
+   "Total chaos"
+  ]
+ },
+ {
+  "prompt": "It's okay to ghost a bad date.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Best weather to sleep in?",
+  "type": "multiple_choice",
+  "options": [
+   "A rainstorm",
+   "Cool and quiet",
+   "Snowy silence",
+   "A warm breeze"
+  ]
+ },
+ {
+  "prompt": "Everyone should learn to cook at least one meal well.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you handle a buffet?",
+  "type": "multiple_choice",
+  "options": [
+   "Small tastes of everything",
+   "Load up once",
+   "Go back many times",
+   "Stick to favorites"
+  ]
+ },
+ {
+  "prompt": "The book is always better than the movie.",
+  "description": "Every single time?",
+  "type": "approval_rating",
+  "low_label": "Not always",
+  "high_label": "Always"
+ },
+ {
+  "prompt": "What's your ringer situation?",
+  "type": "multiple_choice",
+  "options": [
+   "Always silent",
+   "Vibrate only",
+   "Loud and proud",
+   "A custom song"
+  ]
+ },
+ {
+  "prompt": "You can be friends with an ex.",
+  "type": "approval_rating",
+  "low_label": "You can't",
+  "high_label": "You can"
+ },
+ {
+  "prompt": "Best way to relax?",
+  "type": "multiple_choice",
+  "options": [
+   "A nap",
+   "A walk",
+   "A screen",
+   "A book",
+   "A friend"
+  ]
+ },
+ {
+  "prompt": "It's okay to lie to protect someone's feelings.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Ideal nap length?",
+  "type": "multiple_choice",
+  "options": [
+   "10 minutes",
+   "20 minutes",
+   "An hour",
+   "Until I wake up naturally"
+  ]
+ },
+ {
+  "prompt": "Growing up is mostly a loss.",
+  "description": "More gained, or more lost?",
+  "type": "approval_rating",
+  "low_label": "Mostly a gain",
+  "high_label": "Mostly a loss"
+ },
+ {
+  "prompt": "Where's the best place to read a book?",
+  "type": "multiple_choice",
+  "options": [
+   "In bed",
+   "A comfy chair",
+   "Outside",
+   "On a commute",
+   "A quiet cafe"
+  ]
+ },
+ {
+  "prompt": "Cold weather is better than hot weather.",
+  "type": "approval_rating",
+  "low_label": "Team hot",
+  "high_label": "Team cold"
+ },
+ {
+  "prompt": "Which sense would you want heightened?",
+  "type": "multiple_choice",
+  "options": [
+   "Sight",
+   "Hearing",
+   "Smell",
+   "Taste",
+   "Touch"
+  ]
+ },
+ {
+  "prompt": "You should say 'I love you' first if you feel it.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "If you could instantly master one skill?",
+  "type": "multiple_choice",
+  "options": [
+   "A language",
+   "An instrument",
+   "Cooking",
+   "Coding",
+   "Drawing"
+  ]
+ },
+ {
+  "prompt": "Time moves faster as you get older.",
+  "description": "The years keep shrinking.",
+  "type": "approval_rating",
+  "low_label": "Feels the same",
+  "high_label": "Moves faster"
+ },
+ {
+  "prompt": "What superpower would you pick?",
+  "description": "Only one, forever.",
+  "type": "multiple_choice",
+  "options": [
+   "Flight",
+   "Invisibility",
+   "Time travel",
+   "Reading minds",
+   "Teleporting"
+  ]
+ },
+ {
+  "prompt": "It's okay to eat alone at a restaurant.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Would you rather talk to animals or speak every human language?",
+  "type": "multiple_choice",
+  "options": [
+   "Talk to animals",
+   "Every human language"
+  ]
+ },
+ {
+  "prompt": "People are basically good.",
+  "type": "approval_rating",
+  "low_label": "Basically not",
+  "high_label": "Basically good"
+ },
+ {
+  "prompt": "If you could live in any era, when?",
+  "type": "multiple_choice",
+  "options": [
+   "The distant past",
+   "A century ago",
+   "Right now",
+   "The near future",
+   "The far future"
+  ]
+ },
+ {
+  "prompt": "Dogs are better than cats.",
+  "type": "approval_rating",
+  "low_label": "Team cats",
+  "high_label": "Team dogs"
+ },
+ {
+  "prompt": "Which would you rather lose for a year?",
+  "type": "multiple_choice",
+  "options": [
+   "Your phone",
+   "Your favorite food",
+   "Music",
+   "Travel"
+  ]
+ },
+ {
+  "prompt": "It's rude to look at your phone during a meal with others.",
+  "type": "approval_rating",
+  "low_label": "Not rude",
+  "high_label": "Rude"
+ },
+ {
+  "prompt": "If you could keep only one, which?",
+  "description": "You have to let the other two go.",
+  "type": "multiple_choice",
+  "options": [
+   "Your memories",
+   "Your future dreams",
+   "This present moment"
+  ]
+ },
+ {
+  "prompt": "A promise is a promise, no matter what.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Which animal would be the rudest if it could talk?",
+  "description": "Purely hypothetical grievances.",
+  "type": "multiple_choice",
+  "options": [
+   "Cats",
+   "Seagulls",
+   "Geese",
+   "Crows",
+   "Chimps"
+  ]
+ },
+ {
+  "prompt": "Everyone has a book in them.",
+  "type": "approval_rating",
+  "low_label": "Not everyone",
+  "high_label": "Everyone"
+ },
+ {
+  "prompt": "Would you rather be 10 minutes late or 20 minutes early?",
+  "type": "multiple_choice",
+  "options": [
+   "10 minutes late",
+   "20 minutes early"
+  ]
+ },
+ {
+  "prompt": "It's better to have loved and lost than never to have loved.",
+  "type": "approval_rating",
+  "low_label": "Better never",
+  "high_label": "Better to have"
+ },
+ {
+  "prompt": "If you had to eat one cuisine forever?",
+  "type": "multiple_choice",
+  "options": [
+   "Italian",
+   "Chinese",
+   "Mexican",
+   "Indian",
+   "Japanese"
+  ]
+ },
+ {
+  "prompt": "You should forgive but not forget.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Would you rather read minds or predict the future?",
+  "type": "multiple_choice",
+  "options": [
+   "Read minds",
+   "Predict the future"
+  ]
+ },
+ {
+  "prompt": "Small talk is worth it.",
+  "type": "approval_rating",
+  "low_label": "Not worth it",
+  "high_label": "Worth it"
+ },
+ {
+  "prompt": "Which fictional place would you visit?",
+  "type": "multiple_choice",
+  "options": [
+   "A wizard school",
+   "A galaxy far away",
+   "A hidden fantasy realm",
+   "A city of superheroes"
+  ]
+ },
+ {
+  "prompt": "It's okay to leave a party without saying goodbye.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "If you could have dinner with anyone?",
+  "type": "multiple_choice",
+  "options": [
+   "A historical figure",
+   "A future descendant",
+   "Your younger self",
+   "A total stranger"
+  ]
+ },
+ {
+  "prompt": "Handwritten letters are worth the effort.",
+  "type": "approval_rating",
+  "low_label": "Not worth it",
+  "high_label": "Worth it"
+ },
+ {
+  "prompt": "Would you rather never age or never get sick?",
+  "type": "multiple_choice",
+  "options": [
+   "Never age",
+   "Never get sick"
+  ]
+ },
+ {
+  "prompt": "You should follow your gut over the facts.",
+  "type": "approval_rating",
+  "low_label": "Follow the facts",
+  "high_label": "Follow your gut"
+ },
+ {
+  "prompt": "Would you rather explore the ocean or space?",
+  "type": "multiple_choice",
+  "options": [
+   "The ocean",
+   "Space"
+  ]
+ },
+ {
+  "prompt": "Being busy is a choice.",
+  "type": "approval_rating",
+  "low_label": "Not a choice",
+  "high_label": "A choice"
+ },
+ {
+  "prompt": "If you could freeze time, when would you use it?",
+  "type": "multiple_choice",
+  "options": [
+   "To catch up on sleep",
+   "To get ahead",
+   "To savor a moment",
+   "To avoid something"
+  ]
+ },
+ {
+  "prompt": "The early bird really does get the worm.",
+  "type": "approval_rating",
+  "low_label": "Sleep in",
+  "high_label": "Early bird wins"
+ },
+ {
+  "prompt": "Which would you rather have unlimited?",
+  "type": "multiple_choice",
+  "options": [
+   "Time",
+   "Money",
+   "Energy",
+   "Knowledge"
+  ]
+ },
+ {
+  "prompt": "It's fine to wear the same outfit two days in a row.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Would you rather know how you die or when?",
+  "description": "Choose carefully.",
+  "type": "multiple_choice",
+  "options": [
+   "How",
+   "When",
+   "Neither"
+  ]
+ },
+ {
+  "prompt": "You should keep your promises to yourself.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Pick your ideal home.",
+  "type": "multiple_choice",
+  "options": [
+   "City apartment",
+   "Suburban house",
+   "Countryside cottage",
+   "Cabin in the woods",
+   "Houseboat"
+  ]
+ },
+ {
+  "prompt": "Regret is a useful feeling.",
+  "type": "approval_rating",
+  "low_label": "Useless",
+  "high_label": "Useful"
+ },
+ {
+  "prompt": "Would you rather have a rewind or a pause button for life?",
+  "type": "multiple_choice",
+  "options": [
+   "Rewind",
+   "Pause"
+  ]
+ },
+ {
+  "prompt": "Everyone deserves a second chance.",
+  "description": "Everyone, or almost everyone?",
+  "type": "approval_rating",
+  "low_label": "Not everyone",
+  "high_label": "Everyone"
+ },
+ {
+  "prompt": "Fluent in any language overnight, which?",
+  "type": "multiple_choice",
+  "options": [
+   "Spanish",
+   "Mandarin",
+   "French",
+   "Sign language",
+   "Something ancient"
+  ]
+ },
+ {
+  "prompt": "It's okay to skip breakfast.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Which do you value most in a friend?",
+  "type": "multiple_choice",
+  "options": [
+   "Loyalty",
+   "Honesty",
+   "Humor",
+   "Reliability",
+   "Ambition"
+  ]
+ },
+ {
+  "prompt": "You can love someone and not like them.",
+  "type": "approval_rating",
+  "low_label": "You can't",
+  "high_label": "You can"
+ },
+ {
+  "prompt": "What makes a house feel like home?",
+  "type": "multiple_choice",
+  "options": [
+   "The people",
+   "The smell",
+   "The clutter",
+   "The quiet",
+   "The light"
+  ]
+ },
+ {
+  "prompt": "Most arguments aren't worth having.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What do you notice first about someone?",
+  "type": "multiple_choice",
+  "options": [
+   "Their eyes",
+   "Their smile",
+   "Their voice",
+   "Their vibe",
+   "Their shoes"
+  ]
+ },
+ {
+  "prompt": "A good apology never includes the word 'but'.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Best way to meet new people?",
+  "type": "multiple_choice",
+  "options": [
+   "Through friends",
+   "At work or school",
+   "Hobbies",
+   "Online",
+   "I'd rather not"
+  ]
+ },
+ {
+  "prompt": "You should travel alone at least once.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you feel about surprise parties?",
+  "type": "multiple_choice",
+  "options": [
+   "Love them",
+   "Hate them",
+   "Only for others",
+   "Depends who's throwing it"
+  ]
+ },
+ {
+  "prompt": "It's fine to have no close friends.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Best gift to give?",
+  "type": "multiple_choice",
+  "options": [
+   "Something handmade",
+   "Something practical",
+   "An experience",
+   "Money",
+   "Your time"
+  ]
+ },
+ {
+  "prompt": "Home is a place, not a feeling.",
+  "type": "approval_rating",
+  "low_label": "A feeling",
+  "high_label": "A place"
+ },
+ {
+  "prompt": "How do you apologize?",
+  "type": "multiple_choice",
+  "options": [
+   "Say it directly",
+   "A thoughtful gesture",
+   "Give them space",
+   "Act like it didn't happen"
+  ]
+ },
+ {
+  "prompt": "You should always keep the receipt.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Someone tells a story you've already heard. You?",
+  "type": "multiple_choice",
+  "options": [
+   "Let them finish",
+   "Say you've heard it",
+   "Pretend it's new",
+   "Finish it for them"
+  ]
+ },
+ {
+  "prompt": "Loneliness and being alone are different things.",
+  "type": "approval_rating",
+  "low_label": "The same thing",
+  "high_label": "Different things"
+ },
+ {
+  "prompt": "What's your love language?",
+  "type": "multiple_choice",
+  "options": [
+   "Words",
+   "Quality time",
+   "Gifts",
+   "Acts of service",
+   "Physical touch"
+  ]
+ },
+ {
+  "prompt": "It's okay to outgrow your friends.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you handle conflict?",
+  "type": "multiple_choice",
+  "options": [
+   "Address it head-on",
+   "Avoid it",
+   "Overthink it",
+   "Let it blow over"
+  ]
+ },
+ {
+  "prompt": "The middle seat should get both armrests.",
+  "description": "A ruling, please.",
+  "type": "approval_rating",
+  "low_label": "No armrests",
+  "high_label": "Both armrests"
+ },
+ {
+  "prompt": "What breaks the ice best?",
+  "type": "multiple_choice",
+  "options": [
+   "A joke",
+   "A compliment",
+   "A good question",
+   "Talking about the weather"
+  ]
+ },
+ {
+  "prompt": "You should learn a second language.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Worst way to be broken up with?",
+  "type": "multiple_choice",
+  "options": [
+   "A text",
+   "A phone call",
+   "In person",
+   "Ghosted",
+   "A friend tells you"
+  ]
+ },
+ {
+  "prompt": "It's rude to recline your seat on a plane.",
+  "type": "approval_rating",
+  "low_label": "Not rude",
+  "high_label": "Rude"
+ },
+ {
+  "prompt": "At a party where you know no one, you find the?",
+  "type": "multiple_choice",
+  "options": [
+   "Host",
+   "Pet",
+   "Snacks",
+   "Exit"
+  ]
+ },
+ {
+  "prompt": "Everyone is the main character of their own story.",
+  "description": "Including the people you barely notice.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How long do you wait to text back?",
+  "type": "multiple_choice",
+  "options": [
+   "Instantly",
+   "A few minutes",
+   "A few hours",
+   "Play it cool for a day"
+  ]
+ },
+ {
+  "prompt": "You should keep your options open.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Ideal group size for a dinner?",
+  "type": "multiple_choice",
+  "options": [
+   "Just two",
+   "Three or four",
+   "Five to eight",
+   "The more the merrier"
+  ]
+ },
+ {
+  "prompt": "Vacations are more stressful than relaxing.",
+  "type": "approval_rating",
+  "low_label": "More relaxing",
+  "high_label": "More stressful"
+ },
+ {
+  "prompt": "How do you remember names?",
+  "type": "multiple_choice",
+  "options": [
+   "Repeat it back",
+   "A mental trick",
+   "I don't, honestly",
+   "Write it down"
+  ]
+ },
+ {
+  "prompt": "It's okay to not have a life plan.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What's the best age to be?",
+  "type": "multiple_choice",
+  "options": [
+   "Childhood",
+   "Your teens",
+   "Your twenties",
+   "Your thirties",
+   "Older and wiser"
+  ]
+ },
+ {
+  "prompt": "Your name shapes who you become.",
+  "description": "For better or worse.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What would your younger self be most surprised by?",
+  "description": "If they could see you now.",
+  "type": "multiple_choice",
+  "options": [
+   "Where you live",
+   "Your work",
+   "Your friends",
+   "Who you became"
+  ]
+ },
+ {
+  "prompt": "You should trust people until they give you a reason not to.",
+  "type": "approval_rating",
+  "low_label": "Earn it first",
+  "high_label": "Trust first"
+ },
+ {
+  "prompt": "What do you want to be remembered for?",
+  "type": "multiple_choice",
+  "options": [
+   "Kindness",
+   "Achievements",
+   "Humor",
+   "Wisdom",
+   "Just being there"
+  ]
+ },
+ {
+  "prompt": "Being right is less important than being kind.",
+  "description": "When you can't be both.",
+  "type": "approval_rating",
+  "low_label": "Be right",
+  "high_label": "Be kind"
+ },
+ {
+  "prompt": "Do you think in words or pictures?",
+  "type": "multiple_choice",
+  "options": [
+   "Words",
+   "Pictures",
+   "Both at once",
+   "Honestly, neither"
+  ]
+ },
+ {
+  "prompt": "It's fine to cancel plans last minute if you're tired.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Hardest part of growing up?",
+  "type": "multiple_choice",
+  "options": [
+   "The responsibility",
+   "Losing touch with friends",
+   "Time speeding up",
+   "Making decisions"
+  ]
+ },
+ {
+  "prompt": "Everyone should keep a journal.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Which fear feels the most universal?",
+  "description": "The one nobody escapes.",
+  "type": "multiple_choice",
+  "options": [
+   "Being alone",
+   "Failing",
+   "The unknown",
+   "Being forgotten",
+   "Running out of time"
+  ]
+ },
+ {
+  "prompt": "You should say what you mean, even if it stings.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Where do you do your best thinking?",
+  "type": "multiple_choice",
+  "options": [
+   "In the shower",
+   "On a walk",
+   "In bed",
+   "While driving",
+   "Doing chores"
+  ]
+ },
+ {
+  "prompt": "The past is better left in the past.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What's your relationship with the past?",
+  "type": "multiple_choice",
+  "options": [
+   "I miss it",
+   "I've moved on",
+   "I try not to look back",
+   "It made me who I am"
+  ]
+ },
+ {
+  "prompt": "A good night's sleep fixes most problems.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What would you tell your future self?",
+  "type": "multiple_choice",
+  "options": [
+   "Slow down",
+   "Be brave",
+   "Don't worry so much",
+   "Enjoy it"
+  ]
+ },
+ {
+  "prompt": "You should never read someone's diary.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What matters most in a life?",
+  "description": "If you had to pick just one.",
+  "type": "multiple_choice",
+  "options": [
+   "Love",
+   "Purpose",
+   "Freedom",
+   "Comfort",
+   "Adventure"
+  ]
+ },
+ {
+  "prompt": "Comfort zones are underrated.",
+  "type": "approval_rating",
+  "low_label": "Overrated",
+  "high_label": "Underrated"
+ },
+ {
+  "prompt": "When you can't sleep, what's on your mind?",
+  "type": "multiple_choice",
+  "options": [
+   "The past",
+   "Tomorrow",
+   "Random worries",
+   "Nothing, just awake"
+  ]
+ },
+ {
+  "prompt": "It's fine to talk during a movie.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Best measure of a life well lived?",
+  "description": "How would you want it judged?",
+  "type": "multiple_choice",
+  "options": [
+   "The people who love you",
+   "What you built",
+   "How happy you were",
+   "The stories left behind"
+  ]
+ },
+ {
+  "prompt": "You should give up your seat for someone who needs it.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "If you could ask the universe one question?",
+  "type": "multiple_choice",
+  "options": [
+   "Are we alone?",
+   "What happens after?",
+   "Why are we here?",
+   "Is any of it planned?"
+  ]
+ },
+ {
+  "prompt": "Everyone is a little afraid of the dark.",
+  "type": "approval_rating",
+  "low_label": "Not everyone",
+  "high_label": "Everyone"
+ },
+ {
+  "prompt": "What's the most human trait?",
+  "description": "For better or worse.",
+  "type": "multiple_choice",
+  "options": [
+   "Curiosity",
+   "Kindness",
+   "Creativity",
+   "Cruelty",
+   "Hope"
+  ]
+ },
+ {
+  "prompt": "It's okay to not want kids.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Is time real or made up?",
+  "type": "multiple_choice",
+  "options": [
+   "Totally real",
+   "A human invention",
+   "A bit of both",
+   "Ask me later"
+  ]
+ },
+ {
+  "prompt": "You are your own harshest critic.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Which came first?",
+  "description": "The classic.",
+  "type": "multiple_choice",
+  "options": [
+   "The chicken",
+   "The egg",
+   "They arrived together",
+   "It's turtles all the way down"
+  ]
+ },
+ {
+  "prompt": "The window seat is the best seat.",
+  "type": "approval_rating",
+  "low_label": "Another seat",
+  "high_label": "Window seat"
+ },
+ {
+  "prompt": "What's the best invention ever?",
+  "type": "multiple_choice",
+  "options": [
+   "The wheel",
+   "Writing",
+   "Electricity",
+   "The internet",
+   "Air conditioning"
+  ]
+ },
+ {
+  "prompt": "You should keep your resolutions private.",
+  "type": "approval_rating",
+  "low_label": "Tell everyone",
+  "high_label": "Keep them quiet"
+ },
+ {
+  "prompt": "Most overrated technology?",
+  "type": "multiple_choice",
+  "options": [
+   "Smartwatches",
+   "Voice assistants",
+   "Social media",
+   "Self-checkout",
+   "Video calls"
+  ]
+ },
+ {
+  "prompt": "It's rude to show up empty-handed.",
+  "type": "approval_rating",
+  "low_label": "Not rude",
+  "high_label": "Rude"
+ },
+ {
+  "prompt": "How many browser tabs are open right now?",
+  "description": "Be honest.",
+  "type": "multiple_choice",
+  "options": [
+   "Just a few",
+   "Around ten",
+   "Dozens",
+   "I stopped counting"
+  ]
+ },
+ {
+  "prompt": "Deep down, everyone wants to be famous.",
+  "description": "Even the ones who deny it.",
+  "type": "approval_rating",
+  "low_label": "Not everyone",
+  "high_label": "Everyone"
+ },
+ {
+  "prompt": "How do you feel about voice assistants?",
+  "type": "multiple_choice",
+  "options": [
+   "Use them daily",
+   "Only sometimes",
+   "Don't trust them",
+   "Never use them"
+  ]
+ },
+ {
+  "prompt": "You should quit while you're ahead.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Where's your phone battery usually at?",
+  "type": "multiple_choice",
+  "options": [
+   "Fully charged",
+   "Around half",
+   "In the red",
+   "Always plugged in"
+  ]
+ },
+ {
+  "prompt": "It's okay to enjoy being alone on your birthday.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you feel about self-driving cars?",
+  "type": "multiple_choice",
+  "options": [
+   "Can't wait",
+   "Cautiously hopeful",
+   "No thanks",
+   "Only for other people"
+  ]
+ },
+ {
+  "prompt": "First love is the strongest.",
+  "type": "approval_rating",
+  "low_label": "A later love",
+  "high_label": "First love"
+ },
+ {
+  "prompt": "Worst part of modern phones?",
+  "type": "multiple_choice",
+  "options": [
+   "The distraction",
+   "The battery",
+   "The fragility",
+   "The price",
+   "Nothing, love them"
+  ]
+ },
+ {
+  "prompt": "You should always answer a call from family.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How often do you check your phone?",
+  "type": "multiple_choice",
+  "options": [
+   "Constantly",
+   "Every hour or so",
+   "A few times a day",
+   "Rarely"
+  ]
+ },
+ {
+  "prompt": "Boredom is good for you.",
+  "type": "approval_rating",
+  "low_label": "Bad for you",
+  "high_label": "Good for you"
+ },
+ {
+  "prompt": "What's the best use of AI?",
+  "type": "multiple_choice",
+  "options": [
+   "Answering questions",
+   "Making art",
+   "Doing chores",
+   "Keeping company",
+   "Still figuring it out"
+  ]
+ },
+ {
+  "prompt": "You should never go to bed angry.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you feel about apps tracking you?",
+  "type": "multiple_choice",
+  "options": [
+   "Don't mind",
+   "A little uneasy",
+   "Deeply bothered",
+   "I've given up"
+  ]
+ },
+ {
+  "prompt": "Everyone romanticizes the past.",
+  "type": "approval_rating",
+  "low_label": "Not everyone",
+  "high_label": "Everyone"
+ },
+ {
+  "prompt": "How's your screen time?",
+  "type": "multiple_choice",
+  "options": [
+   "Under control",
+   "More than I'd like",
+   "Please don't ask",
+   "No idea"
+  ]
+ },
+ {
+  "prompt": "It's okay to pretend you didn't see someone you know.",
+  "description": "The dreaded street-corner dodge.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Physical books or e-readers?",
+  "type": "multiple_choice",
+  "options": [
+   "Physical books",
+   "An e-reader",
+   "Audiobooks",
+   "A mix of all"
+  ]
+ },
+ {
+  "prompt": "A stranger's opinion matters less than a friend's.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you navigate a new city?",
+  "type": "multiple_choice",
+  "options": [
+   "Phone map",
+   "Paper map",
+   "Ask locals",
+   "Get lost on purpose"
+  ]
+ },
+ {
+  "prompt": "You should let a call go to voicemail if you're not ready.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Where do you keep your passwords?",
+  "type": "multiple_choice",
+  "options": [
+   "A manager app",
+   "In my memory",
+   "Written down",
+   "The same one everywhere"
+  ]
+ },
+ {
+  "prompt": "Overthinking has ruined more than it's saved.",
+  "type": "approval_rating",
+  "low_label": "Saved more",
+  "high_label": "Ruined more"
+ },
+ {
+  "prompt": "What's your notification style?",
+  "type": "multiple_choice",
+  "options": [
+   "All on",
+   "Only important ones",
+   "Mostly off",
+   "Do not disturb forever"
+  ]
+ },
+ {
+  "prompt": "It's fine to keep a mess as long as you know where things are.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What would you save first in a fire?",
+  "description": "People and pets are already out.",
+  "type": "multiple_choice",
+  "options": [
+   "Photos",
+   "A keepsake",
+   "Documents",
+   "My phone",
+   "Nothing, just run"
+  ]
+ },
+ {
+  "prompt": "You should always hear both sides before judging.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Win a fortune tomorrow. First move?",
+  "type": "multiple_choice",
+  "options": [
+   "Pay off debts",
+   "Travel",
+   "Buy a home",
+   "Give some away",
+   "Tell no one"
+  ]
+ },
+ {
+  "prompt": "Some people are just born lucky.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Stranded on an island, one item?",
+  "type": "multiple_choice",
+  "options": [
+   "A knife",
+   "A lighter",
+   "A good book",
+   "A friend",
+   "A satellite phone"
+  ]
+ },
+ {
+  "prompt": "It's okay to reread the same book many times.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "If you could relive one day, which kind?",
+  "type": "multiple_choice",
+  "options": [
+   "The happiest one",
+   "An ordinary one",
+   "One you'd change",
+   "Your first memory"
+  ]
+ },
+ {
+  "prompt": "You should keep a little mystery in every relationship.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "24 hours left. How do you spend it?",
+  "description": "You just found out this morning.",
+  "type": "multiple_choice",
+  "options": [
+   "With loved ones",
+   "On a bucket-list thing",
+   "In total peace",
+   "Eating everything"
+  ]
+ },
+ {
+  "prompt": "Your gut knows before your head does.",
+  "type": "approval_rating",
+  "low_label": "Head first",
+  "high_label": "Gut first"
+ },
+ {
+  "prompt": "You find a wallet full of cash. You?",
+  "description": "No one is watching.",
+  "type": "multiple_choice",
+  "options": [
+   "Return it all",
+   "Return it, keep nothing",
+   "Take a little",
+   "Keep it"
+  ]
+ },
+ {
+  "prompt": "It's rude to reply to a long message with just 'k'.",
+  "description": "One letter, so much weight.",
+  "type": "approval_rating",
+  "low_label": "Not rude",
+  "high_label": "Rude"
+ },
+ {
+  "prompt": "A genie grants three wishes. Your first?",
+  "description": "Choose the first one wisely.",
+  "type": "multiple_choice",
+  "options": [
+   "More wishes",
+   "Wealth",
+   "Health",
+   "Wisdom",
+   "World peace"
+  ]
+ },
+ {
+  "prompt": "Everyone should experience living alone at least once.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Swap lives for a day with?",
+  "type": "multiple_choice",
+  "options": [
+   "A celebrity",
+   "A stranger",
+   "A friend",
+   "An animal",
+   "No thanks"
+  ]
+ },
+ {
+  "prompt": "A good playlist can fix a bad day.",
+  "type": "approval_rating",
+  "low_label": "It can't",
+  "high_label": "It can"
+ },
+ {
+  "prompt": "You can teleport anywhere right now. Where?",
+  "type": "multiple_choice",
+  "options": [
+   "Home",
+   "A beach",
+   "A far-off city",
+   "Somewhere brand new",
+   "Into the past"
+  ]
+ },
+ {
+  "prompt": "It's okay to cry at a movie in a theater.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "If you could delete one thing from existence?",
+  "description": "Poof. Gone forever.",
+  "type": "multiple_choice",
+  "options": [
+   "Mosquitoes",
+   "Traffic",
+   "Small talk",
+   "Mondays",
+   "Nothing"
+  ]
+ },
+ {
+  "prompt": "You never really know anyone completely.",
+  "description": "Even the ones closest to you.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What would you do with an extra hour a day?",
+  "type": "multiple_choice",
+  "options": [
+   "Sleep",
+   "Exercise",
+   "A hobby",
+   "Nothing productive",
+   "More work"
+  ]
+ },
+ {
+  "prompt": "The grass is greener where you water it.",
+  "description": "Not on the other side.",
+  "type": "approval_rating",
+  "low_label": "On the other side",
+  "high_label": "Where you water it"
+ },
+ {
+  "prompt": "Give a talk tomorrow, on what?",
+  "type": "multiple_choice",
+  "options": [
+   "Something you love",
+   "Something you're good at",
+   "A wild opinion",
+   "I'd fake sick"
+  ]
+ },
+ {
+  "prompt": "It's fine to keep your camera off on video calls.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Any animal as a loyal companion?",
+  "type": "multiple_choice",
+  "options": [
+   "A dog",
+   "A big cat",
+   "A dragon",
+   "An owl",
+   "A dolphin"
+  ]
+ },
+ {
+  "prompt": "You should say yes more than you say no.",
+  "type": "approval_rating",
+  "low_label": "Say no more",
+  "high_label": "Say yes more"
+ },
+ {
+  "prompt": "If money didn't exist, what would you do all day?",
+  "type": "multiple_choice",
+  "options": [
+   "Create",
+   "Explore",
+   "Help others",
+   "Rest",
+   "The same as now"
+  ]
+ },
+ {
+  "prompt": "Everyone has a price.",
+  "type": "approval_rating",
+  "low_label": "Not everyone",
+  "high_label": "Everyone"
+ },
+ {
+  "prompt": "Which small win makes your whole day?",
+  "description": "Small, but it counts.",
+  "type": "multiple_choice",
+  "options": [
+   "A green-light streak",
+   "The perfect parking spot",
+   "Found forgotten cash",
+   "A short line"
+  ]
+ },
+ {
+  "prompt": "Shoes should come off at the front door.",
+  "type": "approval_rating",
+  "low_label": "Keep them on",
+  "high_label": "Shoes off"
+ },
+ {
+  "prompt": "What's the best sound?",
+  "type": "multiple_choice",
+  "options": [
+   "Rain on a window",
+   "Waves",
+   "Laughter",
+   "Silence",
+   "A favorite song"
+  ]
+ },
+ {
+  "prompt": "You should sleep on big decisions.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What's the best smell?",
+  "type": "multiple_choice",
+  "options": [
+   "Fresh bread",
+   "Rain on pavement",
+   "Coffee",
+   "Cut grass",
+   "Old books"
+  ]
+ },
+ {
+  "prompt": "Arriving ten minutes late to a casual meetup is fine.",
+  "type": "approval_rating",
+  "low_label": "Not fine",
+  "high_label": "Fine"
+ },
+ {
+  "prompt": "Most satisfying thing to do?",
+  "description": "The tiny, pointless joys.",
+  "type": "multiple_choice",
+  "options": [
+   "Pop bubble wrap",
+   "Peel a sticker clean",
+   "Crack your knuckles",
+   "Organize a drawer"
+  ]
+ },
+ {
+  "prompt": "It's fine to eat the same meal every day.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Worst small inconvenience?",
+  "description": "The paper cuts of daily life.",
+  "type": "multiple_choice",
+  "options": [
+   "A phone at 1%",
+   "A slow walker ahead",
+   "A wobbly table",
+   "An itchy tag",
+   "A tangled cord"
+  ]
+ },
+ {
+  "prompt": "You should let people change your mind.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What's your comfort rewatch?",
+  "type": "multiple_choice",
+  "options": [
+   "A sitcom",
+   "A childhood movie",
+   "A cooking show",
+   "A nature documentary",
+   "Always something new"
+  ]
+ },
+ {
+  "prompt": "Most people are lonelier than they let on.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you feel about mornings?",
+  "type": "multiple_choice",
+  "options": [
+   "Love them",
+   "Tolerate them",
+   "Dread them",
+   "Never seen one"
+  ]
+ },
+ {
+  "prompt": "You should tip for a takeaway coffee.",
+  "type": "approval_rating",
+  "low_label": "No tip",
+  "high_label": "Tip"
+ },
+ {
+  "prompt": "What's the ideal weekend?",
+  "type": "multiple_choice",
+  "options": [
+   "Packed with plans",
+   "Totally free",
+   "A mix of both",
+   "Same as any day"
+  ]
+ },
+ {
+  "prompt": "Leaving a party without saying goodbye is perfectly fine.",
+  "description": "The Irish exit.",
+  "type": "approval_rating",
+  "low_label": "Not fine",
+  "high_label": "Perfectly fine"
+ },
+ {
+  "prompt": "Your default mode at a party?",
+  "type": "multiple_choice",
+  "options": [
+   "The life of it",
+   "Happily chatting",
+   "In the corner",
+   "Ready to leave"
+  ]
+ },
+ {
+  "prompt": "You should tell people how you really feel more often.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Best way to unwind after a hard day?",
+  "type": "multiple_choice",
+  "options": [
+   "A long shower",
+   "A good meal",
+   "A screen",
+   "A workout",
+   "Straight to bed"
+  ]
+ },
+ {
+  "prompt": "Everyone is faking it a little.",
+  "description": "Some of us more than others.",
+  "type": "approval_rating",
+  "low_label": "Not everyone",
+  "high_label": "Everyone"
+ },
+ {
+  "prompt": "What's your junk-drawer situation?",
+  "type": "multiple_choice",
+  "options": [
+   "One tidy drawer",
+   "Several of them",
+   "Every drawer",
+   "No junk, ever"
+  ]
+ },
+ {
+  "prompt": "It's fine to eat a full meal on public transport.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you feel about karaoke?",
+  "type": "multiple_choice",
+  "options": [
+   "Front and center",
+   "Only in a group",
+   "Only if forced",
+   "Never, ever"
+  ]
+ },
+ {
+  "prompt": "You should keep the last slice for someone else.",
+  "type": "approval_rating",
+  "low_label": "Take it",
+  "high_label": "Leave it"
+ },
+ {
+  "prompt": "Best midnight snack?",
+  "type": "multiple_choice",
+  "options": [
+   "Something sweet",
+   "Something salty",
+   "Leftovers",
+   "Cereal",
+   "I just sleep"
+  ]
+ },
+ {
+  "prompt": "Silence in a friendship can be comfortable.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What's your dancing style?",
+  "type": "multiple_choice",
+  "options": [
+   "All in",
+   "A little sway",
+   "Only in the dark",
+   "I don't dance"
+  ]
+ },
+ {
+  "prompt": "It's rude to play music out loud in public without headphones.",
+  "type": "approval_rating",
+  "low_label": "Not rude",
+  "high_label": "Rude"
+ },
+ {
+  "prompt": "How do you feel about board games?",
+  "type": "multiple_choice",
+  "options": [
+   "Love them",
+   "Depends on the group",
+   "Too competitive",
+   "Rather not"
+  ]
+ },
+ {
+  "prompt": "You should always keep a book within reach.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What kind of traveler are you?",
+  "type": "multiple_choice",
+  "options": [
+   "Plan every hour",
+   "A loose plan",
+   "Wing it entirely",
+   "I'd rather stay home"
+  ]
+ },
+ {
+  "prompt": "The best conversations happen after midnight.",
+  "type": "approval_rating",
+  "low_label": "Before midnight",
+  "high_label": "After midnight"
+ },
+ {
+  "prompt": "Best part of a trip?",
+  "type": "multiple_choice",
+  "options": [
+   "The planning",
+   "The journey",
+   "Being there",
+   "Coming home"
+  ]
+ },
+ {
+  "prompt": "You should always bring something when invited to someone's home.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What souvenir do you bring back?",
+  "type": "multiple_choice",
+  "options": [
+   "A fridge magnet",
+   "Local food",
+   "Just photos",
+   "Nothing",
+   "Something useful"
+  ]
+ },
+ {
+  "prompt": "Reclining your seat on a plane is your right.",
+  "description": "The button is right there.",
+  "type": "approval_rating",
+  "low_label": "Not your right",
+  "high_label": "Your right"
+ },
+ {
+  "prompt": "How do you pack for a trip?",
+  "type": "multiple_choice",
+  "options": [
+   "Weeks ahead",
+   "A few days before",
+   "The night before",
+   "At the last minute"
+  ]
+ },
+ {
+  "prompt": "Everyone secretly likes a compliment they didn't earn.",
+  "type": "approval_rating",
+  "low_label": "Not everyone",
+  "high_label": "Everyone"
+ },
+ {
+  "prompt": "Ideal vacation pace?",
+  "type": "multiple_choice",
+  "options": [
+   "See everything",
+   "A nice balance",
+   "Do nothing",
+   "Whatever happens"
+  ]
+ },
+ {
+  "prompt": "It's fine to keep to yourself at a party.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Road trip or flight?",
+  "type": "multiple_choice",
+  "options": [
+   "Road trip",
+   "Flight",
+   "Train",
+   "Depends on the distance"
+  ]
+ },
+ {
+  "prompt": "You should always taste your food before adding salt.",
+  "type": "approval_rating",
+  "low_label": "Salt first",
+  "high_label": "Taste first"
+ },
+ {
+  "prompt": "Worst part of travel?",
+  "type": "multiple_choice",
+  "options": [
+   "The airport",
+   "The packing",
+   "The jet lag",
+   "The cost",
+   "Getting home"
+  ]
+ },
+ {
+  "prompt": "You should stand on the right so people can pass on an escalator.",
+  "description": "Walk left, stand right.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Best travel companion?",
+  "type": "multiple_choice",
+  "options": [
+   "A partner",
+   "A best friend",
+   "Family",
+   "A small group",
+   "Just me"
+  ]
+ },
+ {
+  "prompt": "It's okay to keep old text messages forever.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you handle the bill at a restaurant?",
+  "type": "multiple_choice",
+  "options": [
+   "Split it evenly",
+   "I'll get this one",
+   "Separate checks",
+   "Fight for it"
+  ]
+ },
+ {
+  "prompt": "You should protect your mornings.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How does your group decide where to eat?",
+  "type": "multiple_choice",
+  "options": [
+   "I pick",
+   "We vote",
+   "Endless 'I don't know'",
+   "Whoever's loudest"
+  ]
+ },
+ {
+  "prompt": "Nobody is completely honest on a first date.",
+  "description": "Not even a little?",
+  "type": "approval_rating",
+  "low_label": "Some are",
+  "high_label": "Nobody is"
+ },
+ {
+  "prompt": "Best part of a meal?",
+  "type": "multiple_choice",
+  "options": [
+   "The first bite",
+   "The main event",
+   "Dessert",
+   "The company"
+  ]
+ },
+ {
+  "prompt": "It's fine to wear pajamas all day.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you feel about leftovers?",
+  "type": "multiple_choice",
+  "options": [
+   "Better the next day",
+   "Only some foods",
+   "Never touch them",
+   "I never have any"
+  ]
+ },
+ {
+  "prompt": "You should thank the driver when you get off the bus.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What's your grocery-shopping style?",
+  "type": "multiple_choice",
+  "options": [
+   "A strict list",
+   "A loose idea",
+   "Pure vibes",
+   "Whatever's on sale"
+  ]
+ },
+ {
+  "prompt": "Sending a voice message instead of typing is considerate.",
+  "type": "approval_rating",
+  "low_label": "Just type",
+  "high_label": "Considerate"
+ },
+ {
+  "prompt": "How do you cook?",
+  "type": "multiple_choice",
+  "options": [
+   "Follow the recipe",
+   "Recipe as a guide",
+   "Total improvisation",
+   "I don't cook"
+  ]
+ },
+ {
+  "prompt": "It's fine to reply to work messages after hours.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Hardest food to eat politely?",
+  "description": "On a first date, specifically.",
+  "type": "multiple_choice",
+  "options": [
+   "Spaghetti",
+   "Ribs",
+   "A tall burger",
+   "Soup",
+   "Nachos"
+  ]
+ },
+ {
+  "prompt": "You should always let someone merge in traffic.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What do you do with the last bite?",
+  "type": "multiple_choice",
+  "options": [
+   "Savor it",
+   "Offer it away",
+   "Eat it fast",
+   "Leave it behind"
+  ]
+ },
+ {
+  "prompt": "Being underestimated is an advantage.",
+  "type": "approval_rating",
+  "low_label": "A drawback",
+  "high_label": "An advantage"
+ },
+ {
+  "prompt": "Sweet or savory breakfast?",
+  "type": "multiple_choice",
+  "options": [
+   "Sweet",
+   "Savory",
+   "Both",
+   "Just coffee"
+  ]
+ },
+ {
+  "prompt": "It's fine to keep a secret talent hidden.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you feel about food touching on a plate?",
+  "description": "Some people build walls.",
+  "type": "multiple_choice",
+  "options": [
+   "Totally fine",
+   "Prefer it separate",
+   "It must not touch",
+   "Mix it all together"
+  ]
+ },
+ {
+  "prompt": "You should call more than you text.",
+  "type": "approval_rating",
+  "low_label": "Text more",
+  "high_label": "Call more"
+ },
+ {
+  "prompt": "Best kind of restaurant?",
+  "type": "multiple_choice",
+  "options": [
+   "A cozy hole-in-the-wall",
+   "A lively spot",
+   "Fine dining",
+   "A reliable chain",
+   "Home is best"
+  ]
+ },
+ {
+  "prompt": "You should learn some of the local language before visiting a country.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Which chore do you secretly enjoy?",
+  "description": "Come on, there's one.",
+  "type": "multiple_choice",
+  "options": [
+   "Vacuuming",
+   "Folding laundry",
+   "Washing dishes",
+   "Organizing",
+   "None of them"
+  ]
+ },
+ {
+  "prompt": "Haggling over a price is just part of shopping.",
+  "type": "approval_rating",
+  "low_label": "Pay the price",
+  "high_label": "Part of shopping"
+ },
+ {
+  "prompt": "How do you make a big decision?",
+  "description": "Your real method, not the ideal one.",
+  "type": "multiple_choice",
+  "options": [
+   "A pros and cons list",
+   "Gut feeling",
+   "Ask everyone",
+   "Sleep on it",
+   "Flip a coin"
+  ]
+ },
+ {
+  "prompt": "It's rude to arrive to a dinner exactly on time.",
+  "description": "In some places, on time is early.",
+  "type": "approval_rating",
+  "low_label": "Not rude",
+  "high_label": "Rude"
+ },
+ {
+  "prompt": "What's your relationship with clutter?",
+  "type": "multiple_choice",
+  "options": [
+   "Spotless",
+   "Organized chaos",
+   "A work in progress",
+   "I've made peace"
+  ]
+ },
+ {
+  "prompt": "You should learn to be alone before you commit to someone.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you feel about being the center of attention?",
+  "type": "multiple_choice",
+  "options": [
+   "Love it",
+   "Fine in small doses",
+   "Deeply uncomfortable",
+   "Depends on the crowd"
+  ]
+ },
+ {
+  "prompt": "Splitting the bill evenly is the fairest way.",
+  "type": "approval_rating",
+  "low_label": "Pay your own",
+  "high_label": "Split evenly"
+ },
+ {
+  "prompt": "Your default answer to 'how are you'?",
+  "description": "Be honest about your honesty.",
+  "type": "multiple_choice",
+  "options": [
+   "Good, you?",
+   "An honest answer",
+   "So busy",
+   "A little joke"
+  ]
+ },
+ {
+  "prompt": "Cancelling plans by text at the last minute is acceptable.",
+  "type": "approval_rating",
+  "low_label": "Not acceptable",
+  "high_label": "Acceptable"
+ },
+ {
+  "prompt": "When you're stressed, you?",
+  "type": "multiple_choice",
+  "options": [
+   "Talk it out",
+   "Go quiet",
+   "Distract yourself",
+   "Power through",
+   "Clean everything"
+  ]
+ },
+ {
+  "prompt": "You should call your parents at least once a week.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What kind of listener are you?",
+  "description": "When someone's really talking.",
+  "type": "multiple_choice",
+  "options": [
+   "Full attention",
+   "Offer solutions",
+   "Share a similar story",
+   "Distracted, honestly"
+  ]
+ },
+ {
+  "prompt": "It's fine to talk to your plants.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you take a compliment?",
+  "type": "multiple_choice",
+  "options": [
+   "Say thanks",
+   "Deflect it",
+   "Return it",
+   "Get awkward"
+  ]
+ },
+ {
+  "prompt": "The perfect day would be spent doing nothing.",
+  "type": "approval_rating",
+  "low_label": "Doing something",
+  "high_label": "Doing nothing"
+ },
+ {
+  "prompt": "Your biggest time-waster?",
+  "type": "multiple_choice",
+  "options": [
+   "Scrolling",
+   "TV",
+   "Overthinking",
+   "Naps",
+   "Games"
+  ]
+ },
+ {
+  "prompt": "It's okay to reinvent yourself completely.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you feel about being wrong?",
+  "description": "In the moment it happens.",
+  "type": "multiple_choice",
+  "options": [
+   "Own it fast",
+   "Take a moment",
+   "Argue first",
+   "Quietly move on"
+  ]
+ },
+ {
+  "prompt": "It's okay to ask someone how much they earn.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What motivates you most?",
+  "type": "multiple_choice",
+  "options": [
+   "Fear of failing",
+   "Making others proud",
+   "Personal growth",
+   "Rewards",
+   "Pure curiosity"
+  ]
+ },
+ {
+  "prompt": "Memories are more valuable than photographs.",
+  "description": "The felt over the filed.",
+  "type": "approval_rating",
+  "low_label": "Photographs",
+  "high_label": "Memories"
+ },
+ {
+  "prompt": "How do you recharge?",
+  "type": "multiple_choice",
+  "options": [
+   "Alone time",
+   "Time with people",
+   "Sleep",
+   "A change of scene",
+   "Doing nothing"
+  ]
+ },
+ {
+  "prompt": "It's fine to skip the small talk and go straight to the deep stuff.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Your morning-alarm reality?",
+  "type": "multiple_choice",
+  "options": [
+   "Up on the first ring",
+   "One or two snoozes",
+   "A dozen snoozes",
+   "No alarm needed"
+  ]
+ },
+ {
+  "prompt": "Taking a phone call on speaker in public is rude.",
+  "type": "approval_rating",
+  "low_label": "Not rude",
+  "high_label": "Rude"
+ },
+ {
+  "prompt": "Which do you trust more?",
+  "description": "When they disagree with each other.",
+  "type": "multiple_choice",
+  "options": [
+   "Your head",
+   "Your heart",
+   "Your gut",
+   "A coin flip"
+  ]
+ },
+ {
+  "prompt": "A hug is a normal greeting for someone you just met.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Best kind of Saturday night?",
+  "type": "multiple_choice",
+  "options": [
+   "Out on the town",
+   "Dinner with friends",
+   "A cozy night in",
+   "Whatever comes up"
+  ]
+ },
+ {
+  "prompt": "You should let yourself be a beginner at something new.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you keep in touch with old friends?",
+  "type": "multiple_choice",
+  "options": [
+   "Regular calls",
+   "Occasional texts",
+   "Only when we cross paths",
+   "We just pick back up"
+  ]
+ },
+ {
+  "prompt": "You should always finish a drink your host poured you.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Hardest word to say?",
+  "description": "Out loud, and meaning it.",
+  "type": "multiple_choice",
+  "options": [
+   "Sorry",
+   "Goodbye",
+   "No",
+   "I love you",
+   "Help"
+  ]
+ },
+ {
+  "prompt": "It's okay to have a favorite sibling.",
+  "description": "You don't have to name them.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Your default gift-wrapping?",
+  "type": "multiple_choice",
+  "options": [
+   "Neatly wrapped",
+   "A gift bag",
+   "A little messy",
+   "Just handed over"
+  ]
+ },
+ {
+  "prompt": "You should always finish what's on your plate.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you feel about small talk with strangers?",
+  "type": "multiple_choice",
+  "options": [
+   "Enjoy it",
+   "Tolerate it",
+   "Avoid it",
+   "Depends on my mood"
+  ]
+ },
+ {
+  "prompt": "A little bit of jealousy is healthy in a relationship.",
+  "description": "A little. No more.",
+  "type": "approval_rating",
+  "low_label": "Unhealthy",
+  "high_label": "Healthy"
+ },
+ {
+  "prompt": "What kind of note-taker are you?",
+  "type": "multiple_choice",
+  "options": [
+   "Neat and color-coded",
+   "Messy but useful",
+   "All in my head",
+   "Sticky notes everywhere"
+  ]
+ },
+ {
+  "prompt": "It's fine to keep your goals to yourself until they happen.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "A song you love comes on. You?",
+  "type": "multiple_choice",
+  "options": [
+   "Sing along",
+   "Turn it up",
+   "Quiet appreciation",
+   "Save it for later"
+  ]
+ },
+ {
+  "prompt": "You should walk on the outside of the sidewalk.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What's your umbrella policy?",
+  "type": "multiple_choice",
+  "options": [
+   "Always carry one",
+   "Only if rain's certain",
+   "Just get wet",
+   "Hood up, keep moving"
+  ]
+ },
+ {
+  "prompt": "Being the youngest in the room is a good feeling.",
+  "type": "approval_rating",
+  "low_label": "Bad feeling",
+  "high_label": "Good feeling"
+ },
+ {
+  "prompt": "How do you feel about change?",
+  "type": "multiple_choice",
+  "options": [
+   "I chase it",
+   "I adapt",
+   "I resist it",
+   "It depends"
+  ]
+ },
+ {
+  "prompt": "You should take your hat off indoors.",
+  "type": "approval_rating",
+  "low_label": "Hat stays on",
+  "high_label": "Hat comes off"
+ },
+ {
+  "prompt": "Best thing to do on a rainy day?",
+  "type": "multiple_choice",
+  "options": [
+   "Read",
+   "Nap",
+   "Watch films",
+   "Go out in it",
+   "Deep-clean"
+  ]
+ },
+ {
+  "prompt": "You should always give a stranger the benefit of the doubt.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you eat a chocolate bar with segments?",
+  "type": "multiple_choice",
+  "options": [
+   "Break off pieces",
+   "Bite straight in",
+   "Let it melt",
+   "Snap a whole row"
+  ]
+ },
+ {
+  "prompt": "Doing nothing on purpose is a skill worth having.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Correct way to hang toilet paper?",
+  "description": "There is a correct answer.",
+  "type": "multiple_choice",
+  "options": [
+   "Over",
+   "Under",
+   "I truly don't care"
+  ]
+ },
+ {
+  "prompt": "It's fine to keep a bit of chaos in your life.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "What's the first thing you do when you wake up?",
+  "type": "multiple_choice",
+  "options": [
+   "Check my phone",
+   "Stretch",
+   "Hit snooze",
+   "Lie there a while"
+  ]
+ },
+ {
+  "prompt": "Leaving someone \"on read\" is rude.",
+  "type": "approval_rating",
+  "low_label": "Not rude",
+  "high_label": "Rude"
+ },
+ {
+  "prompt": "How do you feel about spoilers?",
+  "type": "multiple_choice",
+  "options": [
+   "Ruins everything",
+   "I don't mind",
+   "I seek them out",
+   "Only for bad shows"
+  ]
+ },
+ {
+  "prompt": "Everyone would time-travel to the past if they could.",
+  "description": "If the button existed.",
+  "type": "approval_rating",
+  "low_label": "Not everyone",
+  "high_label": "Everyone"
+ },
+ {
+  "prompt": "What kind of texter are you?",
+  "type": "multiple_choice",
+  "options": [
+   "Instant replies",
+   "A few times a day",
+   "Days later",
+   "Call me instead"
+  ]
+ },
+ {
+  "prompt": "It's okay to root for the villain sometimes.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "How do you eat popcorn?",
+  "description": "At the cinema, in the dark.",
+  "type": "multiple_choice",
+  "options": [
+   "A handful at a time",
+   "One piece at a time",
+   "Tip the bag back",
+   "Share the bowl"
+  ]
+ },
+ {
+  "prompt": "You should always give the window seat to a kid.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Which is worse?",
+  "description": "Modern suffering, ranked.",
+  "type": "multiple_choice",
+  "options": [
+   "A slow internet connection",
+   "A low battery",
+   "No signal",
+   "A cracked screen"
+  ]
+ },
+ {
+  "prompt": "A birthday is worth making a fuss over.",
+  "type": "approval_rating",
+  "low_label": "Not worth it",
+  "high_label": "Worth the fuss"
+ },
+ {
+  "prompt": "How do you feel about your handwriting?",
+  "type": "multiple_choice",
+  "options": [
+   "Rather proud",
+   "It's fine",
+   "Barely legible",
+   "I've forgotten how"
+  ]
+ },
+ {
+  "prompt": "It's fine to keep a friendship that only exists online.",
+  "type": "approval_rating",
+  "low_label": "Disagree",
+  "high_label": "Agree"
+ },
+ {
+  "prompt": "Best way to fall asleep?",
+  "type": "multiple_choice",
+  "options": [
+   "Total silence",
+   "Some background noise",
+   "A podcast or show",
+   "Only if exhausted"
+  ]
+ }
+]

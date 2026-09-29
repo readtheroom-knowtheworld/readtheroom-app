@@ -11,6 +11,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import '../screens/answer_approval_screen.dart';
+import '../utils/supabase_config.dart';
 import '../screens/answer_multiple_choice_screen.dart';
 import 'watchlist_service.dart';
 import '../screens/answer_text_screen.dart';
@@ -21,28 +22,31 @@ import '../widgets/authentication_dialog.dart';
 import '../services/location_service.dart';
 import '../services/guest_user_tracking_service.dart';
 import '../data/countries_data.dart';
-import '../utils/db_schema_check.dart';
+import '../utils/approval_labels.dart';
+import '../utils/archive_logic.dart';
 import 'package:provider/provider.dart';
 import 'dart:math' as Math;
 import '../services/user_service.dart';
 import '../services/notification_service.dart';
+import '../services/analytics_service.dart';
 import '../services/achievement_service.dart';
 import '../services/congratulations_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../widgets/notification_permission_dialog.dart';
 import '../models/category.dart';
+import '../models/question_results.dart';
+import 'network_service.dart';
+import 'results_service.dart';
 import '../screens/answer_approval_screen.dart';
 import '../screens/answer_multiple_choice_screen.dart';
 import '../screens/answer_text_screen.dart';
 import '../screens/text_results_screen.dart';
 import '../screens/multiple_choice_results_screen.dart';
-import 'room_sharing_service.dart';
-import 'room_service.dart';
 import '../screens/approval_results_screen.dart';
 import '../services/user_service.dart';
 import '../services/location_service.dart';
 import '../services/request_deduplication_service.dart';
-import '../utils/seed_data.dart';
+import '../services/nomination_result.dart';
 
 /// **QuestionService - Optimized Feed Architecture**
 /// 
@@ -68,8 +72,14 @@ class QuestionService extends ChangeNotifier {
   factory QuestionService() => _instance ??= QuestionService._internal();
   
   final _supabase = Supabase.instance.client;
-  late final SupabaseClient _serviceClient;
-  final _roomSharingService = RoomSharingService();
+  /// Every read of answer data goes through here. `responses` is write-only
+  /// for clients since the answers read lockdown (2026-09-22) — this service
+  /// still INSERTs into it, and never selects from it.
+  final _resultsService = ResultsService();
+  /// The network surface. Used on the write path only to remember what the
+  /// answer was filed with, so the results screen's un-share toggle opens in
+  /// the state the user chose.
+  final _networkService = NetworkService.shared();
   List<Map<String, dynamic>> _questions = [];
   bool _isLoading = false;
   Map<String, dynamic>? _questionOfTheDay;
@@ -113,8 +123,8 @@ class QuestionService extends ChangeNotifier {
   
   // Cache for NSFW fallback question to avoid repeated API calls
   Map<String, dynamic>? _nsfwFallbackQuestion;
+  // Day-stamp: a chosen fallback is pinned until the calendar day changes.
   DateTime? _nsfwFallbackCacheTime;
-  static const Duration _nsfwFallbackCacheDuration = Duration(hours: 1);
   
   Map<String, dynamic>? get questionOfTheDay {
     // If we don't have a QotD, return null
@@ -134,32 +144,43 @@ class QuestionService extends ChangeNotifier {
     return _questionOfTheDay;
   }
   
-  // Enhanced method that handles NSFW filtering
-  Future<Map<String, dynamic>?> getQuestionOfTheDay({bool showNSFW = true}) async {
+  // Enhanced method that handles NSFW filtering.
+  //
+  // [hasAnswered] (optional) lets the fallback skip questions the caller has
+  // already answered, so a non-NSFW user still gets a fresh question to
+  // answer on NSFW-QOTD days. The chosen fallback is pinned for the calendar
+  // day — answering it must flip the home to the answered card, not surface
+  // yet another question.
+  Future<Map<String, dynamic>?> getQuestionOfTheDay({
+    bool showNSFW = true,
+    bool Function(String questionId)? hasAnswered,
+  }) async {
     // Get the base question of the day
     final baseQotd = questionOfTheDay;
     if (baseQotd == null) return null;
-    
+
     // Check if current QotD is NSFW and user doesn't want NSFW content
     final isNSFW = baseQotd['nsfw'] == true || baseQotd['is_nsfw'] == true;
-    
+
     if (isNSFW && !showNSFW) {
       print('Current QotD is NSFW but user has NSFW disabled, fetching trending fallback...');
-      
-      // Check if we have a cached fallback that's still valid
+
+      // A fallback chosen earlier today stays the day's question.
       final now = DateTime.now();
-      if (_nsfwFallbackQuestion != null && 
-          _nsfwFallbackCacheTime != null && 
-          now.difference(_nsfwFallbackCacheTime!) < _nsfwFallbackCacheDuration) {
-        print('Using cached NSFW fallback question');
+      if (_nsfwFallbackQuestion != null &&
+          _nsfwFallbackCacheTime != null &&
+          _isSameCalendarDay(_nsfwFallbackCacheTime!, now)) {
+        print('Using today\'s cached NSFW fallback question');
         return _nsfwFallbackQuestion;
       }
-      
+
       try {
-        // Get the top trending non-NSFW global question as fallback
-        final fallbackQuestion = await _getTrendingNonNSFWFallback();
+        // Get the highest trending non-NSFW question the user hasn't
+        // answered yet as the fallback
+        final fallbackQuestion =
+            await _getTrendingNonNSFWFallback(hasAnswered: hasAnswered);
         if (fallbackQuestion != null) {
-          // Cache the fallback
+          // Cache the fallback for the rest of the day
           _nsfwFallbackQuestion = fallbackQuestion;
           _nsfwFallbackCacheTime = now;
           print('Using trending non-NSFW question as QotD fallback: ${fallbackQuestion['prompt']}');
@@ -173,53 +194,76 @@ class QuestionService extends ChangeNotifier {
         return null;
       }
     }
-    
+
     return baseQotd;
   }
-  
-  // Get the top trending non-NSFW global question as fallback
-  Future<Map<String, dynamic>?> _getTrendingNonNSFWFallback() async {
+
+  static bool _isSameCalendarDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  // Get the highest trending non-NSFW question as fallback. Preference order:
+  // unanswered global → unanswered any-targeting → answered (grace: better an
+  // already-answered card than no question at all).
+  Future<Map<String, dynamic>?> _getTrendingNonNSFWFallback({
+    bool Function(String questionId)? hasAnswered,
+  }) async {
     try {
-      print('Fetching top trending non-NSFW global question as QotD fallback...');
-      
+      print('Fetching top trending non-NSFW question as QotD fallback...');
+
       // Use the optimized feed to get trending questions
       final trendingQuestions = await fetchOptimizedFeed(
         feedType: 'trending',
-        limit: 10, // Get top 10 to have options
+        limit: 20, // Enough headroom to find an unanswered one
         filters: {
           'showNSFW': false, // Explicitly exclude NSFW
-          'questionTypes': ['approval_rating', 'multiple_choice', 'text'], // All types
         },
         useCache: false, // Get fresh data for fallback
       );
-      
+
       if (trendingQuestions.isEmpty) {
         print('No trending questions found for NSFW fallback');
         return null;
       }
-      
-      // Find the first global (not city/country targeted) question
-      for (var question in trendingQuestions) {
-        final targeting = question['targeting_type']?.toString().toLowerCase();
-        if (targeting == 'globe' || targeting == 'global' || targeting == null) {
-          // Make sure it's not NSFW
-          final isNSFW = question['nsfw'] == true || question['is_nsfw'] == true;
-          if (!isNSFW) {
-            print('Selected trending non-NSFW global question as fallback: ${question['prompt']}');
-            return question;
-          }
-        }
+
+      final nonNsfw = trendingQuestions.where((q) {
+        return q['nsfw'] != true && q['is_nsfw'] != true;
+      }).toList();
+
+      bool isGlobal(Map<String, dynamic> q) {
+        final targeting = q['targeting_type']?.toString().toLowerCase();
+        return targeting == 'globe' || targeting == 'global' || targeting == null;
       }
-      
-      // If no global questions found, use the first non-NSFW question regardless of targeting
-      for (var question in trendingQuestions) {
-        final isNSFW = question['nsfw'] == true || question['is_nsfw'] == true;
-        if (!isNSFW) {
-          print('Selected trending non-NSFW question (any targeting) as fallback: ${question['prompt']}');
+
+      bool unanswered(Map<String, dynamic> q) {
+        if (hasAnswered == null) return true;
+        final id = q['id']?.toString();
+        return id == null || !hasAnswered(id);
+      }
+
+      for (final question in nonNsfw) {
+        if (isGlobal(question) && unanswered(question)) {
+          print('Selected unanswered trending non-NSFW global question as fallback: ${question['prompt']}');
           return question;
         }
       }
-      
+      for (final question in nonNsfw) {
+        if (unanswered(question)) {
+          print('Selected unanswered trending non-NSFW question (any targeting) as fallback: ${question['prompt']}');
+          return question;
+        }
+      }
+      // Everything trending is already answered — degrade to the old rule.
+      for (final question in nonNsfw) {
+        if (isGlobal(question)) {
+          print('All trending answered; using top non-NSFW global question as fallback: ${question['prompt']}');
+          return question;
+        }
+      }
+      if (nonNsfw.isNotEmpty) {
+        print('All trending answered; using top non-NSFW question as fallback: ${nonNsfw.first['prompt']}');
+        return nonNsfw.first;
+      }
+
       print('No suitable non-NSFW questions found in trending feed for fallback');
       return null;
     } catch (e) {
@@ -240,37 +284,14 @@ class QuestionService extends ChangeNotifier {
   QuestionService._internal() {
     tz.initializeTimeZones();
     
-    // Initialize service client with service role key from environment (only once)
+    // One-time setup for the first instance only.
     if (!_serviceClientInitialized) {
       _serviceClientInitialized = true;
-      try {
-        final serviceKey = const String.fromEnvironment('SUPABASE_SERVICE_KEY');
-        print('Service key provided: ${serviceKey.isNotEmpty}');
-        
-        if (serviceKey.isEmpty) {
-          print('Service key not provided, seeding will be skipped');
-          _serviceClient = _supabase; // Use regular client if no service key
-        } else {
-          print('Initializing service client...');
-          _serviceClient = SupabaseClient(
-            _supabase.rest.url,
-            serviceKey,
-          );
-          print('Service client initialized successfully');
-        }
-      } catch (e) {
-        print('Error initializing service client: $e');
-        _serviceClient = _supabase; // Fallback to regular client
-      }
-      
+
       // Schedule periodic updates for Question of the Day
       _scheduleQuestionOfTheDayUpdates();
       // Seed initial questions (only for the first instance)
       seedInitialQuestions();
-    } else {
-      // For subsequent instances, just use the regular client
-      _serviceClient = _supabase;
-      print('🔄 QuestionService: Using existing service client configuration');
     }
   }
 
@@ -495,14 +516,11 @@ class QuestionService extends ChangeNotifier {
             continue; // Can't verify, skip
           }
 
-          // Get response count
+                    // Get response count
           int responseCount = 0;
           try {
-            final responses = await _supabase
-                .from('responses')
-                .select('id')
-                .eq('question_id', question['id']);
-            responseCount = responses?.length ?? 0;
+            responseCount =
+                await _resultsService.fetchTotalCount(question['id'].toString());
           } catch (e) {
             // Continue with 0 count
           }
@@ -976,60 +994,31 @@ class QuestionService extends ChangeNotifier {
   // Centralized method to get accurate vote count for any question
   Future<int> getAccurateVoteCount(String questionId, String? questionType) async {
     try {
-      if (questionType == 'multiple_choice') {
-        // For multiple choice, only count responses with valid option_ids
-        final responses = await _supabase
-            .from('responses')
-            .select('option_id')
-            .eq('question_id', questionId)
-            .not('option_id', 'is', null);
-        
-        if (responses != null && responses.isNotEmpty) {
-          // Get valid option IDs for this question
-          final options = await _supabase
-              .from('question_options')
-              .select('id')
-              .eq('question_id', questionId);
-          
-          final validOptionIds = Set<String>.from(
-            (options ?? []).map((opt) => opt['id'].toString())
-          );
-          
-          // Count only responses with valid option IDs
-          final count = responses.where((response) {
-            final optionId = response['option_id']?.toString();
-            return optionId != null && validOptionIds.contains(optionId);
-          }).length;
-          
-          return count;
-        }
-        return 0;
-      } else if (questionType == 'approval_rating' || questionType == 'approval') {
-        // For approval questions, only count responses with valid scores
-        final responses = await _supabase
-            .from('responses')
-            .select('score')
-            .eq('question_id', questionId)
-            .not('score', 'is', null);
-        
-        return responses?.length ?? 0;
+            if (questionType == 'multiple_choice' ||
+          questionType == 'multiplechoice' ||
+          questionType == 'approval_rating' ||
+          questionType == 'approval') {
+        // The server does the type-aware validation now: multiple choice counts
+        // only answers whose option belongs to THIS question, approval counts
+        // only scored answers. Same rule, one round trip, no rows on the wire.
+        return await _resultsService.fetchAnsweredCount(questionId);
       } else if (questionType == 'text') {
-        // For text questions, only count responses with valid text_response
-        final responses = await _supabase
-            .from('responses')
-            .select('text_response')
+        // For discussion questions, count unique commenters
+        final comments = await _supabase
+            .from('comments')
+            .select('author_id')
             .eq('question_id', questionId)
-            .not('text_response', 'is', null);
-        
-        return responses?.length ?? 0;
-      } else {
+            .eq('is_hidden', false);
+
+        final uniqueAuthors = <String>{};
+        for (final c in comments ?? []) {
+          final authorId = c['author_id']?.toString();
+          if (authorId != null) uniqueAuthors.add(authorId);
+        }
+        return uniqueAuthors.length;
+            } else {
         // For other question types, count all responses
-        final response = await _supabase
-            .from('responses')
-            .select('id')
-            .eq('question_id', questionId);
-        
-        return response?.length ?? 0;
+        return await _resultsService.fetchTotalCount(questionId);
       }
     } catch (e) {
       print('Error getting accurate vote count for question $questionId: $e');
@@ -1199,7 +1188,10 @@ class QuestionService extends ChangeNotifier {
         return [];
       }
       
-      // Transform the data to include categories as a simple array and fetch response counts
+      // Transform the data to include categories as a simple array. Counts
+      // are fetched in batches below — this loop used to make two sequential
+      // requests per row (one counts RPC, one comments select), so a search
+      // with 200 matches cost 400 round trips before anything rendered.
       final processedQuestions = <Map<String, dynamic>>[];
       
       for (var question in response) {
@@ -1223,34 +1215,30 @@ class QuestionService extends ChangeNotifier {
         // Remove the junction table data as it's no longer needed
         processedQuestion.remove('question_categories');
         
-        // Get accurate vote count for this question
-        try {
-          final voteCountResponse = await _supabase
-              .from('responses')
-              .select('id')
-              .eq('question_id', question['id']);
-          
-          processedQuestion['votes'] = voteCountResponse?.length ?? 0;
-        } catch (e) {
-          print('Error fetching vote count for search result: $e');
-          processedQuestion['votes'] = 0;
-        }
-        
-        // Get comment count for this question
-        try {
-          final commentCountResponse = await _supabase
-              .from('comments')
-              .select('id')
-              .eq('question_id', question['id'])
-              .eq('is_hidden', false);
-          
-          processedQuestion['comment_count'] = commentCountResponse?.length ?? 0;
-        } catch (e) {
-          print('Error fetching comment count for search result: $e');
-          processedQuestion['comment_count'] = 0;
-        }
-        
+        processedQuestion['votes'] = 0;
+        processedQuestion['comment_count'] = 0;
         processedQuestions.add(processedQuestion);
+      }
+
+      // Vote counts (the batch RPC, chunked by the service) and comment counts
+      // (one select per 50 questions) in parallel: about three requests for a
+      // full page instead of hundreds.
+      final ids = [
+        for (final q in processedQuestions) q['id'].toString()
+      ];
+      final counts = await Future.wait([
+        _resultsService.fetchVoteCounts(ids).catchError((e) {
+          print('Error fetching vote counts for search results: $e');
+          return <String, int>{};
+        }),
+        _fetchCommentCounts(ids),
+      ]);
+      final voteCounts = counts[0];
+      final commentCounts = counts[1];
+      for (final q in processedQuestions) {
+        final id = q['id'].toString();
+        q['votes'] = voteCounts[id] ?? 0;
+        q['comment_count'] = commentCounts[id] ?? 0;
       }
       
       // Additional client-side filtering for multiple choice options text search
@@ -1303,6 +1291,34 @@ class QuestionService extends ChangeNotifier {
   }
   
   // Fallback method for local search (original implementation)
+  /// Non-hidden comment counts for [questionIds], `{questionId: n}`. One
+  /// select of `question_id` per 50 questions, counted here; questions with
+  /// no comments are simply absent. Never throws.
+  Future<Map<String, int>> _fetchCommentCounts(List<String> questionIds) async {
+    final counts = <String, int>{};
+    final ids = questionIds.where((id) => id.isNotEmpty).toSet().toList();
+    const chunkSize = 50;
+    for (var i = 0; i < ids.length; i += chunkSize) {
+      final chunk = ids.sublist(i, (i + chunkSize).clamp(0, ids.length));
+      try {
+        final rows = await _supabase
+            .from('comments')
+            .select('question_id')
+            .inFilter('question_id', chunk)
+            .eq('is_hidden', false)
+            .limit(5000);
+        for (final row in rows) {
+          final id = row['question_id']?.toString();
+          if (id == null) continue;
+          counts[id] = (counts[id] ?? 0) + 1;
+        }
+      } catch (e) {
+        print('Error fetching comment counts for search results: $e');
+      }
+    }
+    return counts;
+  }
+
   List<Map<String, dynamic>> _searchQuestionsLocally(String query, {LocationService? locationService, bool excludePrivate = false}) {
     if (query.isEmpty) return [];
 
@@ -1414,7 +1430,7 @@ class QuestionService extends ChangeNotifier {
     return false;
   }
 
-  Future<Map<String, dynamic>?> navigateToAnswerScreen(BuildContext context, Map<String, dynamic> question, {FeedContext? feedContext, bool fromSearch = false, bool fromUserScreen = false}) async {
+  Future<Map<String, dynamic>?> navigateToAnswerScreen(BuildContext context, Map<String, dynamic> question, {FeedContext? feedContext, bool fromSearch = false, bool fromUserScreen = false, String entrySource = 'other'}) async {
     // Get required services upfront to avoid context issues
     final supabase = Supabase.instance.client;
     final questionId = question['id']?.toString();
@@ -1457,10 +1473,10 @@ class QuestionService extends ChangeNotifier {
     }
     
     // User is authenticated - proceed to answer screen normally
-    return await _proceedToAnswerScreen(context, question, feedContext: feedContext, fromSearch: fromSearch, fromUserScreen: fromUserScreen);
+    return await _proceedToAnswerScreen(context, question, feedContext: feedContext, fromSearch: fromSearch, fromUserScreen: fromUserScreen, entrySource: entrySource);
   }
 
-  Future<Map<String, dynamic>?> _proceedToAnswerScreen(BuildContext context, Map<String, dynamic> question, {FeedContext? feedContext, bool fromSearch = false, bool fromUserScreen = false}) async {
+  Future<Map<String, dynamic>?> _proceedToAnswerScreen(BuildContext context, Map<String, dynamic> question, {FeedContext? feedContext, bool fromSearch = false, bool fromUserScreen = false, String entrySource = 'other'}) async {
     // Check if this is a QOTD and user should be prompted for QOTD notifications
     await checkQOTDSubscriptionPrompt(context, question);
     
@@ -1469,14 +1485,9 @@ class QuestionService extends ChangeNotifier {
     
     // Fetch the current vote count from database
     try {
-      final questionId = enhancedQuestion['id']?.toString();
+            final questionId = enhancedQuestion['id']?.toString();
       if (questionId != null) {
-        final response = await _supabase
-            .from('responses')
-            .select('id')
-            .eq('question_id', questionId);
-        
-        final currentVoteCount = response?.length ?? 0;
+        final currentVoteCount = await _resultsService.fetchTotalCount(questionId);
         enhancedQuestion['votes'] = currentVoteCount;
         // print('Updated vote count for question $questionId: $currentVoteCount responses');
       }
@@ -1504,7 +1515,7 @@ class QuestionService extends ChangeNotifier {
       final result = await Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) => AnswerApprovalScreen(question: enhancedQuestion, feedContext: feedContext, fromSearch: fromSearch, fromUserScreen: fromUserScreen),
+          builder: (context) => AnswerApprovalScreen(question: enhancedQuestion, feedContext: feedContext, fromSearch: fromSearch, fromUserScreen: fromUserScreen, entrySource: entrySource),
         ),
       );
       print('QuestionService: Approval screen returned result: $result');
@@ -1551,7 +1562,7 @@ class QuestionService extends ChangeNotifier {
       final result = await Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) => AnswerMultipleChoiceScreen(question: enhancedQuestion, feedContext: feedContext, fromSearch: fromSearch, fromUserScreen: fromUserScreen),
+          builder: (context) => AnswerMultipleChoiceScreen(question: enhancedQuestion, feedContext: feedContext, fromSearch: fromSearch, fromUserScreen: fromUserScreen, entrySource: entrySource),
         ),
       );
       print('QuestionService: Multiple choice screen returned result: $result');
@@ -1561,7 +1572,7 @@ class QuestionService extends ChangeNotifier {
       final result = await Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) => AnswerTextScreen(question: enhancedQuestion, feedContext: feedContext, fromSearch: fromSearch, fromUserScreen: fromUserScreen),
+          builder: (context) => AnswerTextScreen(question: enhancedQuestion, feedContext: feedContext, fromSearch: fromSearch, fromUserScreen: fromUserScreen, entrySource: entrySource),
         ),
       );
       print('QuestionService: Text screen returned result: $result');
@@ -1573,7 +1584,7 @@ class QuestionService extends ChangeNotifier {
       final result = await Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) => AnswerTextScreen(question: enhancedQuestion, feedContext: feedContext, fromSearch: fromSearch, fromUserScreen: fromUserScreen),
+          builder: (context) => AnswerTextScreen(question: enhancedQuestion, feedContext: feedContext, fromSearch: fromSearch, fromUserScreen: fromUserScreen, entrySource: entrySource),
         ),
       );
       return result as Map<String, dynamic>?;
@@ -1585,14 +1596,9 @@ class QuestionService extends ChangeNotifier {
       final questionId = question['id'].toString();
       final questionType = question['type'].toString().toLowerCase();
 
-      // Update the vote count before navigating to results
+            // Update the vote count before navigating to results
       try {
-        final response = await _supabase
-            .from('responses')
-            .select('id')
-            .eq('question_id', questionId);
-        
-        final currentVoteCount = response?.length ?? 0;
+        final currentVoteCount = await _resultsService.fetchTotalCount(questionId);
         question['votes'] = currentVoteCount;
         print('Updated vote count for results screen - question $questionId: $currentVoteCount responses');
       } catch (e) {
@@ -1607,21 +1613,16 @@ class QuestionService extends ChangeNotifier {
       switch (questionType) {
         case 'approval_rating':
         case 'approval':
-          // Get responses for approval questions
-          List<Map<String, dynamic>> responses = [];
+          // Get the server-computed results for approval questions
+          QuestionResults approvalResults =
+              QuestionResults.emptyFor(questionId, questionType);
           try {
-            responses = await _withErrorHandling(
-              () => getCachedResponses(questionId, questionType),
-              'Error loading responses'
+            approvalResults = await _withErrorHandling(
+              () => fetchQuestionResults(questionId, questionType: questionType),
+              'Error loading results'
             );
-            
-            // Cache responses for this viewed question
-            if (responses.isNotEmpty) {
-              _cacheViewedQuestionResponses(questionId, questionType, responses);
-            }
           } catch (e) {
-            print('Error loading approval responses: $e');
-            responses = []; // Use empty responses if fetch fails
+            print('Error loading approval results: $e');
           }
           
           if (!context.mounted) return null;
@@ -1630,7 +1631,7 @@ class QuestionService extends ChangeNotifier {
             MaterialPageRoute(
               builder: (context) => ApprovalResultsScreen(
                 question: question,
-                responses: responses,
+                results: approvalResults,
                 feedContext: feedContext,
                 fromSearch: fromSearch,
                 fromUserScreen: fromUserScreen,
@@ -1674,21 +1675,16 @@ class QuestionService extends ChangeNotifier {
             }
           }
           
-          // Get individual responses for multiple choice questions (not country-summarized)
-          List<Map<String, dynamic>> responses = [];
+          // Get the server-computed results for multiple choice questions
+          QuestionResults mcResults =
+              QuestionResults.emptyFor(questionId, questionType);
           try {
-            responses = await _withErrorHandling(
-              () => getMultipleChoiceIndividualResponses(questionId),
-              'Error loading individual responses'
+            mcResults = await _withErrorHandling(
+              () => fetchQuestionResults(questionId, questionType: questionType),
+              'Error loading results'
             );
-            
-            // Cache responses for this viewed question
-            if (responses.isNotEmpty) {
-              _cacheViewedQuestionResponses(questionId, questionType, responses);
-            }
           } catch (e) {
-            print('Error loading individual multiple choice responses: $e');
-            responses = []; // Use empty responses if fetch fails
+            print('Error loading multiple choice results: $e');
           }
           
           if (!context.mounted) return null;
@@ -1697,7 +1693,7 @@ class QuestionService extends ChangeNotifier {
             MaterialPageRoute(
               builder: (context) => MultipleChoiceResultsScreen(
                 question: question,
-                responses: responses,
+                results: mcResults,
                 feedContext: feedContext,
                 fromSearch: fromSearch,
                 fromUserScreen: fromUserScreen,
@@ -1708,34 +1704,16 @@ class QuestionService extends ChangeNotifier {
           return result as Map<String, dynamic>?;
           
         case 'text':
-          // For text questions, try to use preloaded responses or fetch fresh ones
-          if (question['preloaded_text_responses'] == null) {
-            try {
-              final textResponses = await getCachedResponses(questionId, questionType);
-              question['preloaded_text_responses'] = textResponses;
-              
-              // Cache responses for this viewed question
-              if (textResponses.isNotEmpty) {
-                _cacheViewedQuestionResponses(questionId, questionType, textResponses);
-              }
-              
-              print('📄 Loaded ${textResponses.length} text responses for immediate display');
-            } catch (e) {
-              print('Error loading text responses: $e');
-              // Continue without preloaded data
-            }
-          }
-          
+          // Discussion questions: navigate to the discussion screen (AnswerTextScreen)
           if (!context.mounted) return null;
           final result = await Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (context) => TextResultsScreen(
+              builder: (context) => AnswerTextScreen(
                 question: question,
                 feedContext: feedContext,
                 fromSearch: fromSearch,
                 fromUserScreen: fromUserScreen,
-                isGuestMode: isGuestMode,
               ),
             ),
           );
@@ -1764,279 +1742,82 @@ class QuestionService extends ChangeNotifier {
     return locationService.getCurrentCity();
   }
 
+  /// Per-country approval summary for the map fallback and the country rows:
+  /// `[{country, answer}]` with `answer` the country's average in -1..1.
+  ///
+  /// Since the answers read lockdown (2026-09-22) this is computed by the
+  /// server and arrives as a summary — the client never sees the scores that
+  /// went into it. Shape unchanged, so every caller kept working.
   Future<List<Map<String, dynamic>>> getResponsesByCountry(String questionId) async {
     try {
-      // Get responses from Supabase with country names instead of codes
-      final response = await _supabase
-          .from('responses')
-          .select('''
-            score,
-            countries!responses_country_code_fkey(country_name_en)
-          ''')
-          .eq('question_id', questionId)
-          .not('score', 'is', null);
-
-      if (response == null || response.isEmpty) return [];
-
-      // Group responses by country and calculate averages
-      final Map<String, List<double>> countryScores = {};
-      
-      for (var r in response) {
-        // Skip if essential data is missing
-        if (r == null || r['countries']?['country_name_en'] == null || r['score'] == null) {
-          print('Skipping response with missing data: $r');
-          continue;
-        }
-        
-        final countryName = r['countries']['country_name_en']; // Use full country name
-        final score = (r['score'] as num).toDouble() / 100.0; // Convert from -100/100 to -1/1
-        
-        // Initialize country list if needed
-        if (!countryScores.containsKey(countryName)) {
-          countryScores[countryName] = [];
-        }
-        
-        countryScores[countryName]!.add(score);
+      final results = await _resultsService.fetchResults(questionId);
+      final out = <Map<String, dynamic>>[];
+      for (final c in results.byCountry) {
+        final avg = c.breakdown.average;
+        if (avg == null) continue;
+        out.add({
+          'country': c.country,
+          'answer': avg.clamp(-1.0, 1.0),
+        });
       }
 
-      // If no valid responses found, return empty list
-      if (countryScores.isEmpty) {
-        return [];
-      }
-
-      // Calculate average score for each country
-      final result = countryScores.entries.map((entry) {
-        try {
-          final scores = entry.value;
-          
-          if (scores.isEmpty) {
-            return {'country': entry.key, 'answer': 0.0};
-          }
-          
-          final avgScore = scores.reduce((a, b) => a + b) / scores.length;
-          
-          return {
-            'country': entry.key,
-            'answer': avgScore.clamp(-1.0, 1.0),
-          };
-        } catch (e) {
-          print('Error calculating average score for country ${entry.key}: $e');
-          return {
-            'country': entry.key,
-            'answer': 0.0,
-          };
-        }
-      }).toList();
-      
-      // Smart prefetch: When user views a question, prefetch the next question while they're browsing
+      // Smart prefetch: while the user reads this question, warm the next one.
       _scheduleSmartPrefetch(questionId);
-      
-      return result;
+
+      return out;
     } catch (e) {
       print('Error fetching responses by country: $e');
       return [];
     }
   }
 
-  Future<List<Map<String, dynamic>>> getMultipleChoiceResponsesByCountry(String questionId, List<String> options) async {
+  /// Per-country multiple-choice summary: `[{country, answer}]` with `answer`
+  /// the country's most-chosen option ('TIE' when two share the lead).
+  ///
+  /// [options] is kept in the signature for the empty-question fallback and so
+  /// callers did not have to change; the counts themselves come from the
+  /// server's per-country breakdown.
+  Future<List<Map<String, dynamic>>> getMultipleChoiceResponsesByCountry(
+      String questionId, List<String> options) async {
     try {
-      // Get ALL responses for this question first (matching vote count logic)
-      final responses = await _supabase
-          .from('responses')
-          .select('option_id, country_code')
-          .eq('question_id', questionId)
-          .not('option_id', 'is', null);
-
-      if (responses == null || responses.isEmpty) {
+      final results = await _resultsService.fetchResults(questionId);
+      if (results.byCountry.isEmpty) {
         print('No responses found for question $questionId');
         return [];
       }
 
-      print('Found ${responses.length} total responses for multiple choice question');
-
-      // Get ALL options for this question (more reliable than looking up by response option_ids)
-      Map<String, String> optionIdToText = {};
-      try {
-        final optionsData = await _supabase
-            .from('question_options')
-            .select('id, option_text')
-            .eq('question_id', questionId)
-            .order('sort_order');
-        
-        if (optionsData != null) {
-          for (var option in optionsData) {
-            optionIdToText[option['id']] = option['option_text'];
-          }
-          print('Found ${optionsData.length} options for question $questionId');
-        }
-      } catch (e) {
-        print('Error fetching question options: $e');
+      final fallback = options.isNotEmpty ? options[0] : '';
+      final out = <Map<String, dynamic>>[];
+      for (final c in results.byCountry) {
+        final top = c.breakdown.topOption;
+        out.add({
+          'country': c.country,
+          'answer': top == 'TIE' && c.breakdown.optionCounts.isEmpty
+              ? fallback
+              : top,
+        });
       }
 
-      // Get country names for the country codes
-      final countryCodes = responses.map((r) => r['country_code']).where((code) => code != null).toSet().toList();
-      
-      Map<String, String> countryCodeToName = {};
-      if (countryCodes.isNotEmpty) {
-        try {
-          print('DEBUG: Looking up country names for codes: $countryCodes');
-          final countriesData = await _supabase
-              .from('countries')
-              .select('country_code, country_name_en')
-              .filter('country_code', 'in', '(${countryCodes.map((code) => "'$code'").join(',')})');
-          
-          if (countriesData != null) {
-            print('DEBUG: Found ${countriesData.length} countries in database');
-            for (var country in countriesData) {
-              countryCodeToName[country['country_code']] = country['country_name_en'];
-              print('DEBUG: Mapped ${country['country_code']} -> ${country['country_name_en']}');
-            }
-          } else {
-            print('DEBUG: No countries data returned from database');
-          }
-        } catch (e) {
-          print('Error fetching country names: $e');
-        }
-      }
-
-      // Group responses by country and option
-      final Map<String, Map<String, int>> countryResponses = {};
-      int validResponseCount = 0; // Track actual valid responses
-      
-      for (var r in responses) {
-        // Skip if essential data is missing
-        if (r == null || r['option_id'] == null || r['country_code'] == null) {
-          print('Skipping response with missing data: $r');
-          continue;
-        }
-        
-        final optionId = r['option_id'].toString();
-        final countryCode = r['country_code'].toString();
-        
-        // Get option text from our lookup (with fallback for data integrity issues)
-        final optionText = optionIdToText[optionId] ?? 'Option $optionId';
-        if (optionIdToText[optionId] == null) {
-          print('Warning: Unknown option_id $optionId, using fallback text');
-        }
-        
-        // Get country name from our lookup with better fallback
-        String countryName;
-        if (countryCodeToName.containsKey(countryCode)) {
-          countryName = countryCodeToName[countryCode]!;
-        } else {
-          // Use a more user-friendly fallback than just the country code
-          countryName = _getCountryNameFallback(countryCode);
-          print('DEBUG: Using fallback country name for code $countryCode: $countryName');
-        }
-        
-        // Initialize country map if needed
-        if (!countryResponses.containsKey(countryName)) {
-          countryResponses[countryName] = {};
-        }
-        
-        // Increment count
-        countryResponses[countryName]![optionText] = 
-            (countryResponses[countryName]![optionText] ?? 0) + 1;
-        
-        // Count this as a valid response
-        validResponseCount++;
-      }
-
-      print('Valid responses processed: $validResponseCount out of ${responses.length} total');
-
-      // If no valid responses found, return empty list
-      if (countryResponses.isEmpty) {
-        return [];
-      }
-
-      // Convert to list format
-      final result = countryResponses.entries.map((entry) {
-        final responses = entry.value;
-        
-        // Skip if no options
-        if (responses.isEmpty) {
-          return {'country': entry.key, 'answer': options.isNotEmpty ? options[0] : ''};
-        }
-        
-        try {
-          final total = responses.values.reduce((a, b) => a + b);
-          
-          // Find the most common answer
-          String mostCommonAnswer = responses.entries
-              .reduce((a, b) => a.value > b.value ? a : b)
-              .key;
-          
-          return {
-            'country': entry.key,
-            'answer': mostCommonAnswer,
-          };
-        } catch (e) {
-          print('Error calculating most common answer for country ${entry.key}: $e');
-          return {
-            'country': entry.key,
-            'answer': options.isNotEmpty ? options[0] : '',
-          };
-        }
-      }).toList();
-      
-      // Store the valid response count for this question
-      _storeValidResponseCount(questionId, validResponseCount);
-      
-      // Smart prefetch: When user views a question, prefetch the next question while they're browsing
+      _storeValidResponseCount(questionId, results.answered);
       _scheduleSmartPrefetch(questionId);
-      
-      return result;
+
+      return out;
     } catch (e) {
       print('Error fetching multiple choice responses by country: $e');
       return [];
     }
   }
 
-  /// Fetch approval responses with city-level location data for sub-national map views.
-  /// Returns raw Supabase rows with city join data (lat, lng, admin1_code, etc.).
-  Future<List<Map<String, dynamic>>> getApprovalResponsesWithCityData(String questionId) async {
-    try {
-      final response = await _supabase
-          .from('responses')
-          .select('''
-            score,
-            city_id,
-            cities!responses_city_id_fkey(ascii_name, admin1_code, lat, lng, country_code)
-          ''')
-          .eq('question_id', questionId)
-          .not('score', 'is', null)
-          .not('city_id', 'is', null);
-
-      if (response == null || response.isEmpty) return [];
-      return List<Map<String, dynamic>>.from(response);
-    } catch (e) {
-      print('Error fetching approval responses with city data: $e');
-      return [];
+  /// Everything the results surfaces draw for one question, straight from the
+  /// results RPCs. The one door onto answer data that this service still has.
+  Future<QuestionResults> fetchQuestionResults(String questionId,
+      {String questionType = '', bool forceRefresh = false}) async {
+    final results = await _resultsService.fetchResults(questionId,
+        questionType: questionType, forceRefresh: forceRefresh);
+    if (results.total > 0) {
+      _storeValidResponseCount(questionId, results.answered);
     }
-  }
-
-  /// Fetch multiple choice responses with city-level location data for sub-national map views.
-  /// Returns raw Supabase rows with city join and option text.
-  Future<List<Map<String, dynamic>>> getMultipleChoiceResponsesWithCityData(String questionId) async {
-    try {
-      final response = await _supabase
-          .from('responses')
-          .select('''
-            option_id,
-            city_id,
-            cities!responses_city_id_fkey(ascii_name, admin1_code, lat, lng, country_code),
-            question_options!responses_option_id_fkey(option_text)
-          ''')
-          .eq('question_id', questionId)
-          .not('option_id', 'is', null)
-          .not('city_id', 'is', null);
-
-      if (response == null || response.isEmpty) return [];
-      return List<Map<String, dynamic>>.from(response);
-    } catch (e) {
-      print('Error fetching MC responses with city data: $e');
-      return [];
-    }
+    return results;
   }
 
   // Store valid response count for a question
@@ -2050,209 +1831,6 @@ class QuestionService extends ChangeNotifier {
   // Get the valid response count for a question
   int getValidResponseCount(String questionId) {
     return _validResponseCounts[questionId] ?? 0;
-  }
-
-  // Get individual multiple choice responses (not country-summarized) for results display
-  Future<List<Map<String, dynamic>>> getMultipleChoiceIndividualResponses(String questionId) async {
-    try {
-      // Fetch individual responses from database with country and generation information
-      final response = await _supabase
-          .from('responses')
-          .select('''
-            option_id,
-            created_at,
-            generation,
-            countries!responses_country_code_fkey(country_name_en),
-            question_options!responses_option_id_fkey(option_text)
-          ''')
-          .eq('question_id', questionId)
-          .not('option_id', 'is', null)
-          .order('created_at', ascending: false);
-
-      if (response == null || response.isEmpty) {
-        print('No individual responses found for question $questionId');
-        return [];
-      }
-
-      print('Found ${response.length} individual multiple choice responses');
-
-      // Convert to the format expected by results screen
-      final individualResponses = response.map((r) => {
-        'answer': r['question_options']?['option_text'] ?? 'Unknown Option',
-        'country': r['countries']?['country_name_en'] ?? 'Unknown',
-        'created_at': r['created_at'],
-        'generation': r['generation'],
-      }).toList().cast<Map<String, dynamic>>();
-
-      // Store the valid response count for this question
-      _storeValidResponseCount(questionId, individualResponses.length);
-
-      return individualResponses;
-    } catch (e) {
-      print('Error fetching individual multiple choice responses: $e');
-      return [];
-    }
-  }
-
-  // Get My Network responses by aggregating from all user's rooms
-  Future<List<Map<String, dynamic>>> getMyNetworkResponses(String questionId, String questionType) async {
-    try {
-      final userId = _supabase.auth.currentUser?.id;
-      if (userId == null) {
-        print('User not authenticated for My Network responses');
-        return [];
-      }
-
-      print('🔍 DEBUG: getMyNetworkResponses called with userId: $userId, questionId: $questionId');
-
-      // Get all rooms the user is a member of using RoomService to avoid policy recursion
-      final roomService = RoomService();
-      final userRooms = await roomService.getUserRooms();
-
-      if (userRooms.isEmpty) {
-        print('User is not a member of any rooms');
-        return [];
-      }
-
-      final roomIds = userRooms.map<String>((room) => room.id).toList();
-      print('🎪 User is in ${roomIds.length} rooms, fetching My Network responses for question $questionId');
-
-      // Get all shared responses from user's rooms for this question
-      String responseSelect;
-      if (questionType == 'multiple_choice') {
-        responseSelect = '''
-          responses!room_shared_responses_response_id_fkey(
-            option_id,
-            created_at,
-            generation,
-            countries!responses_country_code_fkey(country_name_en),
-            question_options!responses_option_id_fkey(option_text)
-          )
-        ''';
-      } else if (questionType == 'approval_rating') {
-        responseSelect = '''
-          responses!room_shared_responses_response_id_fkey(
-            score,
-            created_at,
-            generation,
-            countries!responses_country_code_fkey(country_name_en)
-          )
-        ''';
-      } else {
-        responseSelect = '''
-          responses!room_shared_responses_response_id_fkey(
-            text_response,
-            created_at,
-            generation,
-            countries!responses_country_code_fkey(country_name_en)
-          )
-        ''';
-      }
-
-      print('🔍 DEBUG: Querying room_shared_responses with roomIds: $roomIds, questionId: $questionId');
-
-      final sharedResponsesData = await _supabase
-          .from('room_shared_responses')
-          .select(responseSelect)
-          .eq('question_id', questionId)
-          .inFilter('room_id', roomIds);
-
-      print('🔍 DEBUG: Raw shared responses data: ${sharedResponsesData.length} items');
-      
-      if (sharedResponsesData.isEmpty) {
-        print('No shared responses found in user\'s rooms for question $questionId');
-        return [];
-      }
-
-      print('🎪 Found ${sharedResponsesData.length} shared responses from My Network');
-
-      // Convert to the format expected by results screens
-      final networkResponses = sharedResponsesData.map((shared) {
-        final response = shared['responses'];
-        if (response == null) {
-          print('🔍 DEBUG: Null response found in shared data: $shared');
-          return null;
-        }
-
-        if (questionType == 'multiple_choice') {
-          return {
-            'answer': response['question_options']?['option_text'] ?? 'Unknown Option',
-            'country': response['countries']?['country_name_en'] ?? 'Unknown',
-            'created_at': response['created_at'],
-            'generation': response['generation'],
-            'room_id': 'network', // Mark as network response
-          };
-        } else if (questionType == 'approval_rating') {
-          return {
-            'answer': ((response['score'] as int?) ?? 0).toDouble() / 100.0, // Convert to -1 to 1 range
-            'country': response['countries']?['country_name_en'] ?? 'Unknown',
-            'created_at': response['created_at'],
-            'generation': response['generation'],
-            'room_id': 'network', // Mark as network response
-          };
-        } else {
-          return {
-            'answer': response['text_response'] ?? '',
-            'country': response['countries']?['country_name_en'] ?? 'Unknown',
-            'created_at': response['created_at'],
-            'generation': response['generation'],
-            'room_id': 'network', // Mark as network response
-          };
-        }
-      }).where((r) => r != null).cast<Map<String, dynamic>>().toList();
-
-      print('🎪 Converted ${networkResponses.length} My Network responses');
-      print('🔍 DEBUG: Network responses raw count: ${sharedResponsesData.length}, converted count: ${networkResponses.length}');
-      
-      // Only return network responses if there are 5 or more for privacy/meaningful data
-      // Note: Database now prevents duplicates with unique constraint (room_id, question_id, response_id)
-      if (networkResponses.length < 5) {
-        print('🎪 My Network has <5 responses (${networkResponses.length}), not displaying for privacy');
-        print('🔍 DEBUG: First few responses for analysis: ${networkResponses.take(3).toList()}');
-        return [];
-      }
-      
-      return networkResponses;
-    } catch (e) {
-      print('Error fetching My Network responses: $e');
-      return [];
-    }
-  }
-
-  // Check if a room has enough responses (5+) for a specific question to enable filtering
-  Future<bool> hasEnoughRoomResponses(String roomId, String questionId) async {
-    try {
-      final sharedResponsesCount = await _supabase
-          .from('room_shared_responses')
-          .select('id')
-          .eq('room_id', roomId)
-          .eq('question_id', questionId);
-
-      final count = sharedResponsesCount.length;
-      print('🎪 Room $roomId has $count shared responses for question $questionId');
-      return count >= 5;
-    } catch (e) {
-      print('Error checking room response count: $e');
-      return false;
-    }
-  }
-
-  // Get room response count for a specific question
-  Future<int> getRoomResponseCount(String roomId, String questionId) async {
-    try {
-      // Use regular client - RLS policies are now fixed to prevent recursion
-      final sharedResponsesCount = await _supabase
-          .from('room_shared_responses')
-          .select('id')
-          .eq('room_id', roomId)
-          .eq('question_id', questionId);
-
-      print('🔍 DEBUG: Room $roomId query result: ${sharedResponsesCount.length} responses');
-      return sharedResponsesCount.length;
-    } catch (e) {
-      print('Error getting room response count: $e');
-      return 0;
-    }
   }
 
   // Add caching support
@@ -2323,87 +1901,21 @@ class QuestionService extends ChangeNotifier {
     print('💾 Cached responses for viewed question $questionId ($type) - ${responses.length} responses');
   }
   
-  // Fresh data fetching methods that bypass cache for accurate prefetching
-  Future<List<Map<String, dynamic>>> _getFreshResponsesByCountry(String questionId) async {
-    try {
-      // Direct database query, no cache
-      final response = await _supabase
-          .from('responses')
-          .select('''
-            score,
-            created_at,
-            generation,
-            countries!responses_country_code_fkey(country_name_en)
-          ''')
-          .eq('question_id', questionId)
-          .not('score', 'is', null)
-          .order('created_at', ascending: false);
-
-      if (response != null && response.isNotEmpty) {
-        return response.map((r) => {
-          'country': r['countries']?['country_name_en'] ?? 'Unknown',
-          'answer': (r['score'] as int).toDouble() / 100.0,
-          'created_at': r['created_at'],
-          'generation': r['generation'],
-        }).toList();
-      }
-      return [];
-    } catch (e) {
-      print('Error fetching fresh approval responses: $e');
-      return [];
-    }
-  }
-  
-  Future<List<Map<String, dynamic>>> _getFreshMultipleChoiceResponses(String questionId) async {
-    try {
-      // Use existing method but ensure it's fresh
-      return await getMultipleChoiceIndividualResponses(questionId);
-    } catch (e) {
-      print('Error fetching fresh MC responses: $e');
-      return [];
-    }
-  }
-  
-  Future<List<Map<String, dynamic>>> _getFreshTextResponses(String questionId) async {
-    try {
-      // Use existing method but ensure it's fresh
-      return await getTextResponses(questionId);
-    } catch (e) {
-      print('Error fetching fresh text responses: $e');
-      return [];
-    }
-  }
-
-  // Get text responses for a question
+  /// Public text answers for a question, newest first.
+  ///
+  /// Text answers are the one thing the lockdown still serves per answer — they
+  /// are public content. What they no longer carry is the generation and the
+  /// exact time: `created_at` here is the HOUR the answer was given, rounded
+  /// down server-side.
   Future<List<Map<String, dynamic>>> getTextResponses(String questionId) async {
     try {
-      final response = await _supabase
-          .from('responses')
-          .select('''
-            text_response,
-            created_at,
-            generation,
-            countries!responses_country_code_fkey(country_name_en)
-          ''')
-          .eq('question_id', questionId)
-          .not('text_response', 'is', null)
-          .order('created_at', ascending: false);
+      final page = await _resultsService.fetchTextAnswers(questionId);
+      if (page.answers.isEmpty) return [];
 
-      if (response != null && response.isNotEmpty) {
-        final result = response.map((r) => {
-          'text_response': r['text_response'],
-          'country': r['countries']?['country_name_en'] ?? 'Unknown',
-          'created_at': r['created_at'],
-          'generation': r['generation'],
-        }).toList();
-        
-        // Smart prefetch: When user views a question, prefetch the next question while they're browsing
-        _scheduleSmartPrefetch(questionId);
-        
-        return result;
-      }
-      
-      return [];
+      // Smart prefetch: while the user reads this question, warm the next one.
+      _scheduleSmartPrefetch(questionId);
+
+      return page.toRows();
     } catch (e) {
       print('Error fetching text responses: $e');
       return [];
@@ -2498,9 +2010,10 @@ class QuestionService extends ChangeNotifier {
         }
       }
       
-      // Preload individual responses
-      getMultipleChoiceIndividualResponses(questionId).catchError((e) {
-        print('Failed to preload multiple choice responses for $questionId: $e');
+            // Warm the results and the map cells for this question.
+      _resultsService.fetchResults(questionId).catchError((e) {
+        print('Failed to preload multiple choice results for $questionId: $e');
+        return QuestionResults.emptyFor(questionId, 'multiple_choice');
       });
     } catch (e) {
       print('Error preloading multiple choice data: $e');
@@ -2589,41 +2102,41 @@ class QuestionService extends ChangeNotifier {
           }
         }
         
-        // Prefetch responses based on question type - ALWAYS fetch fresh data
+                // Prefetch results for this question - ALWAYS fresh, never the cache
         try {
-          List<Map<String, dynamic>> responses = [];
-          
+          int total = 0;
+
           switch (questionType) {
-            case 'approval_rating':
-            case 'approval':
-              // Always fetch fresh data, bypass cache for prefetch to ensure accuracy
-              responses = await _getFreshResponsesByCountry(questionId);
-              print('📦 Prefetched ${responses.length} fresh approval responses for $questionId');
-              break;
-              
-            case 'multiple_choice':
-            case 'multiplechoice':
-              responses = await _getFreshMultipleChoiceResponses(questionId);
-              print('📦 Prefetched ${responses.length} fresh MC responses for $questionId');
-              break;
-              
             case 'text':
-              responses = await _getFreshTextResponses(questionId);
-              print('📦 Prefetched ${responses.length} fresh text responses for $questionId');
+              final responses = await getTextResponses(questionId);
+              total = responses.length;
+              if (responses.isNotEmpty) {
+                _cacheViewedQuestionResponses(questionId, questionType, responses);
+              }
+              print('📦 Prefetched $total fresh text answers for $questionId');
+              break;
+
+            default:
+              // Approval and multiple choice draw from the results RPCs, which
+              // keep their own short cache — warming it is the whole prefetch.
+              final results = await _resultsService.fetchResults(questionId,
+                  questionType: questionType, forceRefresh: true);
+              _resultsService.fetchMapCells(questionId, forceRefresh: true);
+              total = results.total;
+              print('📦 Prefetched fresh results ($total answers) for $questionId');
               break;
           }
-          
-          // Cache the fresh responses
-          if (responses.isNotEmpty) {
-            _cacheViewedQuestionResponses(questionId, questionType, responses);
-            
-            // IMPORTANT: Update question's vote count to prevent false change detection
+
+          // IMPORTANT: Update the question's vote count so the results screen
+          // does not read the difference as new activity.
+          if (total > 0) {
             final questionIndex = _questions.indexWhere((q) => q['id'].toString() == questionId);
             if (questionIndex != -1) {
-              _questions[questionIndex]['votes'] = responses.length;
-              print('🔄 Updated vote count for prefetched question $questionId: ${responses.length}');
+              _questions[questionIndex]['votes'] = total;
+              print('🔄 Updated vote count for prefetched question $questionId: $total');
             }
           }
+          
           
           // Add small delay to avoid overwhelming the database
           await Future.delayed(Duration(milliseconds: 200)); // Increased delay
@@ -2851,8 +2364,10 @@ class QuestionService extends ChangeNotifier {
       _responseCache['${sampleQuestions[1]['id']}-multiple_choice'] = sampleMultipleChoiceResponses;
       _cacheTimestamps['${sampleQuestions[1]['id']}-multiple_choice'] = DateTime.now();
       
-      // Try to push sample questions to Supabase database
-      try {
+      // Try to push sample questions to Supabase database. Debug builds only:
+      // a release build must never write placeholder content into a real
+      // backend just because a fetch failed or came back empty.
+      if (kDebugMode) try {
         print('Attempting to seed sample questions to database...');
         
         for (var question in sampleQuestions) {
@@ -3057,8 +2572,110 @@ class QuestionService extends ChangeNotifier {
     print('Recorded answered question locally for question $questionId');
   }
 
+  // ---------------------------------------------------------------------------
+  // The write path: submit_response()
+  // ---------------------------------------------------------------------------
+  //
+  // All three submit methods below go through `rpc('submit_response', …)`,
+  // which writes `responses` and `response_owners` in one transaction. Three
+  // things the direct INSERT could never do, and now does not have to:
+  //
+  //   * `is_authenticated` is stamped server-side instead of being a
+  //     client-supplied literal.
+  //   * The option is validated against ITS OWN question — `responses.option_id`
+  //     has an FK to `question_options(id)` and nothing more.
+  //   * The answer path is rate limited, for the first time.
+  //
+  // The reply carries `vote_count`, so the follow-up `getAccurateVoteCount`
+  // round trip every path used to make is gone.
+  //
+  // GUESTS never reach it: the RPC is granted to `authenticated` only, and all
+  // three methods already refuse without a session before they get here. The
+  // onboarding answer is not a guest answer — `PendingAnswerService` replays it
+  // once a session exists, so it arrives through this same path and IS linked
+  // (owner decision D-3).
+  //
+  // Contract: scripts/response_linkage_03_submit_response.sql
+
+  /// What `submit_response` said, or [notDeployed] when it is not there yet.
+  static const int _submitRpcNotDeployed = -1;
+
+  /// Calls `submit_response`. Returns the question's new vote count on success,
+  /// [_submitRpcNotDeployed] when PostgREST says there is no such function (the
+  /// caller then falls back to the direct insert), or null on any other failure
+  /// — which is a real submit failure and must not be retried as an insert, or
+  /// a rate-limited user would silently get their row in anyway.
+  Future<int?> _submitResponseViaRpc({
+    required String questionId,
+    required String cityId,
+    required String countryCode,
+    String? optionId,
+    int? score,
+    String? textResponse,
+    String? generation,
+    required bool sharedWithCloseFriends,
+  }) async {
+    try {
+      final raw = await _supabase.rpc('submit_response', params: {
+        'p_question_id': questionId,
+        'p_city_id': cityId,
+        'p_country_code': countryCode,
+        'p_option_id': optionId,
+        'p_score': score,
+        'p_text_response': textResponse,
+        'p_generation': generation,
+        'p_shared_with_close_friends': sharedWithCloseFriends,
+      });
+      if (raw is! Map) {
+        print('ERROR: submit_response returned ${raw.runtimeType}, not an object');
+        AnalyticsService()
+            .trackRpcFailed('submit_response', reason: 'bad_shape');
+        return null;
+      }
+      if (raw['success'] != true) {
+        // Every refusal is a named error code, not an exception:
+        // not_authenticated, rate_limited, question_not_found, question_hidden,
+        // invalid_city, invalid_answer, invalid_option.
+        print('ERROR: submit_response refused the answer: ${raw['error']}');
+        // The server's own closed vocabulary — a code, never a free-text
+        // message. This is the only place a refusal survives: the callers just
+        // return false (review 2026-09-22 B7).
+        final code = raw['error'];
+        AnalyticsService().trackRpcFailed('submit_response',
+            reason: code is String && code.isNotEmpty ? code : 'refused');
+        return null;
+      }
+      final count = raw['vote_count'];
+      return count is num ? count.toInt() : 0;
+    } catch (e) {
+      if (isMissingRpc(e)) {
+        // The backend predates `submit_response`. Fall back to the older
+        // insert, so answering still works;
+        // the row is simply never linked, and the network surface stays dark.
+        print('DEBUG: submit_response is not deployed — falling back to the '
+            'direct responses insert.');
+        // The single question the linkage rollout hangs on: what fraction of
+        // answers are linked versus falling through to the unlinked legacy
+        // insert. Once per session — the fact is about the server, not the
+        // answer count.
+        AnalyticsService().trackSubmitResponseFallbackUsed('not_deployed');
+        return _submitRpcNotDeployed;
+      }
+      print('ERROR: submit_response failed: $e');
+      AnalyticsService()
+          .trackRpcFailed('submit_response', reason: analyticsRpcReason(e));
+      return null;
+    }
+  }
+
   // Submit a multiple choice response to the database
-  Future<bool> submitMultipleChoiceResponse(String questionId, String selectedOption, String countryCode, {LocationService? locationService}) async {
+  /// [sharedWithCloseFriends] is the per-answer close-friend flag chosen on the
+  /// answer form (owner decision 2026-09-17). It rides with the answer to
+  /// `submit_response`, which records it on the LINK row — an unlinked row has
+  /// no author to share on behalf of. Unlike the 2026-09-17 shape it is no
+  /// longer frozen: `NetworkService.setAnswerSharing` can flip it afterwards
+  /// (owner decision D-5).
+  Future<bool> submitMultipleChoiceResponse(String questionId, String selectedOption, String countryCode, {LocationService? locationService, bool sharedWithCloseFriends = true}) async {
     try {
       print('DEBUG: Submitting MC response - questionId: $questionId, selectedOption: $selectedOption, countryCode: $countryCode');
       
@@ -3142,6 +2759,8 @@ class QuestionService extends ChangeNotifier {
         'country_code': resolvedCountryCode,
         'is_authenticated': true,
         'generation': generationValue,
+        // Per-answer close-friend visibility, frozen onto the row.
+        'shared_with_close_friends': sharedWithCloseFriends,
       };
 
       // Insert into Supabase
@@ -3165,122 +2784,135 @@ class QuestionService extends ChangeNotifier {
         print('DEBUG: This might be blocked by RLS policy - checking if this is allowed...');
       }
       
-      // Insert response directly without user_id (responses table is designed for anonymity)
-      print('DEBUG: Inserting response into database: $responseData');
-      
-      bool responseInserted = false;
-      
-      try {
-        // First, let's verify the question exists and is accessible
-        print('DEBUG: Verifying question access before inserting response...');
-        final questionCheck = await _supabase
-            .from('questions')
-            .select('id, prompt, is_hidden, author_id')
-            .eq('id', questionId)
-            .maybeSingle();
-        
-        if (questionCheck == null) {
-          print('ERROR: Question $questionId not found or not accessible');
-          throw Exception('Question not found or not accessible');
-        }
-        
-        print('DEBUG: Question verified: ${questionCheck['prompt']} (hidden: ${questionCheck['is_hidden']}, author: ${questionCheck['author_id']})');
-        
-        if (questionCheck['is_hidden'] == true) {
-          print('ERROR: Cannot submit response to hidden question');
-          throw Exception('Cannot submit response to hidden question');
-        }
-        
-        // Now try to insert the response
-        print('DEBUG: Inserting response into responses table...');
-        print('DEBUG: Final response data: $responseData');
-        
-        final insertResult = await _supabase
-            .from('responses')
-            .insert(responseData)
-            .select('id');
-        
-        print('SUCCESS: Response inserted into database');
-        responseInserted = true;
-        
-        // Handle room sharing for successful response
-        if (insertResult.isNotEmpty) {
-          final responseId = insertResult.first['id'] as String;
-          await _roomSharingService.handleResponseSubmission(
-            questionId: questionId,
-            responseId: responseId,
-            selectedOption: selectedOption,
-            questionType: 'multiple_choice',
-          );
-        }
-        
-        // Check if the trigger updated the question (this might fail due to RLS)
-        try {
-          print('DEBUG: Checking if trigger updated the question...');
-          final updatedQuestion = await _supabase
-              .from('questions')
-              .select('id, is_hidden, updated_at')
-              .eq('id', questionId)
-              .single();
-          
-          print('DEBUG: Question after response insertion: hidden=${updatedQuestion['is_hidden']}, updated_at=${updatedQuestion['updated_at']}');
-        } catch (triggerError) {
-          print('WARNING: Could not verify trigger update: $triggerError');
-          print('WARNING: This might indicate the trigger failed due to RLS policy');
-        }
-      } catch (insertionError) {
-        print('ERROR: Database insertion failed: $insertionError');
-        
-        // Check if this is a self-answer RLS policy issue
-        if (isOwnQuestion && insertionError.toString().contains('row-level security')) {
-          print('ERROR: RLS policy is blocking self-answers');
-          print('ERROR: User cannot answer their own question due to database policy');
-          print('ERROR: Question ID: $questionId');
-          print('ERROR: User ID: ${user.id}');
-          print('ERROR: Question author ID: ${question['author_id']}');
-          print('ERROR: Full error details: $insertionError');
-          print('ERROR: Error type: ${insertionError.runtimeType}');
-          
-          // Log the specific RLS policy error details
-          if (insertionError is PostgrestException) {
-            print('ERROR: PostgrestException details:');
-            print('ERROR: - Message: ${insertionError.message}');
-            print('ERROR: - Code: ${insertionError.code}');
-            print('ERROR: - Details: ${insertionError.details}');
-            print('ERROR: - Hint: ${insertionError.hint}');
-          }
-          
-          throw Exception('You cannot answer your own question. This is blocked by the database security policy.');
-        }
-        
-        // Try one more approach - check if we can read from responses table at all
-        try {
-          print('DEBUG: Testing if we can read from responses table...');
-          final testRead = await _supabase
-              .from('responses')
-              .select('id')
-              .limit(1);
-          print('DEBUG: Responses table is readable, found ${testRead?.length ?? 0} records');
-        } catch (readError) {
-          print('ERROR: Cannot even read from responses table: $readError');
-        }
-        
-        rethrow;
+      // The linked write path. Everything below it is the pre-linkage insert,
+      // kept only for a backend that predates `submit_response`.
+      int? rpcVoteCount;
+      final rpcResult = await _submitResponseViaRpc(
+        questionId: questionId,
+        cityId: cityId.toString(),
+        countryCode: resolvedCountryCode,
+        optionId: optionId,
+        generation: generationValue,
+        sharedWithCloseFriends: sharedWithCloseFriends,
+      );
+      if (rpcResult != null && rpcResult != _submitRpcNotDeployed) {
+        rpcVoteCount = rpcResult;
+      } else if (rpcResult == null) {
+        // A real refusal (rate limit, hidden question, a bad option). Inserting
+        // anyway would route around the server's own answer.
+        return false;
       }
-      
+
+      bool responseInserted = rpcVoteCount != null;
+
+      if (!responseInserted) {
+        // Insert response directly without user_id (responses table is designed for anonymity)
+        print('DEBUG: Inserting response into database: $responseData');
+
+        try {
+          // First, let's verify the question exists and is accessible
+          print('DEBUG: Verifying question access before inserting response...');
+          final questionCheck = await _supabase
+              .from('questions')
+              .select('id, prompt, is_hidden, author_id')
+              .eq('id', questionId)
+              .maybeSingle();
+        
+          if (questionCheck == null) {
+            print('ERROR: Question $questionId not found or not accessible');
+            throw Exception('Question not found or not accessible');
+          }
+        
+          print('DEBUG: Question verified: ${questionCheck['prompt']} (hidden: ${questionCheck['is_hidden']}, author: ${questionCheck['author_id']})');
+        
+          if (questionCheck['is_hidden'] == true) {
+            print('ERROR: Cannot submit response to hidden question');
+            throw Exception('Cannot submit response to hidden question');
+          }
+        
+          // Now try to insert the response
+          print('DEBUG: Inserting response into responses table...');
+          print('DEBUG: Final response data: $responseData');
+        
+          await _supabase
+              .from('responses')
+              .insert(responseData);
+
+          print('SUCCESS: Response inserted into database');
+          responseInserted = true;
+
+          // Check if the trigger updated the question (this might fail due to RLS)
+          try {
+            print('DEBUG: Checking if trigger updated the question...');
+            final updatedQuestion = await _supabase
+                .from('questions')
+                .select('id, is_hidden, updated_at')
+                .eq('id', questionId)
+                .single();
+          
+            print('DEBUG: Question after response insertion: hidden=${updatedQuestion['is_hidden']}, updated_at=${updatedQuestion['updated_at']}');
+          } catch (triggerError) {
+            print('WARNING: Could not verify trigger update: $triggerError');
+            print('WARNING: This might indicate the trigger failed due to RLS policy');
+          }
+        } catch (insertionError) {
+          print('ERROR: Database insertion failed: $insertionError');
+        
+          // Check if this is a self-answer RLS policy issue
+          if (isOwnQuestion && insertionError.toString().contains('row-level security')) {
+            print('ERROR: RLS policy is blocking self-answers');
+            print('ERROR: User cannot answer their own question due to database policy');
+            print('ERROR: Question ID: $questionId');
+            print('ERROR: User ID: ${user.id}');
+            print('ERROR: Question author ID: ${question['author_id']}');
+            print('ERROR: Full error details: $insertionError');
+            print('ERROR: Error type: ${insertionError.runtimeType}');
+          
+            // Log the specific RLS policy error details
+            if (insertionError is PostgrestException) {
+              print('ERROR: PostgrestException details:');
+              print('ERROR: - Message: ${insertionError.message}');
+              print('ERROR: - Code: ${insertionError.code}');
+              print('ERROR: - Details: ${insertionError.details}');
+              print('ERROR: - Hint: ${insertionError.hint}');
+            }
+          
+            throw Exception('You cannot answer your own question. This is blocked by the database security policy.');
+          }
+        
+          // Try one more approach - check if we can read from responses table at all
+          try {
+            print('DEBUG: Testing if we can read from responses table...');
+                      final probe = await _resultsService.fetchTotalCount(questionId);
+            print('DEBUG: results RPC reachable, question has $probe answers');
+          } catch (readError) {
+            print('ERROR: results RPC unreachable: $readError');
+          }
+        
+          rethrow;
+        }
+      }
+
       // Only proceed if response was actually inserted
       if (!responseInserted) {
         throw Exception('Failed to insert response into database');
       }
-      
+
+      // The results screen's un-share toggle opens in the state chosen here.
+      await _networkService
+          .rememberSubmittedSharing(questionId, sharedWithCloseFriends);
+
       // Also increment the option count (this is needed for the UI to reflect changes immediately)
       await incrementOptionCount(questionId, optionId);
-      
+
       // Update the vote count immediately after successful submission
       try {
         print('DEBUG: Updating vote count after successful response submission...');
-        final updatedVoteCount = await getAccurateVoteCount(questionId, question['type']?.toString());
-        
+        // submit_response counted the rows inside its own transaction; only the
+        // fallback insert has to go and ask.
+        final updatedVoteCount = rpcVoteCount ??
+            await getAccurateVoteCount(questionId, question['type']?.toString());
+
         // Update the question in local collection
         final questionIndex = _questions.indexWhere((q) => q['id'].toString() == questionId);
         if (questionIndex != -1) {
@@ -3367,7 +2999,12 @@ class QuestionService extends ChangeNotifier {
   }
   
   // Submit an approval response to the database
-  Future<bool> submitApprovalResponse(String questionId, double score, String countryCode, {LocationService? locationService}) async {
+  /// [sharedWithCloseFriends] is the per-answer close-friend flag chosen on the
+  /// answer form (owner decision 2026-09-17). It is written onto the row and
+  /// frozen there; `false` means this one answer is never surfaced to a close
+  /// friend. Requires `responses.shared_with_close_friends`
+  /// (`scripts/per_answer_share_flag.sql`).
+  Future<bool> submitApprovalResponse(String questionId, double score, String countryCode, {LocationService? locationService, bool sharedWithCloseFriends = true}) async {
     try {
       // Check if user is authenticated first
       final user = _supabase.auth.currentUser;
@@ -3406,35 +3043,45 @@ class QuestionService extends ChangeNotifier {
         'country_code': resolvedCountryCode,
         'is_authenticated': true,
         'generation': generationValue,
+        // Per-answer close-friend visibility, frozen onto the row.
+        'shared_with_close_friends': sharedWithCloseFriends,
       };
 
-      // Insert response directly without user_id (responses table has no user_id for anonymity)
-      print('Submitting approval response: $responseData');
-      final insertResult = await _supabase
-          .from('responses')
-          .insert(responseData)
-          .select('id');
+      // The linked write path; the insert below is the pre-linkage fallback.
+      int? rpcVoteCount;
+      final rpcResult = await _submitResponseViaRpc(
+        questionId: questionId,
+        cityId: cityId.toString(),
+        countryCode: resolvedCountryCode,
+        score: scoreInt,
+        generation: generationValue,
+        sharedWithCloseFriends: sharedWithCloseFriends,
+      );
+      if (rpcResult == null) return false;
+      if (rpcResult != _submitRpcNotDeployed) {
+        rpcVoteCount = rpcResult;
+        print('SUCCESS: Approval response linked');
+      } else {
+        // Insert response directly without user_id (responses table has no user_id for anonymity)
+        print('Submitting approval response: $responseData');
+        await _supabase
+            .from('responses')
+            .insert(responseData);
 
-      print('SUCCESS: Approval response inserted');
-
-      // Handle room sharing for successful response
-      if (insertResult.isNotEmpty) {
-        final responseId = insertResult.first['id'] as String;
-        await _roomSharingService.handleResponseSubmission(
-          questionId: questionId,
-          responseId: responseId,
-          ratingScore: score,
-          questionType: 'approval',
-        );
+        print('SUCCESS: Approval response inserted');
       }
-      
+
+      await _networkService
+          .rememberSubmittedSharing(questionId, sharedWithCloseFriends);
+
       // Update the average score for this question
       await updateQuestionAverageScore(questionId);
-      
+
       // Update the vote count immediately after successful submission
       try {
         print('DEBUG: Updating vote count after successful approval response submission...');
-        final updatedVoteCount = await getAccurateVoteCount(questionId, 'approval_rating');
+        final updatedVoteCount =
+            rpcVoteCount ?? await getAccurateVoteCount(questionId, 'approval_rating');
         
         // Update the question in local collection
         final questionIndex = _questions.indexWhere((q) => q['id'].toString() == questionId);
@@ -3474,27 +3121,18 @@ class QuestionService extends ChangeNotifier {
         return false;
       }
       
-      // Get all responses for this question from the database
-      final response = await _supabase
-          .from('responses')
-          .select('score')
-          .eq('question_id', questionId)
-          .not('score', 'is', null);
-          
-      if (response == null || response.isEmpty) {
+            // Ask the server for the average — the client never sees the scores.
+      final results = await _resultsService
+          .fetchResults(questionId, forceRefresh: true);
+      final normalized = results.overall.average;
+
+      if (normalized == null) {
         print('No scored responses found for question');
         return false;
       }
-      
-      // Calculate the average score
-      int sum = 0;
-      for (var item in response) {
-        if (item['score'] != null) {
-          sum += item['score'] as int;
-        }
-      }
-      
-      final avgScore = sum / response.length;
+
+      // The RPC normalises to -1..1; `average_score` is stored in -100..100.
+      final avgScore = normalized * 100.0;
       
       // Store the average score in the question
       _questions[questionIndex]['average_score'] = avgScore;
@@ -3521,7 +3159,12 @@ class QuestionService extends ChangeNotifier {
   }
   
   // Submit a text response to the database
-  Future<bool> submitTextResponse(String questionId, String responseText, String countryCode, {LocationService? locationService}) async {
+  /// [sharedWithCloseFriends] is the per-answer close-friend flag chosen on the
+  /// answer form (owner decision 2026-09-17). It is written onto the row and
+  /// frozen there; `false` means this one answer is never surfaced to a close
+  /// friend. Requires `responses.shared_with_close_friends`
+  /// (`scripts/per_answer_share_flag.sql`).
+  Future<bool> submitTextResponse(String questionId, String responseText, String countryCode, {LocationService? locationService, bool sharedWithCloseFriends = true}) async {
     try {
       // Check if user is authenticated first
       final user = _supabase.auth.currentUser;
@@ -3557,35 +3200,45 @@ class QuestionService extends ChangeNotifier {
         'country_code': resolvedCountryCode,
         'is_authenticated': true,
         'generation': generationValue,
+        // Per-answer close-friend visibility, frozen onto the row.
+        'shared_with_close_friends': sharedWithCloseFriends,
       };
 
-      // Insert response directly without user_id (responses table has no user_id for anonymity)
-      print('Submitting text response: $responseData');
-      final insertResult = await _supabase
-          .from('responses')
-          .insert(responseData)
-          .select('id');
+      // The linked write path; the insert below is the pre-linkage fallback.
+      int? rpcVoteCount;
+      final rpcResult = await _submitResponseViaRpc(
+        questionId: questionId,
+        cityId: cityId.toString(),
+        countryCode: resolvedCountryCode,
+        textResponse: responseText,
+        generation: generationValue,
+        sharedWithCloseFriends: sharedWithCloseFriends,
+      );
+      if (rpcResult == null) return false;
+      if (rpcResult != _submitRpcNotDeployed) {
+        rpcVoteCount = rpcResult;
+        print('SUCCESS: Text response linked');
+      } else {
+        // Insert response directly without user_id (responses table has no user_id for anonymity)
+        print('Submitting text response: $responseData');
+        await _supabase
+            .from('responses')
+            .insert(responseData);
 
-      print('SUCCESS: Text response inserted');
-
-      // Handle room sharing for successful response
-      if (insertResult.isNotEmpty) {
-        final responseId = insertResult.first['id'] as String;
-        await _roomSharingService.handleResponseSubmission(
-          questionId: questionId,
-          responseId: responseId,
-          responseText: responseText,
-          questionType: 'text',
-        );
+        print('SUCCESS: Text response inserted');
       }
-      
+
+      await _networkService
+          .rememberSubmittedSharing(questionId, sharedWithCloseFriends);
+
       // Update response counts for this question
       updateTextResponseCount(questionId);
-      
+
       // Update the vote count immediately after successful submission
       try {
         print('DEBUG: Updating vote count after successful text response submission...');
-        final updatedVoteCount = await getAccurateVoteCount(questionId, 'text');
+        final updatedVoteCount =
+            rpcVoteCount ?? await getAccurateVoteCount(questionId, 'text');
         
         // Update the question in local collection
         final questionIndex = _questions.indexWhere((q) => q['id'].toString() == questionId);
@@ -3625,14 +3278,8 @@ class QuestionService extends ChangeNotifier {
         return false;
       }
       
-      // Get count of responses for this question
-      final response = await _supabase
-          .from('responses')
-          .select()
-          .eq('question_id', questionId)
-          .not('text_response', 'is', null);
-          
-      final count = response?.length ?? 0;
+            // Get count of responses for this question
+      final count = await _resultsService.fetchTextCount(questionId);
       
       // Update the question with the count (local data only)
       _questions[questionIndex]['response_count'] = count;
@@ -3704,6 +3351,11 @@ class QuestionService extends ChangeNotifier {
     String targeting = 'globe', // globe, country, city
     String? cityId,
     bool isPrivate = false,
+    // Approval-question end labels (WP-B). Persisted as two question_options
+    // rows: sort_order 0 = low/disapprove end, 1 = high/approve end. Null or
+    // blank falls back to the defaults (see utils/approval_labels.dart).
+    String? approvalLowLabel,
+    String? approvalHighLabel,
   }) async {
     try {
       // Get current authenticated user
@@ -3764,6 +3416,43 @@ class QuestionService extends ChangeNotifier {
 
         // Add the actual options with real UUIDs to the response
         response['question_options'] = insertedOptions;
+      }
+
+      // Approval questions store their two slider end labels in the same table
+      // (the column comment reserves question_options for "approval rating
+      // display labels"). sort_order 0 = low/disapprove end, 1 = high/approve.
+      // Written for every approval question so the labels are explicit; older
+      // questions without rows fall back to the defaults client-side.
+      if (type == 'approval_rating' || type == 'approval') {
+        final lowLabel = normalizeApprovalLabel(approvalLowLabel,
+            fallback: kDefaultApprovalLowLabel);
+        final highLabel = normalizeApprovalLabel(approvalHighLabel,
+            fallback: kDefaultApprovalHighLabel);
+        try {
+          final insertedLabels = await _supabase
+              .from('question_options')
+              .insert([
+                {
+                  'question_id': questionId,
+                  'option_text': lowLabel,
+                  'sort_order': 0,
+                },
+                {
+                  'question_id': questionId,
+                  'option_text': highLabel,
+                  'sort_order': 1,
+                },
+              ])
+              .select('id, option_text, sort_order, question_id');
+
+          response['question_options'] = insertedLabels;
+          print('Inserted approval end labels for question $questionId: '
+              '"$lowLabel" / "$highLabel"');
+        } catch (e) {
+          // Non-fatal: the question is already posted and renders with the
+          // default labels if the label rows failed to write.
+          print('Error inserting approval end labels for $questionId: $e');
+        }
       }
 
       // Handle categories through the junction table
@@ -3846,9 +3535,324 @@ class QuestionService extends ChangeNotifier {
   // Check if user has answered the Question of the Day
   bool hasAnsweredQuestionOfTheDay(UserService? userService) {
     if (_questionOfTheDay == null || userService == null) return false;
-    
+
     final questionId = _questionOfTheDay!['id'].toString();
     return userService.hasAnsweredQuestion(questionId);
+  }
+
+  /// Whether [questionId] is the "effective" Question of the Day — either the
+  /// real QOTD or its cached NSFW fallback. Answering an effective QOTD is the
+  /// only answer path that credits the streak (QOTD-first §Streak rule).
+  bool isEffectiveQotd(String questionId) {
+    if (_questionOfTheDay != null &&
+        _questionOfTheDay!['id']?.toString() == questionId) {
+      return true;
+    }
+    if (_nsfwFallbackQuestion != null &&
+        _nsfwFallbackQuestion!['id']?.toString() == questionId) {
+      return true;
+    }
+    return false;
+  }
+
+  /// Fetch the answer-gated Archive queue — unanswered questions, ordered by
+  /// [sort].
+  ///
+  /// Queries `question_feed_scores` ordered by vote_count desc
+  /// ([ArchiveSort.popular], the default) or created_at desc
+  /// ([ArchiveSort.newest], the Archive's "New" flip) and returns up to [limit]
+  /// questions the user has NOT answered, has NOT reported, and (when
+  /// [showNSFW] is false) are non-NSFW. Uses an over-fetch loop (2×limit per
+  /// page) so client-side subtraction of answered/reported items still yields a
+  /// full page; terminates when [limit] is collected or the source is exhausted
+  /// (an empty page). vote_count is normalized to `votes` and engagement data is
+  /// enriched before returning. Both sorts take the identical path — only the
+  /// ORDER BY column changes — so pagination behaves the same either way.
+  ///
+  /// Introduced for Phase 2 (swipe context off the QOTD results push); Phase 3
+  /// reuses it for the Archive default view.
+  Future<List<Map<String, dynamic>>> fetchArchiveQueue({
+    required UserService userService,
+    int limit = 30,
+    int offset = 0,
+    bool showNSFW = false,
+    ArchiveSort sort = ArchiveSort.popular,
+  }) async {
+    final List<Map<String, dynamic>> collected = [];
+    final int pageSize = (limit * 2).clamp(1, 200);
+    int pageOffset = offset;
+
+    try {
+      while (collected.length < limit) {
+        final response = await _supabase
+            .from('question_feed_scores')
+            .select('''
+              id,
+              prompt,
+              description,
+              type,
+              created_at,
+              nsfw,
+              is_hidden,
+              is_private,
+              targeting_type,
+              country_code,
+              city_id,
+              author_id,
+              categories,
+              vote_count,
+              question_options (
+                id,
+                option_text,
+                sort_order
+              )
+            ''')
+            .eq('is_hidden', false)
+            .neq('is_private', true)
+            .filter('targeting_type', 'in', '("globe","country")')
+            .order(
+              sort == ArchiveSort.newest ? 'created_at' : 'vote_count',
+              ascending: false,
+            )
+            .range(pageOffset, pageOffset + pageSize - 1);
+
+        if (response.isEmpty) break; // Source exhausted.
+
+        for (final question in response) {
+          final id = question['id']?.toString();
+          if (id == null) continue;
+
+          // Client-side subtraction (matches the home/feed filter rules).
+          if (!showNSFW && question['nsfw'] == true) continue;
+          if (userService.hasAnsweredQuestion(id)) continue;
+          if (userService.shouldHideReportedQuestion(id)) continue;
+
+          final transformed = Map<String, dynamic>.from(question);
+          transformed['votes'] = question['vote_count'] ?? 0;
+          collected.add(transformed);
+          if (collected.length >= limit) break;
+        }
+
+        pageOffset += pageSize;
+      }
+
+      // Enrich with engagement data (comment/reaction counts) for tiles/results.
+      if (collected.isNotEmpty) {
+        await enrichQuestionsWithEngagementData(collected);
+      }
+    } catch (e) {
+      print('Error in fetchArchiveQueue: $e');
+    }
+
+    return collected;
+  }
+
+  /// Fetches fresh vote counts for [ids] from `question_feed_scores` (the same
+  /// source [fetchArchiveQueue] orders by), keyed by question id. Batched into a
+  /// single `in`-filter query. Ids absent from the view are simply omitted; on
+  /// error an empty map is returned — either way the caller falls back to the
+  /// vote count stored on the answered record. Used by the Archive Answered view
+  /// to rank the user's answered questions by current popularity.
+  Future<Map<String, int>> fetchVoteCountsForIds(List<String> ids) async {
+    if (ids.isEmpty) return {};
+    try {
+      final response = await _supabase
+          .from('question_feed_scores')
+          .select('id, vote_count')
+          .inFilter('id', ids);
+
+      final counts = <String, int>{};
+      for (final row in response) {
+        final id = row['id']?.toString();
+        if (id == null) continue;
+        counts[id] = (row['vote_count'] as int?) ?? 0;
+      }
+      return counts;
+    } catch (e) {
+      print('Error in fetchVoteCountsForIds: $e');
+      return {};
+    }
+  }
+
+  // ==========================================================================
+  // Asker's Pick — QOTD nomination (Phase 3b)
+  // ==========================================================================
+
+  /// Fetch candidate questions for the post-submit "Help pick an upcoming
+  /// Question of the Day" step.
+  ///
+  /// Returns up to [count] questions a fresh asker could plausibly nominate:
+  /// excludes the asker's own questions, text questions (a QOTD is always
+  /// multiple choice or approval — matches the server's
+  /// `qotd_eligible_questions` view, scripts/qotd_exclude_text_questions.sql),
+  /// NSFW/hidden/private, and (client-side) questions that were already a QOTD.
+  /// Only globe-targeted questions are surfaced because the server-side
+  /// selection only ever picks globe questions — so a nomination for a
+  /// country/city question would be a silent no-op.
+  ///
+  /// Always fills [count] slots: people-asked (organic) questions first, then
+  /// the seeded QOTD bank, and as a last resort questions that were a QOTD
+  /// more than three months ago (still eligible server-side). Pages through
+  /// the pool newest-first until the slots are full or the pool runs out, so
+  /// the sheet is never left with one option just because the newest posts
+  /// happen to be the asker's own or yesterday's QOTD.
+  ///
+  /// This is a best-effort approximation for UX only. The `nominate_qotd` RPC
+  /// re-checks every rule server-side and rejects gracefully, so a candidate
+  /// that slips through here simply produces a friendly message on tap.
+  Future<List<Map<String, dynamic>>> fetchQotdCandidates({
+    required String excludeAuthorId,
+    int count = 3,
+  }) async {
+    final List<Map<String, dynamic>> candidates = [];
+
+    // Pool = questions not yet shown as the QOTD (never in history, or only
+    // scheduled for a future date). The newest posts form the window; within
+    // it, the ones that already have votes come first and zero-vote ones are
+    // still allowed. nominate_qotd enforces eligibility server-side
+    // (scripts/nominate_qotd_future_ok.sql).
+    // Questions that have ALREADY BEEN the QOTD (history date <= today, UTC)
+    // go last: never-shown first, and a question shown more than three months
+    // ago only as a fallback filler (the server's repeat rule, so nominate_qotd
+    // still accepts it). Shown within three months = ineligible, skipped.
+    // A question scheduled for a FUTURE date is still fair game: the pool is
+    // "never shown yet", not "never in the table".
+    final Map<String, DateTime> lastQotdDay = {};
+    final todayUtc = DateTime.now().toUtc();
+    final today = DateTime.utc(todayUtc.year, todayUtc.month, todayUtc.day);
+    final repeatCutoff = DateTime.utc(today.year, today.month - 3, today.day);
+    try {
+      final history = await _supabase
+          .from('question_of_the_day_history')
+          .select('question_id, date')
+          .limit(5000);
+      for (final entry in history) {
+        final qid = entry['question_id']?.toString();
+        final date = DateTime.tryParse(entry['date']?.toString() ?? '');
+        if (qid == null || date == null) continue;
+        final day = DateTime.utc(date.year, date.month, date.day);
+        if (day.isAfter(today)) continue;
+        final prev = lastQotdDay[qid];
+        if (prev == null || day.isAfter(prev)) lastQotdDay[qid] = day;
+      }
+    } catch (e) {
+      print('Non-critical: could not fetch QOTD history for candidates: $e');
+    }
+
+    // Page newest-first until `count` survive the client-side filters. The
+    // author and type filters are pushed into the query; the already-a-QOTD
+    // exclusion has to stay client-side (the id list can be thousands long),
+    // which is why one page is not enough.
+    const int pageSize = 30;
+    const int maxPages = 10;
+    final organic = <Map<String, dynamic>>[]; // people-asked, never a QOTD
+    final seeded = <Map<String, dynamic>>[]; // the QOTD bank, never a QOTD
+    final repeats = <Map<String, dynamic>>[]; // a QOTD > 3 months ago
+
+    try {
+      for (var page = 0; page < maxPages; page++) {
+        var query = _supabase
+            .from('question_feed_scores')
+            .select('''
+              id,
+              prompt,
+              description,
+              type,
+              created_at,
+              nsfw,
+              is_hidden,
+              is_private,
+              targeting_type,
+              author_id,
+              categories,
+              vote_count
+            ''')
+            .eq('is_hidden', false)
+            .eq('nsfw', false)
+            .neq('is_private', true)
+            .eq('targeting_type', 'globe')
+            .neq('type', 'text');
+        if (excludeAuthorId.isNotEmpty) {
+          // `neq` alone would also drop NULL-author (seeded) rows.
+          query = query.or('author_id.is.null,author_id.neq.$excludeAuthorId');
+        }
+        final response = await query
+            .order('created_at', ascending: false) // newest posts first
+            .range(page * pageSize, (page + 1) * pageSize - 1);
+
+        // Organic questions (real author) always outrank the seeded launch
+        // bank — seeds only fill slots no organic candidate claims, mirroring
+        // the server's ordering. NULL author is only a UX-side approximation
+        // of is_seeded here (the feed-scores view doesn't expose the column);
+        // the server enforces the real ordering.
+        for (final question in response) {
+          final id = question['id']?.toString();
+          if (id == null) continue;
+          if (question['type']?.toString() == 'text') continue;
+
+          final authorId = question['author_id']?.toString();
+          if (authorId != null && authorId == excludeAuthorId) continue;
+
+          final transformed = Map<String, dynamic>.from(question);
+          transformed['votes'] = question['vote_count'] ?? 0;
+
+          final shown = lastQotdDay[id];
+          if (shown == null) {
+            (authorId == null ? seeded : organic).add(transformed);
+          } else if (shown.isBefore(repeatCutoff)) {
+            repeats.add(transformed);
+          }
+        }
+        if (organic.length + seeded.length >= count) break;
+        if (response.length < pageSize) break; // pool exhausted
+      }
+
+      // Within the collected window, questions WITH votes come first (most
+      // voted first, newest breaking ties); zero-vote questions stay eligible
+      // and simply follow. Organic still outranks seeded.
+      int byVotesThenNewest(Map<String, dynamic> a, Map<String, dynamic> b) {
+        final v = ((b['votes'] ?? 0) as num).compareTo((a['votes'] ?? 0) as num);
+        if (v != 0) return v;
+        return (b['created_at']?.toString() ?? '')
+            .compareTo(a['created_at']?.toString() ?? '');
+      }
+      organic.sort(byVotesThenNewest);
+      seeded.sort(byVotesThenNewest);
+      repeats.sort(byVotesThenNewest);
+      candidates
+        ..addAll(organic)
+        ..addAll(seeded)
+        ..addAll(repeats); // fills only what organic + bank could not
+      if (candidates.length > count) {
+        candidates.removeRange(count, candidates.length);
+      }
+    } catch (e) {
+      print('Error in fetchQotdCandidates: $e');
+    }
+
+    return candidates;
+  }
+
+  /// Nominate [questionId] as an upcoming Question of the Day via the
+  /// `nominate_qotd` RPC. All rules are enforced server-side; the decoded
+  /// result is mapped to a [NominationResult] with a user-friendly message.
+  Future<NominationResult> nominateQotd(String questionId) async {
+    try {
+      final result = await _supabase.rpc(
+        'nominate_qotd',
+        params: {'p_question_id': questionId},
+      );
+
+      if (result is Map && result['success'] == true) {
+        return const NominationResult.ok();
+      }
+
+      final errorCode = result is Map ? result['error']?.toString() : null;
+      return NominationResult.fail(NominationResult.parseError(errorCode));
+    } catch (e) {
+      print('Nominate QOTD error: $e');
+      return NominationResult.fail(NominationError.unknown);
+    }
   }
 
   // Load more questions for pagination using optimized Edge Function
@@ -3857,6 +3861,8 @@ class QuestionService extends ChangeNotifier {
     Map<String, dynamic>? filters,
     UserService? userService,
     int currentOffset = 0,
+    Set<String>? qualifyingQuestionIds,
+    String? categoryFilter,
   }) async {
     if (_isLoading) {
       print('⚠️  Already loading, skipping loadMoreQuestions');
@@ -3864,10 +3870,36 @@ class QuestionService extends ChangeNotifier {
     }
 
     print('📄 Loading more questions with pagination (offset: $currentOffset)...');
-    
+
+    // When a review or category filter is active, bypass materialized view
+    // and query directly for qualifying questions without the 30-day limit
+    if (qualifyingQuestionIds != null && qualifyingQuestionIds.isNotEmpty) {
+      print('🔍 Review filter active: fetching filtered questions by ID (offset: $currentOffset)');
+      return await _fetchFilteredQuestionsByIds(
+        feedType: feedType,
+        filters: filters,
+        userService: userService,
+        questionIds: qualifyingQuestionIds,
+        offset: currentOffset,
+        limit: 50,
+      );
+    }
+
+    if (categoryFilter != null) {
+      print('🔍 Category filter active: fetching filtered questions by category (offset: $currentOffset)');
+      return await _fetchFilteredQuestionsByCategory(
+        feedType: feedType,
+        filters: filters,
+        userService: userService,
+        categoryName: categoryFilter,
+        offset: currentOffset,
+        limit: 50,
+      );
+    }
+
     // Materialized view limit is 300 questions per feed type
     const int materializedViewLimit = 300;
-    
+
     // If offset is within materialized view range, use optimized feed
     if (currentOffset < materializedViewLimit) {
       print('📋 Using materialized view for offset $currentOffset');
@@ -3880,13 +3912,13 @@ class QuestionService extends ChangeNotifier {
         forceRefresh: false, // Don't force refresh, just bypass cache
       );
     }
-    
+
     // Offset exceeds materialized view - switch to raw database queries
     print('🗃️ Offset $currentOffset exceeds materialized view limit ($materializedViewLimit), switching to raw database queries');
-    
+
     // Calculate offset for raw database query (subtract materialized view size)
     final rawDatabaseOffset = currentOffset - materializedViewLimit;
-    
+
     return await _fetchRawDatabaseQuestions(
       feedType: feedType,
       filters: filters,
@@ -4071,7 +4103,379 @@ class QuestionService extends ChangeNotifier {
       return [];
     }
   }
-  
+
+  // Batch fetch response counts for question IDs + types in parallel
+  // Uses getAccurateVoteCount per question but runs all concurrently
+  Future<Map<String, int>> _batchGetResponseCounts(
+    List<String> questionIds, [
+    Map<String, String?>? questionTypes,
+  ]) async {
+    if (questionIds.isEmpty) return {};
+    try {
+      final futures = questionIds.map((qid) async {
+        try {
+          final qtype = questionTypes?[qid];
+          final count = await getAccurateVoteCount(qid, qtype);
+          return MapEntry(qid, count);
+        } catch (e) {
+          return MapEntry(qid, 0);
+        }
+      });
+
+      final entries = await Future.wait(futures);
+      return Map.fromEntries(entries);
+    } catch (e) {
+      print('⚠️ Batch response count failed: $e');
+      return {};
+    }
+  }
+
+  // Process raw question data: add vote counts, metadata, and categories
+  void _processQuestionData(
+    Map<String, dynamic> question,
+    Map<String, int> voteCounts,
+  ) {
+    final qid = question['id']?.toString() ?? '';
+    final voteCount = voteCounts[qid] ?? 0;
+    question['vote_count'] = voteCount;
+    question['votes'] = voteCount;
+
+    final createdAt = DateTime.parse(question['created_at']);
+    final hoursSincePost = DateTime.now().difference(createdAt).inHours.toDouble();
+    question['hours_since_post'] = hoursSincePost > 0 ? hoursSincePost : 0.1;
+
+    final targetingType = question['targeting_type']?.toString() ?? 'globe';
+    double scopeWeight;
+    switch (targetingType) {
+      case 'city': scopeWeight = 1.0; break;
+      case 'country': scopeWeight = 0.7; break;
+      case 'globe': case 'global': scopeWeight = 0.3; break;
+      default: scopeWeight = 0.5; break;
+    }
+    question['scope_weight'] = scopeWeight;
+
+    final questionCategories = question['question_categories'] as List<dynamic>?;
+    if (questionCategories != null) {
+      final categories = questionCategories
+          .map((qc) => (qc['categories'] as Map<String, dynamic>)['name'].toString())
+          .toList();
+      question['categories'] = categories;
+    } else {
+      question['categories'] = <String>[];
+    }
+    question.remove('question_categories');
+
+    final citiesData = question['cities'] as Map<String, dynamic>?;
+    if (citiesData != null) {
+      question['city_name'] = citiesData['name'];
+      question['admin2_code'] = citiesData['admin2_code'];
+      question['city_country_code'] = citiesData['country_code'];
+      question['city_lat'] = citiesData['lat'];
+      question['city_lng'] = citiesData['lng'];
+    }
+  }
+
+  // Fetch questions filtered by a set of qualifying IDs (no 30-day limit)
+  // Used when a review tag filter is active
+  Future<List<Map<String, dynamic>>> _fetchFilteredQuestionsByIds({
+    required String feedType,
+    Map<String, dynamic>? filters,
+    UserService? userService,
+    required Set<String> questionIds,
+    int offset = 0,
+    int limit = 50,
+  }) async {
+    try {
+      print('🔍 Fetching filtered questions by IDs: feedType=$feedType, offset=$offset, limit=$limit, ids=${questionIds.length}');
+
+      final showNSFW = filters?['showNSFW'] as bool? ?? false;
+      final questionTypes = filters?['questionTypes'] as List<String>?;
+      final idList = questionIds.toList();
+
+      // For popular/trending sort, we need vote counts to determine page order.
+      // Fetch metadata + counts first, sort the IDs, then fetch the right page of full data.
+      if (feedType == 'popular' || feedType == 'trending') {
+        // Step 1: Fetch lightweight metadata (id, type, created_at) for all qualifying IDs
+        final metaResponse = await _supabase
+            .from('questions')
+            .select('id, type, created_at, targeting_type')
+            .eq('is_hidden', false)
+            .inFilter('id', idList) as List<dynamic>;
+
+        final metaMap = <String, Map<String, dynamic>>{};
+        final typeMap = <String, String?>{};
+        for (final row in metaResponse) {
+          final id = row['id'].toString();
+          metaMap[id] = Map<String, dynamic>.from(row);
+          typeMap[id] = row['type']?.toString();
+        }
+
+        // Step 2: Get response counts in parallel (uses accurate per-type counting)
+        final validIds = metaMap.keys.toList();
+        final voteCounts = await _batchGetResponseCounts(validIds, typeMap);
+
+        // Step 3: Sort IDs by the feed algorithm
+        final sortedIds = List<String>.from(validIds);
+        if (feedType == 'popular') {
+          sortedIds.sort((a, b) => (voteCounts[b] ?? 0).compareTo(voteCounts[a] ?? 0));
+        } else {
+          sortedIds.sort((a, b) {
+            final aVotes = voteCounts[a] ?? 0;
+            final bVotes = voteCounts[b] ?? 0;
+            final aMeta = metaMap[a];
+            final bMeta = metaMap[b];
+            final aCreated = aMeta != null ? DateTime.parse(aMeta['created_at']) : DateTime(2000);
+            final bCreated = bMeta != null ? DateTime.parse(bMeta['created_at']) : DateTime(2000);
+            final aHours = DateTime.now().difference(aCreated).inHours.toDouble();
+            final bHours = DateTime.now().difference(bCreated).inHours.toDouble();
+            final aScore = (aVotes + 1) / (aHours + 1);
+            final bScore = (bVotes + 1) / (bHours + 1);
+            return bScore.compareTo(aScore);
+          });
+        }
+
+        // Step 3: Take the right page of sorted IDs
+        final pageIds = sortedIds.skip(offset).take(limit).toList();
+        if (pageIds.isEmpty) return [];
+
+        // Step 4: Fetch full question data for this page only
+        var queryBuilder = _supabase
+            .from('questions')
+            .select('''
+              id, prompt, description, type, created_at, nsfw, is_hidden,
+              targeting_type, country_code, city_id, author_id,
+              cities(name, admin2_code, country_code, lat, lng),
+              question_options(id, option_text, sort_order),
+              question_categories(categories(id, name))
+            ''')
+            .inFilter('id', pageIds);
+
+        final response = await queryBuilder as List<dynamic>;
+
+        // Process and maintain sort order
+        final questionMap = <String, Map<String, dynamic>>{};
+        for (final item in response) {
+          final question = Map<String, dynamic>.from(item as Map<String, dynamic>);
+          _processQuestionData(question, voteCounts);
+          questionMap[question['id'].toString()] = question;
+        }
+
+        // Return in sorted order
+        final questions = <Map<String, dynamic>>[];
+        for (final id in pageIds) {
+          if (questionMap.containsKey(id)) {
+            questions.add(questionMap[id]!);
+          }
+        }
+
+        print('✅ Processed ${questions.length} filtered questions by ID (${feedType} sort)');
+        return questions;
+      }
+
+      // For 'new' feed: simple created_at ordering, paginate directly
+      var queryBuilder = _supabase
+          .from('questions')
+          .select('''
+            id, prompt, description, type, created_at, nsfw, is_hidden,
+            targeting_type, country_code, city_id, author_id,
+            cities(name, admin2_code, country_code, lat, lng),
+            question_options(id, option_text, sort_order),
+            question_categories(categories(id, name))
+          ''')
+          .eq('is_hidden', false)
+          .inFilter('id', idList);
+
+      if (!showNSFW) {
+        queryBuilder = queryBuilder.eq('nsfw', false);
+      }
+
+      if (questionTypes != null && questionTypes.isNotEmpty) {
+        queryBuilder = queryBuilder.inFilter('type', questionTypes);
+      }
+
+      final orderedQuery = queryBuilder.order('created_at', ascending: false);
+      final response = await orderedQuery
+          .range(offset, offset + limit - 1) as List<dynamic>;
+
+      print('🔍 Filtered-by-ID query returned ${response.length} questions');
+      if (response.isEmpty) return [];
+
+      // Batch fetch vote counts for this page (with type info for accurate counting)
+      final pageTypeMap = <String, String?>{};
+      for (final item in response) {
+        pageTypeMap[item['id'].toString()] = item['type']?.toString();
+      }
+      final pageIds = pageTypeMap.keys.toList();
+      final voteCounts = await _batchGetResponseCounts(pageIds, pageTypeMap);
+
+      final questions = <Map<String, dynamic>>[];
+      for (final item in response) {
+        final question = Map<String, dynamic>.from(item as Map<String, dynamic>);
+        _processQuestionData(question, voteCounts);
+        questions.add(question);
+      }
+
+      print('✅ Processed ${questions.length} filtered questions by ID');
+      return questions;
+
+    } catch (e, stackTrace) {
+      print('❌ Error fetching filtered questions by ID: $e');
+      print('❌ Stack trace: $stackTrace');
+      return [];
+    }
+  }
+
+  // Fetch questions filtered by category name (no 30-day limit)
+  // Used when a category filter is active
+  Future<List<Map<String, dynamic>>> _fetchFilteredQuestionsByCategory({
+    required String feedType,
+    Map<String, dynamic>? filters,
+    UserService? userService,
+    required String categoryName,
+    int offset = 0,
+    int limit = 50,
+  }) async {
+    try {
+      print('🔍 Fetching filtered questions by category: feedType=$feedType, category=$categoryName, offset=$offset, limit=$limit');
+
+      final showNSFW = filters?['showNSFW'] as bool? ?? false;
+      final questionTypes = filters?['questionTypes'] as List<String>?;
+
+      // For popular/trending, first get all matching question IDs, then sort by votes
+      if (feedType == 'popular' || feedType == 'trending') {
+        // Step 1: Get all question IDs matching this category (with type for accurate vote counting)
+        var idQueryBuilder = _supabase
+            .from('questions')
+            .select('id, type, created_at, targeting_type, question_categories!inner(categories!inner(id, name))')
+            .eq('is_hidden', false)
+            .eq('question_categories.categories.name', categoryName);
+
+        if (!showNSFW) {
+          idQueryBuilder = idQueryBuilder.eq('nsfw', false);
+        }
+        if (questionTypes != null && questionTypes.isNotEmpty) {
+          idQueryBuilder = idQueryBuilder.inFilter('type', questionTypes);
+        }
+
+        final idResponse = await idQueryBuilder as List<dynamic>;
+        if (idResponse.isEmpty) return [];
+
+        final metaMap = <String, Map<String, dynamic>>{};
+        final typeMap = <String, String?>{};
+        for (final row in idResponse) {
+          final id = row['id'].toString();
+          metaMap[id] = Map<String, dynamic>.from(row);
+          typeMap[id] = row['type']?.toString();
+        }
+        final allIds = metaMap.keys.toList();
+
+        // Step 2: Batch get vote counts (parallel, with type info)
+        final voteCounts = await _batchGetResponseCounts(allIds, typeMap);
+
+        final sortedIds = List<String>.from(allIds);
+        if (feedType == 'popular') {
+          sortedIds.sort((a, b) => (voteCounts[b] ?? 0).compareTo(voteCounts[a] ?? 0));
+        } else {
+          sortedIds.sort((a, b) {
+            final aVotes = voteCounts[a] ?? 0;
+            final bVotes = voteCounts[b] ?? 0;
+            final aMeta = metaMap[a];
+            final bMeta = metaMap[b];
+            final aCreated = aMeta != null ? DateTime.parse(aMeta['created_at']) : DateTime(2000);
+            final bCreated = bMeta != null ? DateTime.parse(bMeta['created_at']) : DateTime(2000);
+            final aHours = DateTime.now().difference(aCreated).inHours.toDouble();
+            final bHours = DateTime.now().difference(bCreated).inHours.toDouble();
+            final aScore = (aVotes + 1) / (aHours + 1);
+            final bScore = (bVotes + 1) / (bHours + 1);
+            return bScore.compareTo(aScore);
+          });
+        }
+
+        // Step 4: Page and fetch full data
+        final pageIds = sortedIds.skip(offset).take(limit).toList();
+        if (pageIds.isEmpty) return [];
+
+        final fullResponse = await _supabase
+            .from('questions')
+            .select('''
+              id, prompt, description, type, created_at, nsfw, is_hidden,
+              targeting_type, country_code, city_id, author_id,
+              cities(name, admin2_code, country_code, lat, lng),
+              question_options(id, option_text, sort_order),
+              question_categories(categories(id, name))
+            ''')
+            .inFilter('id', pageIds) as List<dynamic>;
+
+        final questionMap = <String, Map<String, dynamic>>{};
+        for (final item in fullResponse) {
+          final question = Map<String, dynamic>.from(item as Map<String, dynamic>);
+          _processQuestionData(question, voteCounts);
+          questionMap[question['id'].toString()] = question;
+        }
+
+        final questions = <Map<String, dynamic>>[];
+        for (final id in pageIds) {
+          if (questionMap.containsKey(id)) {
+            questions.add(questionMap[id]!);
+          }
+        }
+
+        print('✅ Processed ${questions.length} filtered questions by category (${feedType} sort)');
+        return questions;
+      }
+
+      // For 'new' feed: simple created_at ordering
+      var queryBuilder = _supabase
+          .from('questions')
+          .select('''
+            id, prompt, description, type, created_at, nsfw, is_hidden,
+            targeting_type, country_code, city_id, author_id,
+            cities(name, admin2_code, country_code, lat, lng),
+            question_options(id, option_text, sort_order),
+            question_categories!inner(categories!inner(id, name))
+          ''')
+          .eq('is_hidden', false)
+          .eq('question_categories.categories.name', categoryName);
+
+      if (!showNSFW) {
+        queryBuilder = queryBuilder.eq('nsfw', false);
+      }
+
+      if (questionTypes != null && questionTypes.isNotEmpty) {
+        queryBuilder = queryBuilder.inFilter('type', questionTypes);
+      }
+
+      final orderedQuery = queryBuilder.order('created_at', ascending: false);
+      final response = await orderedQuery
+          .range(offset, offset + limit - 1) as List<dynamic>;
+
+      print('🔍 Filtered-by-category query returned ${response.length} questions');
+      if (response.isEmpty) return [];
+
+      final catPageTypeMap = <String, String?>{};
+      for (final item in response) {
+        catPageTypeMap[item['id'].toString()] = item['type']?.toString();
+      }
+      final catPageIds = catPageTypeMap.keys.toList();
+      final voteCounts = await _batchGetResponseCounts(catPageIds, catPageTypeMap);
+
+      final questions = <Map<String, dynamic>>[];
+      for (final item in response) {
+        final question = Map<String, dynamic>.from(item as Map<String, dynamic>);
+        _processQuestionData(question, voteCounts);
+        questions.add(question);
+      }
+
+      print('✅ Processed ${questions.length} filtered questions by category');
+      return questions;
+
+    } catch (e, stackTrace) {
+      print('❌ Error fetching filtered questions by category: $e');
+      print('❌ Stack trace: $stackTrace');
+      return [];
+    }
+  }
+
   // Apply sorting algorithm to raw database questions
   void _applySortingAlgorithmToRawQuestions(List<Map<String, dynamic>> questions, String feedType) {
     if (feedType == 'trending') {
@@ -4485,21 +4889,14 @@ class QuestionService extends ChangeNotifier {
     if (questions.isEmpty) return;
     
     try {
-      final questionIds = questions.map((q) => q['id']).where((id) => id != null).toList();
+            final questionIds = questions
+          .map((q) => q['id']?.toString())
+          .whereType<String>()
+          .toList();
       if (questionIds.isEmpty) return;
+
+      final voteCounts = await _resultsService.fetchVoteCounts(questionIds);
       
-      final voteCountResponse = await _supabase
-          .from('responses')
-          .select('question_id')
-          .inFilter('question_id', questionIds);
-      
-      final voteCounts = <String, int>{};
-      for (var response in voteCountResponse) {
-        final questionId = response['question_id']?.toString();
-        if (questionId != null) {
-          voteCounts[questionId] = (voteCounts[questionId] ?? 0) + 1;
-        }
-      }
       
       for (var question in questions) {
         final questionId = question['id']?.toString();
@@ -4838,7 +5235,7 @@ class QuestionService extends ChangeNotifier {
           .replace(queryParameters: queryParams);
       
       // Use anon key for Edge Functions (required for proper authentication)
-      const anonKey = String.fromEnvironment('SUPABASE_ANON_KEY');
+      const anonKey = SupabaseConfig.anonKey;
       
       print('🔗 Edge Function URL: $uri');
       print('🔍 Request parameters: ${queryParams.toString()}');
@@ -5017,6 +5414,11 @@ class QuestionService extends ChangeNotifier {
 
     } catch (e) {
       print('❌ Edge Function error: $e');
+      // Review 2026-09-19 P0-4: an empty feed and a broken feed look identical
+      // from outside. `reason: edge_function` says the primary path failed but
+      // the fallback may still have saved it; `reason: fallback` says the user
+      // saw nothing at all.
+      AnalyticsService().trackRpcFailed('load_feed', reason: 'edge_function');
       
       // Fallback to question_feed_scores materialized view
       print('🔄 Falling back to question_feed_scores materialized view...');
@@ -5024,6 +5426,7 @@ class QuestionService extends ChangeNotifier {
         return await _fetchFallbackFeed(feedType, limit, cursor, filters, userService, offset);
       } catch (fallbackError) {
         print('❌ Fallback also failed: $fallbackError');
+        AnalyticsService().trackRpcFailed('load_feed', reason: 'fallback');
         return [];
       }
     }
@@ -5426,21 +5829,13 @@ class QuestionService extends ChangeNotifier {
 
       // Get vote counts in a single batch query
       try {
-        final questionIds = processedQuestions.map((q) => q['id']).where((id) => id != null).toList();
+                final questionIds = processedQuestions
+            .map((q) => q['id']?.toString())
+            .whereType<String>()
+            .toList();
         if (questionIds.isNotEmpty) {
-          final voteCountResponse = await _supabase
-              .from('responses')
-              .select('question_id')
-              .filter('question_id', 'in', '(${questionIds.join(',')})');
-          
-          final voteCounts = <String, int>{};
-          for (var response in voteCountResponse) {
-            final questionId = response['question_id']?.toString();
-            if (questionId != null) {
-              voteCounts[questionId] = (voteCounts[questionId] ?? 0) + 1;
-            }
-          }
-          
+          final voteCounts = await _resultsService.fetchVoteCounts(questionIds);
+
           for (var question in processedQuestions) {
             final questionId = question['id']?.toString();
             if (questionId != null) {
@@ -5958,24 +6353,15 @@ class QuestionService extends ChangeNotifier {
   // Update response counts for a specific list of questions
   Future<void> _updateQuestionResponseCountsForList(List<Map<String, dynamic>> questions) async {
     try {
+            // One batched call for the whole list, instead of a query per question.
+      final ids = questions
+          .map((q) => q['id']?.toString())
+          .whereType<String>()
+          .toList();
+      final counts = await _resultsService.fetchVoteCounts(ids);
       for (var i = 0; i < questions.length; i++) {
-        final questionId = questions[i]['id'];
-        
-        try {
-          // Get all responses for this question and count them
-          final response = await _supabase
-              .from('responses')
-              .select()
-              .eq('question_id', questionId);
-          
-          // Count is just the length of the returned array
-          final count = response.length;
-          questions[i]['votes'] = count;
-        } catch (e) {
-          print('Error counting responses for question $questionId: $e');
-          // If we can't get the count, default to 0
-          questions[i]['votes'] = 0;
-        }
+        final questionId = questions[i]['id']?.toString();
+        questions[i]['votes'] = questionId == null ? 0 : (counts[questionId] ?? 0);
       }
     } catch (e) {
       print('Error updating response counts for question list: $e');
@@ -6630,13 +7016,8 @@ class QuestionService extends ChangeNotifier {
           // Remove the nested structure we don't need
           question.remove('question_categories');
           
-          // Get current vote count from responses table
-          final responseCountQuery = await _supabase
-              .from('responses')
-              .select('id')
-              .eq('question_id', questionId);
-          
-          question['votes'] = responseCountQuery?.length ?? 0;
+                    // Get the current answer count from the results RPC
+          question['votes'] = await _resultsService.fetchTotalCount(questionId);
           
           // Ensure consistent field naming
           if (question['prompt'] == null && question['title'] != null) {
@@ -6715,25 +7096,10 @@ class QuestionService extends ChangeNotifier {
             return [];
           }
 
-          // Batch fetch vote counts for all questions (also process in batches)
-          final Map<String, int> voteCounts = {};
+                    // Batch fetch vote counts for all questions (the service chunks)
+          final Map<String, int> voteCounts =
+              await _resultsService.fetchVoteCounts(questionIds);
           
-          for (int i = 0; i < questionIds.length; i += batchSize) {
-            final batch = questionIds.skip(i).take(batchSize).toList();
-            
-            final responseCountsQuery = await _supabase
-                .from('responses')
-                .select('question_id, id')
-                .inFilter('question_id', batch);
-
-            // Group vote counts by question_id for this batch
-            if (responseCountsQuery != null) {
-              for (final resp in responseCountsQuery) {
-                final questionId = resp['question_id'] as String;
-                voteCounts[questionId] = (voteCounts[questionId] ?? 0) + 1;
-              }
-            }
-          }
           
           // Batch fetch comment counts for all questions (also process in batches)
           final Map<String, int> commentCounts = {};
@@ -6846,34 +7212,61 @@ class QuestionService extends ChangeNotifier {
     }
   }
 
-  /// Search questions by prompt for autocomplete functionality
-  /// Uses the same search logic as the main search screen for consistency
-  Future<List<Map<String, dynamic>>> searchQuestionsForAutocomplete(String query, {int limit = 10, bool includeNSFW = false, bool excludePrivate = false}) async {
-    print('🔍 searchQuestionsForAutocomplete called with query: "$query", limit: $limit');
-    
-    if (query.trim().isEmpty) {
-      print('❌ Empty query provided, returning empty list');
-      return [];
-    }
+  /// Lean question search for pickers: the friend-chat forward picker and the
+  /// comment composer's `?:` mention. One request, four fields per row.
+  ///
+  /// Reads `question_feed_scores` (every non-hidden, non-private question ever
+  /// posted, seeds only after their QOTD debut) which carries a precomputed
+  /// `vote_count`, so there is no per-row counts round trip. The old path went
+  /// through the Archive's `searchQuestions`, which fetched up to 200 full
+  /// rows and then made two sequential requests per row for counts the picker
+  /// never showed — a hundred-plus round trips to display ten rows.
+  ///
+  /// Matches the prompt or description (case-insensitive substring), most
+  /// answered first, newest breaking ties. [excludePrivate] is kept for the
+  /// call sites' sake; the view never contains private questions.
+  Future<List<Map<String, dynamic>>> searchQuestionsForAutocomplete(
+    String query, {
+    int limit = 10,
+    bool includeNSFW = false,
+    bool excludePrivate = false,
+  }) async {
+    final needle = query.trim();
+    if (needle.isEmpty) return [];
+
+    // PostgREST parses the `or=` filter itself, so the user's text is quoted
+    // and stripped of the two characters that could end the quote early.
+    // `%` and `_` are LIKE wildcards; matching a little loosely on those is
+    // harmless in a picker.
+    final safe = needle.replaceAll(RegExp(r'[\\"]'), '');
+    if (safe.isEmpty) return [];
+    final pattern = '"%$safe%"';
 
     try {
-      // Use the same search method as the search screen but with minimal data needed for autocomplete
-      final allResults = await searchQuestions(query.trim(), includeNSFW: includeNSFW, excludePrivate: excludePrivate);
-      
-      // Filter and limit results for autocomplete
-      final limitedResults = allResults.take(limit).map((question) => {
-        'id': question['id'],
-        'prompt': question['prompt'],
-        'type': question['type'],
-        'votes': question['votes'] ?? 0,
-      }).toList();
-      
-      print('✅ Autocomplete search successful - found ${limitedResults.length} results (from ${allResults.length} total)');
-      print('📊 Results: ${limitedResults.map((r) => r['prompt']).toList()}');
-      return limitedResults;
+      var request = _supabase
+          .from('question_feed_scores')
+          .select('id, prompt, type, vote_count')
+          .eq('is_hidden', false)
+          .or('prompt.ilike.$pattern,description.ilike.$pattern');
+      if (!includeNSFW) {
+        request = request.eq('nsfw', false);
+      }
+      final response = await request
+          .order('vote_count', ascending: false)
+          .order('created_at', ascending: false)
+          .limit(limit);
+
+      return [
+        for (final row in response)
+          {
+            'id': row['id'],
+            'prompt': row['prompt'],
+            'type': row['type'],
+            'votes': (row['vote_count'] as num?)?.toInt() ?? 0,
+          }
+      ];
     } catch (e) {
-      print('❌ Autocomplete search failed: $e');
-      print('💀 Returning empty list due to search failure');
+      print('Autocomplete search failed: $e');
       return [];
     }
   }
@@ -7013,22 +7406,6 @@ class FeedContext {
         continue;
       }
       
-      final questionType = question['type']?.toString();
-      if (questionType != null && !userService.isQuestionTypeEnabled(questionType)) {
-        continue;
-      }
-      
-      final questionCategories = question['categories'] as List<dynamic>?;
-      if (questionCategories != null && questionCategories.isNotEmpty) {
-        final hasEnabledCategory = questionCategories.any((category) {
-          final categoryName = category.toString();
-          return userService.enabledCategories.contains(categoryName);
-        });
-        if (!hasEnabledCategory) {
-          continue;
-        }
-      }
-      
       return question;
     }
     
@@ -7060,22 +7437,6 @@ class FeedContext {
         continue;
       }
       
-      final questionType = question['type']?.toString();
-      if (questionType != null && !userService.isQuestionTypeEnabled(questionType)) {
-        continue;
-      }
-      
-      final questionCategories = question['categories'] as List<dynamic>?;
-      if (questionCategories != null && questionCategories.isNotEmpty) {
-        final hasEnabledCategory = questionCategories.any((category) {
-          final categoryName = category.toString();
-          return userService.enabledCategories.contains(categoryName);
-        });
-        if (!hasEnabledCategory) {
-          continue;
-        }
-      }
-      
       return question;
     }
     
@@ -7105,22 +7466,6 @@ class FeedContext {
         continue;
       }
       
-      final questionType = question['type']?.toString();
-      if (questionType != null && !userService.isQuestionTypeEnabled(questionType)) {
-        continue;
-      }
-      
-      final questionCategories = question['categories'] as List<dynamic>?;
-      if (questionCategories != null && questionCategories.isNotEmpty) {
-        final hasEnabledCategory = questionCategories.any((category) {
-          final categoryName = category.toString();
-          return userService.enabledCategories.contains(categoryName);
-        });
-        if (!hasEnabledCategory) {
-          continue;
-        }
-      }
-      
       return question;
     }
     
@@ -7148,22 +7493,6 @@ class FeedContext {
         continue;
       }
       
-      final questionType = question['type']?.toString();
-      if (questionType != null && !userService.isQuestionTypeEnabled(questionType)) {
-        continue;
-      }
-      
-      final questionCategories = question['categories'] as List<dynamic>?;
-      if (questionCategories != null && questionCategories.isNotEmpty) {
-        final hasEnabledCategory = questionCategories.any((category) {
-          final categoryName = category.toString();
-          return userService.enabledCategories.contains(categoryName);
-        });
-        if (!hasEnabledCategory) {
-          continue;
-        }
-      }
-      
       return question;
     }
     
@@ -7186,22 +7515,6 @@ class FeedContext {
       
       if (userService.isQuestionDismissed(question['id'].toString())) {
         continue;
-      }
-      
-      final questionType = question['type']?.toString();
-      if (questionType != null && !userService.isQuestionTypeEnabled(questionType)) {
-        continue;
-      }
-      
-      final questionCategories = question['categories'] as List<dynamic>?;
-      if (questionCategories != null && questionCategories.isNotEmpty) {
-        final hasEnabledCategory = questionCategories.any((category) {
-          final categoryName = category.toString();
-          return userService.enabledCategories.contains(categoryName);
-        });
-        if (!hasEnabledCategory) {
-          continue;
-        }
       }
       
       return question;
@@ -7229,22 +7542,6 @@ class FeedContext {
       
       if (userService.isQuestionDismissed(question['id'].toString())) {
         continue;
-      }
-      
-      final questionType = question['type']?.toString();
-      if (questionType != null && !userService.isQuestionTypeEnabled(questionType)) {
-        continue;
-      }
-      
-      final questionCategories = question['categories'] as List<dynamic>?;
-      if (questionCategories != null && questionCategories.isNotEmpty) {
-        final hasEnabledCategory = questionCategories.any((category) {
-          final categoryName = category.toString();
-          return userService.enabledCategories.contains(categoryName);
-        });
-        if (!hasEnabledCategory) {
-          continue;
-        }
       }
       
       return question;

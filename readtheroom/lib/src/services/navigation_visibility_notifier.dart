@@ -14,12 +14,26 @@ class NavigationVisibilityNotifier extends ChangeNotifier {
   bool _isScrollingDown = false;
   bool _isUserTouching = false; // Track if user is actively touching the screen
   Timer? _delayTimer; // Timer for 5-second delay before showing navigation
-  
+  bool _isHomeAtBottom = false;
+
   // Getters
   bool get isNavigationVisible => _isNavigationVisible;
   bool get isAtTop => _isAtTop;
   bool get isScrollingDown => _isScrollingDown;
   bool get isUserTouching => _isUserTouching;
+
+  /// Whether the home scroll sits at (or near) its bottom edge — or cannot
+  /// scroll at all. The new-question FAB fades in only then, so it never
+  /// covers the hero card's own buttons mid-read.
+  bool get isHomeAtBottom => _isHomeAtBottom;
+
+  /// Reported by the home screen on scroll/layout changes.
+  void setHomeAtBottom(bool atBottom) {
+    if (_isHomeAtBottom != atBottom) {
+      _isHomeAtBottom = atBottom;
+      notifyListeners();
+    }
+  }
   
   // Constants for scroll behavior
   static const double _scrollThreshold = 8.0; // Increased threshold for more deliberate hiding

@@ -9,12 +9,12 @@ import '../services/comment_service.dart';
 import '../services/lizzy_vote_service.dart';
 import '../utils/theme_utils.dart';
 import 'comment_widget.dart';
+import 'comments_overlay.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class CommentsSection extends StatefulWidget {
-  final String? questionId;
-  final String? suggestionId;
+  final String questionId;
   final List<Map<String, dynamic>>? initialComments;
   final bool showAddCommentButton;
   final VoidCallback? onAddCommentTap;
@@ -23,12 +23,14 @@ class CommentsSection extends StatefulWidget {
   final bool useDummyData; // For testing UI
   final Function(List<Map<String, dynamic>>)? onCommentsLoaded; // Callback for comments
   final Map<String, dynamic>? questionContext; // Question data for NSFW checking
-  final Map<String, dynamic>? suggestionContext; // Suggestion data for context
+  final String? questionTitle; // For overlay header
+  final bool isAuthor; // Whether current user is question author
+  final VoidCallback? onRatingSubmitted; // Callback when rating submitted in overlay
+  final Function(Map<String, dynamic>)? onCommentAdded; // Callback when a comment is added
 
   const CommentsSection({
     Key? key,
-    this.questionId,
-    this.suggestionId,
+    required this.questionId,
     this.initialComments,
     this.showAddCommentButton = true,
     this.onAddCommentTap,
@@ -37,10 +39,11 @@ class CommentsSection extends StatefulWidget {
     this.useDummyData = false,
     this.onCommentsLoaded,
     this.questionContext,
-    this.suggestionContext,
-  }) : assert(questionId != null || suggestionId != null, 'Either questionId or suggestionId must be provided'),
-       assert(questionId == null || suggestionId == null, 'Only one of questionId or suggestionId should be provided'),
-       super(key: key);
+    this.questionTitle,
+    this.isAuthor = false,
+    this.onRatingSubmitted,
+    this.onCommentAdded,
+  }) : super(key: key);
 
   @override
   State<CommentsSection> createState() => _CommentsSectionState();
@@ -111,20 +114,11 @@ class _CommentsSectionState extends State<CommentsSection> {
       final commentService = CommentService();
       final page = loadMore ? _currentPage + 1 : 0;
       
-      List<Map<String, dynamic>> newComments;
-      if (widget.questionId != null) {
-        newComments = await commentService.getCommentsForQuestion(
-          widget.questionId!,
-          page: page,
-          limit: _commentsPerPage,
-        );
-      } else {
-        newComments = await commentService.getCommentsForSuggestion(
-          widget.suggestionId!,
-          page: page,
-          limit: _commentsPerPage,
-        );
-      }
+      final newComments = await commentService.getCommentsForQuestion(
+        widget.questionId,
+        page: page,
+        limit: _commentsPerPage,
+      );
 
       if (mounted) {
         setState(() {
@@ -211,6 +205,17 @@ class _CommentsSectionState extends State<CommentsSection> {
       return !isHidden;
     }).toList();
     return visibleComments.length > _displayedCommentsCount;
+  }
+
+  String? get _currentUserUsername {
+    final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+    if (currentUserId == null) return null;
+    for (final comment in _comments) {
+      if (comment['author_id']?.toString() == currentUserId) {
+        return comment['randomized_username']?.toString();
+      }
+    }
+    return null;
   }
 
   bool get _isShowingAllComments {
@@ -558,6 +563,23 @@ class _CommentsSectionState extends State<CommentsSection> {
     });
   }
 
+  void _openCommentsOverlay() {
+    CommentsOverlay.show(
+      context: context,
+      questionId: widget.questionId,
+      questionTitle: widget.questionTitle ?? 'Question',
+      question: widget.questionContext,
+      isAuthor: widget.isAuthor,
+      initialComments: _comments,
+      onCommentAdded: (newComment) {
+        print('CommentsSection: onCommentAdded callback fired');
+        refreshComments();
+        widget.onCommentAdded?.call(newComment);
+      },
+      onRatingSubmitted: widget.onRatingSubmitted,
+    );
+  }
+
   Widget _buildHeader() {
     final commentCount = _comments.length;
     
@@ -615,7 +637,7 @@ class _CommentsSectionState extends State<CommentsSection> {
         Spacer(),
         if (widget.showAddCommentButton && Supabase.instance.client.auth.currentUser != null)
           TextButton.icon(
-            onPressed: widget.onAddCommentTap,
+            onPressed: widget.onAddCommentTap ?? _openCommentsOverlay,
             icon: Icon(Icons.add_comment, size: 18),
             label: Text('Add'),
             style: TextButton.styleFrom(
@@ -693,18 +715,7 @@ class _CommentsSectionState extends State<CommentsSection> {
         margin: EdgeInsets.symmetric(vertical: 8),
         width: double.infinity,
         child: TextButton(
-          onPressed: () {
-            setState(() {
-              // Show 5 more comments, but don't exceed total available comments
-              final visibleComments = _comments.where((comment) {
-                final isHidden = comment['is_hidden'] as bool? ?? false;
-                return !isHidden;
-              }).toList();
-              
-              _displayedCommentsCount = (_displayedCommentsCount + _commentsPerLoad)
-                  .clamp(widget.previewCommentsCount, visibleComments.length);
-            });
-          },
+          onPressed: _openCommentsOverlay,
           style: TextButton.styleFrom(
             foregroundColor: Theme.of(context).primaryColor,
             padding: EdgeInsets.symmetric(vertical: 12),
@@ -782,6 +793,7 @@ class _CommentsSectionState extends State<CommentsSection> {
               onDeleteTap: () => _handleDeleteComment(comment['id']?.toString() ?? ''),
               margin: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               questionContext: widget.questionContext,
+              currentUserUsername: _currentUserUsername,
             ))),
             
             if (_isLoading && _currentPage == 0)

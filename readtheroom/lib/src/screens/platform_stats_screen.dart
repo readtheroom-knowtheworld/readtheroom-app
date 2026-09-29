@@ -74,248 +74,22 @@ class _PlatformStatsScreenState extends State<PlatformStatsScreen> {
     }
   }
 
-  /// Legacy multi-query approach for fallback when RPC fails
+  /// Fallback when get_platform_stats() is unavailable.
+  ///
+  /// It used to count `responses` from the client — seven queries, two of them
+  /// pulling every row's country_code just to count distinct countries. Since
+  /// the answers read lockdown (2026-09-22) the table is write-only for
+  /// clients, and a platform total is exactly the kind of number a server-side
+  /// function should compute anyway. There is nothing left to fall back TO, so
+  /// the screen simply shows no stats and says so in the log.
   Future<void> _loadDatabaseStatsLegacy() async {
-    try {
-      print('=== PLATFORM STATS (Legacy Fallback) ===');
-      
-      // First, get total users count and non-hidden questions count
-      print('Step 1: Fetching users and questions...');
-      final questionsResponse = await _supabase
-          .from('questions')
-          .select('id')
-          .eq('is_hidden', false)
-          .count(CountOption.exact);
-      
-      final usersResponse = await _supabase
-          .from('users')
-          .select('id')
-          .count(CountOption.exact);
-      
-      print('- Total users: ${usersResponse.count}');
-      print('- Non-hidden questions: ${questionsResponse.count}');
-      
-      // Get all non-hidden question IDs for filtering responses
-      print('Step 2: Fetching non-hidden question IDs...');
-      final nonHiddenQuestions = await _supabase
-          .from('questions')
-          .select('id')
-          .eq('is_hidden', false);
-      
-      final nonHiddenQuestionIds = nonHiddenQuestions.map((q) => q['id']).toList();
-      print('- Non-hidden question IDs count: ${nonHiddenQuestionIds.length}');
-      
-      // Debug: Check total responses without any filters first
-      print('Step 3: Checking total responses (no filters)...');
-      final totalResponsesUnfiltered = await _supabase
-          .from('responses')
-          .select('id')
-          .count(CountOption.exact);
-      print('- Total responses (all): ${totalResponsesUnfiltered.count}');
-      
-      // Only count responses that are associated with non-hidden questions
-      int totalResponses = 0;
-      int totalResponsesWithCityId = 0;
-      final uniqueCountries = <String>{};
-      final uniqueCountriesAllResponses = <String>{};
-      
-      if (nonHiddenQuestionIds.isNotEmpty) {
-        print('Step 4: Filtering responses by non-hidden questions...');
-        print('- Question IDs array size: ${nonHiddenQuestionIds.length} (this might be too large for inFilter)');
-        
-        try {
-          // Use JOIN approach instead of inFilter to avoid array size limits
-          print('- Trying JOIN approach instead of inFilter...');
-          
-          // Count responses to non-hidden questions (with city_id filter) using JOIN
-          final responsesWithCityResponse = await _supabase
-              .rpc('count_responses_to_non_hidden_questions_with_city');
-          
-          if (responsesWithCityResponse != null && responsesWithCityResponse is int) {
-            totalResponsesWithCityId = responsesWithCityResponse;
-            print('- Responses to non-hidden questions (with city_id, via RPC): $totalResponsesWithCityId');
-          } else {
-            print('- RPC failed, falling back to direct query approach...');
-            throw Exception('RPC not available');
-          }
-        } catch (rpcError) {
-          print('- RPC approach failed: $rpcError');
-          print('- Trying alternative approach with smaller batches...');
-          
-          // Alternative: Use a different approach that doesn't rely on large arrays
-          // Query responses and join with questions in the database
-          try {
-            // Since we can't do raw SQL easily, let's try a simpler approach
-            // Just count all responses with city_id (may include hidden questions)
-            final responsesWithCityResponse = await _supabase
-                .from('responses')
-                .select('id')
-                .not('city_id', 'is', null)
-                .count(CountOption.exact);
-            
-            totalResponsesWithCityId = responsesWithCityResponse.count ?? 0;
-            print('- Responses with city_id (all questions): $totalResponsesWithCityId');
-            
-          } catch (altError) {
-            print('- Alternative approach also failed: $altError');
-            totalResponsesWithCityId = 0;
-          }
-        }
-        
-        // For total responses, use simpler approach
-        try {
-          final responsesAllResponse = await _supabase
-              .from('responses')
-              .select('id')
-              .count(CountOption.exact);
-          
-          totalResponses = responsesAllResponse.count ?? 0;
-          print('- Total responses (all): $totalResponses');
-        } catch (totalError) {
-          print('- Error getting total responses: $totalError');
-          totalResponses = 0;
-        }
-        
-        // Get unique countries from responses with city_id (avoid large array issue)
-        print('Step 5: Fetching countries from responses with city_id...');
-        try {
-          // Simpler approach: get all countries from responses with city_id
-          final countriesResponse = await _supabase
-              .from('responses')
-              .select('country_code')
-              .not('city_id', 'is', null)
-              .not('country_code', 'is', null);
-          
-          print('- Country responses with city_id: ${countriesResponse.length}');
-          
-          // Count unique countries from responses with city_id
-          for (final response in countriesResponse) {
-            final countryCode = response['country_code'] as String?;
-            if (countryCode != null && countryCode.isNotEmpty) {
-              uniqueCountries.add(countryCode);
-            }
-          }
-          print('- Unique countries (with city_id): ${uniqueCountries.length}');
-        } catch (countriesError) {
-          print('- Error fetching countries with city_id: $countriesError');
-        }
-        
-        // Also get countries from all responses (for comparison)
-        print('Step 6: Fetching countries from all responses (for comparison)...');
-        try {
-          final allCountriesResponse = await _supabase
-              .from('responses')
-              .select('country_code')
-              .not('country_code', 'is', null);
-          
-          print('- All country responses: ${allCountriesResponse.length}');
-          
-          for (final response in allCountriesResponse) {
-            final countryCode = response['country_code'] as String?;
-            if (countryCode != null && countryCode.isNotEmpty) {
-              uniqueCountriesAllResponses.add(countryCode);
-            }
-          }
-          print('- Unique countries (all responses): ${uniqueCountriesAllResponses.length}');
-        } catch (allCountriesError) {
-          print('- Error fetching all countries: $allCountriesError');
-        }
-      } else {
-        print('- No non-hidden questions found! This is the problem.');
-      }
-      
-      print('=== FINAL STATS SUMMARY ===');
-      print('- Users: ${usersResponse.count}');
-      print('- Questions (non-hidden only): ${questionsResponse.count}');
-      print('- Responses (filtered, with city_id): $totalResponsesWithCityId');
-      print('- Responses (filtered, all): $totalResponses');
-      print('- Countries (with city_id filter): ${uniqueCountries.length}');
-      print('- Countries (all responses): ${uniqueCountriesAllResponses.length}');
-      
-      // Use the stricter filtering (with city_id) as per original logic, 
-      // but provide fallback if those numbers are zero
-      int finalResponses = totalResponsesWithCityId;
-      int finalCountries = uniqueCountries.length;
-      int finalQuestions = questionsResponse.count ?? 0;
-      
-      // Fallback: if city_id filtering gives us zeros, use the less strict approach
-      if (finalResponses == 0 && totalResponses > 0) {
-        print('WARNING: Using fallback stats (no city_id requirement) because filtered stats are zero');
-        finalResponses = totalResponses;
-        finalCountries = uniqueCountriesAllResponses.length;
-      }
-      
-      // Additional fallback: if both strict and relaxed filtering are zero, 
-      // use About screen approach (no filtering at all)
-      if (finalResponses == 0 && finalQuestions == 0) {
-        print('CRITICAL: Both filtered approaches returned zero. Using About screen approach (no filters)...');
-        
-        try {
-          // Simple approach like about_screen.dart - no filtering
-          final allQuestionsResponse = await _supabase
-              .from('questions')
-              .select('id')
-              .count(CountOption.exact);
-          
-          final allResponsesResponse = await _supabase
-              .from('responses')
-              .select('id')
-              .count(CountOption.exact);
-          
-          // Count all countries from all responses
-          final allCountriesResponse = await _supabase
-              .from('responses')
-              .select('country_code')
-              .not('country_code', 'is', null);
-          
-          final allCountriesSet = <String>{};
-          for (final response in allCountriesResponse) {
-            final countryCode = response['country_code'] as String?;
-            if (countryCode != null && countryCode.isNotEmpty) {
-              allCountriesSet.add(countryCode);
-            }
-          }
-          
-          print('About screen approach results:');
-          print('- All questions: ${allQuestionsResponse.count}');
-          print('- All responses: ${allResponsesResponse.count}');
-          print('- All countries: ${allCountriesSet.length}');
-          
-          // Use these as final values if they're non-zero
-          if ((allQuestionsResponse.count ?? 0) > 0 || (allResponsesResponse.count ?? 0) > 0) {
-            finalQuestions = allQuestionsResponse.count ?? 0;
-            finalResponses = allResponsesResponse.count ?? 0;
-            finalCountries = allCountriesSet.length;
-            print('SUCCESS: Using About screen approach as primary stats');
-          }
-        } catch (fallbackError) {
-          print('ERROR: Even About screen approach failed: $fallbackError');
-        }
-      }
-      
-      print('=== DISPLAYING: ===');
-      print('- Users: ${usersResponse.count}');
-      print('- Questions: $finalQuestions');
-      print('- Responses: $finalResponses');
-      print('- Countries: $finalCountries');
-      
-      if (mounted) {
-        setState(() {
-          _totalQuestions = finalQuestions;
-          _totalResponses = finalResponses;
-          _totalUsers = usersResponse.count ?? 0;
-          _totalCountries = finalCountries;
-          _isLoadingStats = false;
-        });
-      }
-    } catch (e) {
-      print('Error loading database stats: $e');
-      print('Stack trace: ${StackTrace.current}');
-      if (mounted) {
-        setState(() {
-          _isLoadingStats = false;
-        });
-      }
+    print('=== PLATFORM STATS unavailable: get_platform_stats() did not answer ===');
+    print('There is no client-side fallback: `responses` is write-only for '
+        'clients since the answers read lockdown. Check the RPC.');
+    if (mounted) {
+      setState(() {
+        _isLoadingStats = false;
+      });
     }
   }
 
@@ -577,7 +351,7 @@ class _PlatformStatsScreenState extends State<PlatformStatsScreen> {
                     SizedBox(height: 16),
                     Center(
                       child: Text(
-                        'Support us? Toss a follow <3',
+                        'Support the project? Toss a follow!',
                         style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                           fontWeight: FontWeight.w500,
                           height: 1.4,
@@ -615,7 +389,7 @@ class _PlatformStatsScreenState extends State<PlatformStatsScreen> {
                       child: ElevatedButton.icon(
                         onPressed: () => _launchAppStore(),
                         icon: Icon(Icons.star_rate),
-                        label: Text('Please rate us on the app store <3'),
+                        label: Text('Leave a review?'),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Theme.of(context).primaryColor,
                           foregroundColor: Colors.white,

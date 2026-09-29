@@ -79,24 +79,21 @@ class _AboutScreenState extends State<AboutScreen> {
     _loadDatabaseStats();
   }
 
-  Future<void> _loadDatabaseStats() async {
+    Future<void> _loadDatabaseStats() async {
     try {
-      // Fetch total questions count
-      final questionsResponse = await _supabase
-          .from('questions')
-          .select('id')
-          .count(CountOption.exact);
-      
-      // Fetch total responses count
-      final responsesResponse = await _supabase
-          .from('responses')
-          .select('id')
-          .count(CountOption.exact);
-      
-      if (mounted) {
+      // Both totals come from get_platform_stats(): `responses` is write-only
+      // for clients since the answers read lockdown (2026-09-22), so a
+      // client-side count of the table is no longer possible — nor wanted.
+      final stats = await _supabase.rpc('get_platform_stats');
+
+      if (mounted && stats is Map) {
         setState(() {
-          _totalQuestions = questionsResponse.count;
-          _totalResponses = responsesResponse.count;
+          _totalQuestions = (stats['questions'] as num?)?.toInt();
+          _totalResponses = (stats['responses'] as num?)?.toInt();
+          _isLoadingStats = false;
+        });
+      } else if (mounted) {
+        setState(() {
           _isLoadingStats = false;
         });
       }
